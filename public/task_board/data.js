@@ -1,0 +1,347 @@
+/**
+ * TaskBoard — data.js
+ * データ管理・LocalStorage CRUD
+ */
+
+// ============================================================
+// キー定数
+// ============================================================
+const KEYS = {
+  MEMBERS:   'tb_members',
+  PROJECTS:  'tb_projects',
+  TASKS:     'tb_tasks',
+  TEMPLATES: 'tb_templates',
+  META:      'tb_meta',
+};
+
+// ============================================================
+// ユーティリティ
+// ============================================================
+function genId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function yesterday() {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function prevDay(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function load(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function save(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+// 日付フォーマット（表示用）
+function fmtDate(dateStr) {
+  if (!dateStr) return '—';
+  const d = new Date(dateStr + 'T00:00:00');
+  return d.toLocaleDateString('ja-JP', { month: 'long', day: 'numeric', weekday: 'short' });
+}
+
+// 残り日数
+function daysLeft(dateStr) {
+  if (!dateStr) return null;
+  const now = new Date(today() + 'T00:00:00');
+  const end = new Date(dateStr  + 'T00:00:00');
+  return Math.ceil((end - now) / 86400000);
+}
+
+// ============================================================
+// 初期テンプレートデータ
+// ============================================================
+const DEFAULT_TEMPLATES = [
+  { id: 'tpl_pamphlet',    name: 'パンフレット・冊子',  phases: ['企画','取材・原稿','デザイン','校正','入稿','納品'] },
+  { id: 'tpl_website_new', name: 'Webサイト制作',       phases: ['企画','ワイヤー','デザイン','コーディング','テスト','公開'] },
+  { id: 'tpl_website_upd', name: 'Webサイト更新',       phases: ['依頼確認','原稿・素材収集','修正・制作','確認','公開'] },
+  { id: 'tpl_proposal',    name: '提案書作成',           phases: ['情報収集','構成','制作','確認','提出'] },
+  { id: 'tpl_video',       name: '動画制作',             phases: ['企画','撮影','編集','確認','納品'] },
+  { id: 'tpl_sns',         name: 'SNS投稿',              phases: ['企画','素材制作','原稿作成','確認','投稿'] },
+  { id: 'tpl_event',       name: 'イベント実施',         phases: ['企画','告知・集客','準備','当日運営','レポート'] },
+  { id: 'tpl_simple',      name: 'シンプル',             phases: ['準備','制作','納品'] },
+  { id: 'tpl_blank',       name: 'ブランク',             phases: [] },
+];
+
+// ============================================================
+// 初期化
+// ============================================================
+function initStore() {
+  if (!load(KEYS.TEMPLATES)) {
+    save(KEYS.TEMPLATES, DEFAULT_TEMPLATES.map(t => ({ ...t, custom: false })));
+  }
+  if (!load(KEYS.MEMBERS))  save(KEYS.MEMBERS,  []);
+  if (!load(KEYS.PROJECTS)) save(KEYS.PROJECTS, []);
+  if (!load(KEYS.TASKS))    save(KEYS.TASKS,    []);
+  if (!load(KEYS.META))     save(KEYS.META,     { lastDate: today() });
+}
+
+// ============================================================
+// デモデータ（初回のみ投入）
+// ============================================================
+function seedDemoData() {
+  // メンバーが0件の場合のみ投入
+  if (load(KEYS.MEMBERS)?.length > 0) return;
+
+  const memberColors = ['#6366f1', '#a855f7', '#ec4899', '#10b981', '#f59e0b'];
+  const memberNames  = ['田中 健太', '佐藤 美咲', '鈴木 翔', '高橋 えみ'];
+  const memberIds    = memberNames.map((name, i) => {
+    const m = Members.add({ name, color: memberColors[i] });
+    return m.id;
+  });
+
+  // サンプルプロジェクト①
+  const p1 = Projects.add({
+    clientName: '〇〇株式会社',
+    name: '会社案内パンフレット制作',
+    deliveryDate: (() => {
+      const d = new Date(); d.setDate(d.getDate() + 18);
+      return d.toISOString().slice(0, 10);
+    })(),
+    budget: '480000',
+    templateId: 'tpl_pamphlet',
+  });
+  // フェーズを進行中状態に更新
+  if (p1.phases.length >= 3) {
+    const updPhases = p1.phases.map((ph, i) => ({
+      ...ph,
+      status: i < 2 ? 'done' : i === 2 ? 'active' : 'pending',
+    }));
+    Projects.updatePhases(p1.id, updPhases);
+    const refreshed = Projects.get(p1.id);
+
+    // タスクを追加（デザインフェーズ）
+    const designPhase = refreshed.phases[2];
+    if (designPhase) {
+      Tasks.add({ memberId: memberIds[0], projectId: p1.id, phaseId: designPhase.id, content: 'トップページレイアウト作成', estimatedHours: 3, date: today() });
+      Tasks.add({ memberId: memberIds[1], projectId: p1.id, phaseId: designPhase.id, content: '写真セレクト・トリミング', estimatedHours: 1, date: today() });
+      Tasks.add({ memberId: memberIds[0], projectId: p1.id, phaseId: designPhase.id, content: '図版・アイコン制作', estimatedHours: 2, date: today() });
+
+      // 前日の完了済みタスク
+      Tasks.add({ memberId: memberIds[0], projectId: p1.id, phaseId: designPhase.id, content: 'デザイン方針の確定・クライアント確認', estimatedHours: 1.5, date: yesterday() });
+      Tasks.add({ memberId: memberIds[1], projectId: p1.id, phaseId: designPhase.id, content: '素材整理・フォルダ構成', estimatedHours: 1, date: yesterday() });
+    }
+  }
+
+  // サンプルプロジェクト②
+  const p2 = Projects.add({
+    clientName: '△△商事',
+    name: 'コーポレートサイト更新',
+    deliveryDate: (() => {
+      const d = new Date(); d.setDate(d.getDate() + 5);
+      return d.toISOString().slice(0, 10);
+    })(),
+    budget: '120000',
+    templateId: 'tpl_website_upd',
+  });
+  if (p2.phases.length >= 3) {
+    const updPhases2 = p2.phases.map((ph, i) => ({
+      ...ph,
+      status: i < 1 ? 'done' : i === 1 ? 'active' : 'pending',
+    }));
+    Projects.updatePhases(p2.id, updPhases2);
+    const refreshed2 = Projects.get(p2.id);
+    const activePhase2 = refreshed2.phases[1];
+    if (activePhase2) {
+      Tasks.add({ memberId: memberIds[2], projectId: p2.id, phaseId: activePhase2.id, content: '更新テキストの原稿確認・修正', estimatedHours: 1.5, date: today() });
+      Tasks.add({ memberId: memberIds[2], projectId: p2.id, phaseId: activePhase2.id, content: '画像差し替え対応', estimatedHours: 1, date: yesterday() });
+    }
+  }
+
+  // 前日タスクに完了ステータスを設定
+  const yTasks = Tasks.yesterdayTasks();
+  yTasks.forEach((t, i) => {
+    if (i === 0) Tasks.setCompletion(t.id, true);
+    else if (i === 1) Tasks.setCompletion(t.id, true);
+    else if (i === 2) Tasks.setCompletion(t.id, false, '素材の最終確認待ちのため');
+  });
+}
+
+// ============================================================
+// メンバー
+// ============================================================
+const Members = {
+  all()  { return load(KEYS.MEMBERS) ?? []; },
+  add({ name, color }) {
+    const list = this.all();
+    const member = { id: genId(), name, color: color ?? '#6366f1', createdAt: today() };
+    list.push(member);
+    save(KEYS.MEMBERS, list);
+    return member;
+  },
+  update(id, patch) {
+    save(KEYS.MEMBERS, this.all().map(m => m.id === id ? { ...m, ...patch } : m));
+  },
+  remove(id) {
+    save(KEYS.MEMBERS, this.all().filter(m => m.id !== id));
+  },
+  get(id) { return this.all().find(m => m.id === id) ?? null; },
+};
+
+// ============================================================
+// プロジェクト
+// ============================================================
+const Projects = {
+  all()      { return load(KEYS.PROJECTS) ?? []; },
+  active()   { return this.all().filter(p => !p.archived); },
+  archived() { return this.all().filter(p =>  p.archived); },
+
+  add({
+    clientName, name, deliveryDate = '', budget = '', templateId = '',
+    projectType = 'standard', recurringSeries = '', ownerMemberId = '',
+    isProvisional = false, detailsDueAt = '',
+  }) {
+    const list = this.all();
+    const phases = buildPhasesFromTemplate(templateId);
+    const project = {
+      id: genId(), clientName, name, deliveryDate, budget,
+      projectType, recurringSeries, ownerMemberId, isProvisional, detailsDueAt,
+      archived: false, createdAt: today(), phases,
+    };
+    list.push(project);
+    save(KEYS.PROJECTS, list);
+    return project;
+  },
+  update(id, patch) {
+    save(KEYS.PROJECTS, this.all().map(p => p.id === id ? { ...p, ...patch } : p));
+  },
+  updatePhases(projectId, phases) {
+    this.update(projectId, { phases });
+  },
+  archive(id)  { this.update(id, { archived: true  }); },
+  restore(id)  { this.update(id, { archived: false }); },
+  remove(id)   {
+    save(KEYS.PROJECTS, this.all().filter(p => p.id !== id));
+  },
+  get(id) { return this.all().find(p => p.id === id) ?? null; },
+};
+
+// ============================================================
+// タスク
+// ============================================================
+const Tasks = {
+  all()            { return load(KEYS.TASKS) ?? []; },
+  byDate(date)     { return this.all().filter(t => t.date === date); },
+  todayTasks()     { return this.byDate(today()); },
+  yesterdayTasks() { return this.byDate(yesterday()); },
+
+  add({ memberId, projectId = null, phaseId = null, content, estimatedHours, date = today() }) {
+    const list = this.all();
+    const task = {
+      id: genId(), date, memberId, projectId, phaseId,
+      content, estimatedHours: parseFloat(estimatedHours),
+      completed: null,        // null=未確認, true=完了, false=未完了
+      incompleteReason: '',
+      createdAt: new Date().toISOString(),
+    };
+    list.push(task);
+    save(KEYS.TASKS, list);
+    return task;
+  },
+  update(id, patch) {
+    save(KEYS.TASKS, this.all().map(t => t.id === id ? { ...t, ...patch } : t));
+  },
+  remove(id) {
+    save(KEYS.TASKS, this.all().filter(t => t.id !== id));
+  },
+  setCompletion(id, completed, reason = '') {
+    this.update(id, { completed, incompleteReason: reason });
+  },
+  get(id) { return this.all().find(t => t.id === id) ?? null; },
+
+  /** 指定プロジェクト・フェーズのタスク完了率 */
+  progressByPhase(projectId, phaseId) {
+    const tasks = this.all().filter(t => t.projectId === projectId && t.phaseId === phaseId);
+    if (!tasks.length) return null;
+    return { total: tasks.length, done: tasks.filter(t => t.completed === true).length };
+  },
+
+  /** メンバーの連続未完了日数（修正版：複数タスク対応） */
+  consecutiveIncompleteDays(memberId) {
+    // 日付ごとにタスクをグループ化
+    const byDate = {};
+    this.all()
+      .filter(t => t.memberId === memberId && t.completed !== null)
+      .forEach(t => {
+        if (!byDate[t.date]) byDate[t.date] = [];
+        byDate[t.date].push(t);
+      });
+
+    let days = 0;
+    let cursor = yesterday();
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const dayTasks = byDate[cursor];
+      if (!dayTasks || dayTasks.length === 0) break;
+      const allIncomplete = dayTasks.every(t => t.completed === false);
+      if (allIncomplete) {
+        days++;
+        cursor = prevDay(cursor);
+      } else {
+        break;
+      }
+    }
+    return days;
+  },
+};
+
+// ============================================================
+// テンプレート
+// ============================================================
+const Templates = {
+  all() { return load(KEYS.TEMPLATES) ?? []; },
+  add({ name, phases }) {
+    const list = this.all();
+    const tpl = { id: genId(), name, phases, custom: true };
+    list.push(tpl);
+    save(KEYS.TEMPLATES, list);
+    return tpl;
+  },
+  update(id, patch) {
+    save(KEYS.TEMPLATES, this.all().map(t => t.id === id ? { ...t, ...patch } : t));
+  },
+  remove(id) {
+    save(KEYS.TEMPLATES, this.all().filter(t => t.id !== id));
+  },
+  get(id) { return this.all().find(t => t.id === id) ?? null; },
+};
+
+// ============================================================
+// ヘルパー
+// ============================================================
+function buildPhasesFromTemplate(templateId) {
+  const tpl = Templates.get(templateId);
+  if (!tpl) return [];
+  return tpl.phases.map((name, i) => ({
+    id: genId(),
+    name,
+    status: i === 0 ? 'active' : 'pending',
+    dueDate: '',
+    order: i,
+  }));
+}
+
+// ============================================================
+// エクスポート（グローバル）
+// ============================================================
+window.DB = {
+  Members, Projects, Tasks, Templates,
+  today, yesterday, prevDay, fmtDate, daysLeft, genId,
+  initStore, seedDemoData,
+};
