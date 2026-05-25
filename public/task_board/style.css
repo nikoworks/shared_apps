@@ -375,6 +375,12 @@ body {
 }
 .form-select option { background: #1e1e35; color: var(--text-1); }
 .form-textarea { resize: vertical; min-height: 80px; }
+.form-help {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
 .bulk-textarea {
   min-height: 220px;
   line-height: 1.7;

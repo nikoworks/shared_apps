@@ -818,10 +818,14 @@ function openBulkTaskModal() {
     <div class="form-group">
       <label class="form-label">タスク本文 *</label>
       <textarea class="form-textarea bulk-textarea" id="bulk-text"
-                placeholder="・案件名&#10;　作業内容 0.5時間&#10;　作業内容 1時間">${escHtml(_bulkTaskData.text || '')}</textarea>
+                placeholder="プロジェクト名, タスク, 時間, 内容&#10;〇〇株式会社 パンフレット, 表紙修正, 1, 赤字反映と画像差し替え&#10;△△商事 Web更新, お知らせ更新, 0.5, 原稿を反映して公開確認">${escHtml(_bulkTaskData.text || '')}</textarea>
+      <div class="form-help">
+        1行に1タスク。区切りはカンマ、読点、タブのどれでもOKです。
+      </div>
     </div>
     <div id="bulk-preview">${_bulkTaskData.preview ? bulkPreviewHTML(_bulkTaskData.preview) : ''}</div>
     <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="copyBulkTaskTemplate()">依頼文をコピー</button>
       <button class="btn btn-ghost" onclick="closeModal()">キャンセル</button>
       <button class="btn btn-ghost" onclick="previewBulkTasks()">確認する</button>
       <button class="btn btn-primary" onclick="saveBulkTasks()">登録する</button>
@@ -873,6 +877,9 @@ function saveBulkTasks() {
 }
 
 function parseBulkTaskText(text) {
+  const chatParsed = parseChatTaskRows(text);
+  if (chatParsed.groups.length) return chatParsed;
+
   const lines = (text || '').split(/\r?\n/).map(line => line.replace(/\t/g, '  '));
   const groups = [];
   let current = null;
@@ -905,6 +912,104 @@ function parseBulkTaskText(text) {
   });
 
   return { groups: groups.filter(group => group.tasks.length) };
+}
+
+function parseChatTaskRows(text) {
+  const rows = [];
+  let labelled = {};
+
+  (text || '').split(/\r?\n/).forEach(raw => {
+    const line = raw.trim();
+    if (!line) {
+      pushLabelledTask(rows, labelled);
+      labelled = {};
+      return;
+    }
+    if (/^(プロジェクト名|プロジェクト|案件名|案件|タスク|作業|時間|工数|内容|詳細)\s*[:：]/.test(line)) {
+      const [, key, value] = line.match(/^(プロジェクト名|プロジェクト|案件名|案件|タスク|作業|時間|工数|内容|詳細)\s*[:：]\s*(.*)$/) || [];
+      if (key) {
+        const normalizedKey = normalizeChatTaskKey(key);
+        labelled[normalizedKey] = value.trim();
+      }
+      return;
+    }
+
+    const cells = splitTaskRow(line);
+    if (cells.length >= 3 && !isBulkHeaderRow(cells)) {
+      rows.push(rowToTask(cells));
+    }
+  });
+  pushLabelledTask(rows, labelled);
+
+  const groupsByProject = {};
+  rows.filter(Boolean).forEach(row => {
+    const projectName = row.projectName || '';
+    if (!groupsByProject[projectName]) groupsByProject[projectName] = { projectName, tasks: [] };
+    groupsByProject[projectName].tasks.push({
+      content: row.content,
+      hours: row.hours,
+    });
+  });
+
+  return { groups: Object.values(groupsByProject).filter(group => group.tasks.length) };
+}
+
+function splitTaskRow(line) {
+  return line
+    .split(/\t|,|、/)
+    .map(cell => cell.trim())
+    .filter(Boolean);
+}
+
+function isBulkHeaderRow(cells) {
+  return cells.join('').replace(/\s/g, '') === 'プロジェクト名タスク時間内容';
+}
+
+function normalizeChatTaskKey(key) {
+  if (/プロジェクト|案件/.test(key)) return 'projectName';
+  if (/タスク|作業/.test(key)) return 'task';
+  if (/時間|工数/.test(key)) return 'hours';
+  return 'detail';
+}
+
+function pushLabelledTask(rows, data) {
+  if (!data || !Object.keys(data).length) return;
+  if (!data.projectName && !data.task && !data.detail) return;
+  rows.push(rowToTask([data.projectName || '', data.task || '', data.hours || '', data.detail || '']));
+}
+
+function rowToTask(cells) {
+  const [projectName = '', taskName = '', hoursText = '', detail = ''] = cells;
+  const hours = extractHours(hoursText);
+  const contentParts = [taskName, detail].map(s => s.trim()).filter(Boolean);
+  return {
+    projectName: projectName.trim(),
+    content: contentParts.join(' - ') || '未入力タスク',
+    hours,
+  };
+}
+
+function extractHours(value) {
+  const normalized = normalizeNumberText(String(value || ''));
+  const match = normalized.match(/([0-9]+(?:\.[0-9]+)?)/);
+  return match ? Math.max(0.5, parseFloat(match[1])) : 1;
+}
+
+async function copyBulkTaskTemplate() {
+  const template = [
+    '明日のタスクを以下の形式で送ってください。',
+    '',
+    'プロジェクト名, タスク, 時間, 内容',
+    '例）〇〇株式会社 パンフレット, 表紙修正, 1, 赤字反映と画像差し替え',
+    '例）△△商事 Web更新, お知らせ更新, 0.5, 原稿を反映して公開確認',
+  ].join('\n');
+
+  try {
+    await navigator.clipboard.writeText(template);
+    showToast('依頼文をコピーしました', 'success');
+  } catch {
+    showToast('コピーできませんでした。手動で選択してください', 'error');
+  }
 }
 
 function cleanBulkLine(line) {
