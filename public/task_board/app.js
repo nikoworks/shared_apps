@@ -1609,8 +1609,8 @@ function updateSidebarDate() {
 /* ============================================================
    アプリ初期化
    ============================================================ */
-document.addEventListener('DOMContentLoaded', () => {
-  DB.initStore();
+document.addEventListener('DOMContentLoaded', async () => {
+  await DB.initStore();
   DB.seedDemoData();       // 初回のみデモデータを投入
   updateSidebarDate();
   updateMorningBadge();

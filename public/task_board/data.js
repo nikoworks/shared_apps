@@ -14,6 +14,11 @@ const KEYS = {
   META:      'tb_meta',
 };
 
+const CLOUD_ROW_ID = 'main';
+let cloudClient = null;
+let cloudReady = false;
+let cloudSaveTimer = null;
+
 // ============================================================
 // ユーティリティ
 // ============================================================
@@ -47,6 +52,82 @@ function load(key) {
 
 function save(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
+  queueCloudSave();
+}
+
+function getCloudConfig() {
+  return window.TASKBOARD_SUPABASE || {};
+}
+
+function isCloudConfigured() {
+  const cfg = getCloudConfig();
+  return Boolean(cfg.url && cfg.anonKey && window.supabase);
+}
+
+function getStoreSnapshot() {
+  return {
+    members: load(KEYS.MEMBERS) ?? [],
+    projects: load(KEYS.PROJECTS) ?? [],
+    tasks: load(KEYS.TASKS) ?? [],
+    templates: load(KEYS.TEMPLATES) ?? [],
+    meta: load(KEYS.META) ?? { lastDate: today() },
+  };
+}
+
+function applyStoreSnapshot(data = {}) {
+  saveLocalOnly(KEYS.MEMBERS, data.members ?? []);
+  saveLocalOnly(KEYS.PROJECTS, data.projects ?? []);
+  saveLocalOnly(KEYS.TASKS, data.tasks ?? []);
+  saveLocalOnly(KEYS.TEMPLATES, data.templates ?? DEFAULT_TEMPLATES.map(t => ({ ...t, custom: false })));
+  saveLocalOnly(KEYS.META, data.meta ?? { lastDate: today() });
+}
+
+function saveLocalOnly(key, value) {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+async function initCloudStore() {
+  if (!isCloudConfigured()) return false;
+
+  const cfg = getCloudConfig();
+  cloudClient = window.supabase.createClient(cfg.url, cfg.anonKey);
+
+  const { data, error } = await cloudClient
+    .from('taskboard_data')
+    .select('data')
+    .eq('id', CLOUD_ROW_ID)
+    .single();
+
+  if (error) {
+    console.warn('Supabase load failed:', error.message);
+    return false;
+  }
+
+  applyStoreSnapshot(data?.data);
+  cloudReady = true;
+  return true;
+}
+
+function queueCloudSave() {
+  if (!cloudReady || !cloudClient) return;
+  clearTimeout(cloudSaveTimer);
+  cloudSaveTimer = setTimeout(syncCloudStore, 350);
+}
+
+async function syncCloudStore() {
+  if (!cloudReady || !cloudClient) return;
+
+  const { error } = await cloudClient
+    .from('taskboard_data')
+    .upsert({
+      id: CLOUD_ROW_ID,
+      data: getStoreSnapshot(),
+      updated_at: new Date().toISOString(),
+    });
+
+  if (error) {
+    console.warn('Supabase save failed:', error.message);
+  }
 }
 
 // 日付フォーマット（表示用）
@@ -82,7 +163,9 @@ const DEFAULT_TEMPLATES = [
 // ============================================================
 // 初期化
 // ============================================================
-function initStore() {
+async function initStore() {
+  await initCloudStore();
+
   if (!load(KEYS.TEMPLATES)) {
     save(KEYS.TEMPLATES, DEFAULT_TEMPLATES.map(t => ({ ...t, custom: false })));
   }
