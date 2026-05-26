@@ -505,6 +505,16 @@ body {
   letter-spacing: -.5px;
 }
 
+.member-url {
+  margin-top: 5px;
+  max-width: 520px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
 /* ─── Tags / Chips ───────────────────────────────────────── */
 .tag {
   display: inline-flex;
@@ -943,6 +953,7 @@ body {
   align-items: center;
   gap: 8px;
 }
+.banner > span { flex: 1; }
 .banner-success { background: var(--success-lite); border: 1px solid rgba(16,185,129,.25); color: var(--success); }
 .banner-warning { background: var(--warning-lite); border: 1px solid rgba(245,158,11,.25); color: var(--warning); }
 .banner-info    { background: var(--primary-lite); border: 1px solid rgba(99,102,241,.25); color: var(--primary); }

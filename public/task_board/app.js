@@ -7,6 +7,7 @@
    ルーター
    ============================================================ */
 let _currentPage = 'dashboard';
+let _personalMemberId = '';
 
 function navigate(page) {
   _currentPage = page;
@@ -111,6 +112,41 @@ function getDefaultOwnerMemberId() {
   if (me) return me.id;
   const created = DB.Members.add({ name: '佐久間さん', color: '#3b82f6' });
   return created.id;
+}
+
+function normalizeMemberToken(value) {
+  return decodeURIComponent(String(value ?? ''))
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '');
+}
+
+function resolveMemberFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const raw = params.get('member') || params.get('user') || '';
+  if (!raw) return null;
+
+  const token = normalizeMemberToken(raw);
+  return DB.Members.all().find(m =>
+    normalizeMemberToken(m.id) === token ||
+    normalizeMemberToken(m.name) === token
+  ) || null;
+}
+
+function getMemberPageUrl(memberId) {
+  const url = new URL(window.location.href);
+  url.searchParams.set('member', memberId);
+  return url.toString();
+}
+
+async function copyMemberPageUrl(memberId) {
+  const url = getMemberPageUrl(memberId);
+  try {
+    await navigator.clipboard.writeText(url);
+    showToast('個人ページURLをコピーしました', 'success');
+  } catch {
+    window.prompt('このURLをコピーしてください', url);
+  }
 }
 
 /** 残日数バッジ HTML */
@@ -561,18 +597,20 @@ function updateMorningBadge() {
 /* ============================================================
    今日のタスク
    ============================================================ */
-let _taskFilter = { memberId: '', projectId: '' };
-let _taskFormData = { memberId: '', projectId: '', phaseId: '', content: '', estimatedHours: 1, note: '' };
-let _bulkTaskData = { memberId: '', ownerMemberId: '', text: '', preview: null };
+let _taskFilter = { memberId: '', projectId: '', date: '' };
+let _taskFormData = { memberId: '', projectId: '', phaseId: '', content: '', estimatedHours: 1, note: '', date: '' };
+let _bulkTaskData = { memberId: '', ownerMemberId: '', date: '', text: '', preview: null };
 
 function renderTodayTasks() {
   const main       = document.getElementById('main-content');
   const members    = DB.Members.all();
   const projects   = DB.Projects.active();
-  const todayTasks = DB.Tasks.todayTasks();
+  const selectedDate = _taskFilter.date || DB.today();
+  const dateTasks = DB.Tasks.byDate(selectedDate);
+  const personalMember = _personalMemberId ? DB.Members.get(_personalMemberId) : null;
 
   // フィルタ適用
-  const filtered = todayTasks.filter(t => {
+  const filtered = dateTasks.filter(t => {
     if (_taskFilter.memberId  && t.memberId  !== _taskFilter.memberId)  return false;
     if (_taskFilter.projectId && t.projectId !== _taskFilter.projectId) return false;
     return true;
@@ -589,10 +627,17 @@ function renderTodayTasks() {
 
   main.innerHTML = `
     <div class="page-header"><div class="page-header-left">
-      <h2>今日のタスク</h2>
-      <p>${DB.fmtDate(DB.today())} の作業予定</p>
+      <h2>${personalMember ? `${escHtml(personalMember.name)}さんのタスク` : '今日のタスク'}</h2>
+      <p>${DB.fmtDate(selectedDate)} の作業予定${personalMember ? '・個人ページ' : ''}</p>
     </div></div>
     <div class="page-body fade-in">
+      ${personalMember ? `
+        <div class="banner banner-info">
+          ${avatarHTML(personalMember, 28)}
+          <span>このURLは ${escHtml(personalMember.name)}さん用です。プロジェクト画面では全体の進行状況も確認できます。</span>
+          <button class="btn btn-ghost btn-sm" onclick="_taskFilter.memberId='';renderTodayTasks()">全メンバー表示</button>
+        </div>
+      ` : ''}
 
       <div class="action-row">
         <div class="filter-bar">
@@ -604,6 +649,9 @@ function renderTodayTasks() {
                   onchange="_taskFilter.projectId=this.value;renderTodayTasks()">
             <option value="">全プロジェクト</option>${projectOpts}
           </select>
+          <input type="date" class="form-input" style="width:150px" id="filter-date"
+                 value="${selectedDate}" onchange="_taskFilter.date=this.value;renderTodayTasks()">
+          <button class="btn btn-ghost btn-sm" onclick="_taskFilter.date=DB.today();renderTodayTasks()">今日</button>
         </div>
         <div style="display:flex;align-items:center;gap:12px">
           <span style="font-size:13px;color:var(--text-2)">合計 <strong style="color:var(--primary)">${totalH}h</strong></span>
@@ -681,7 +729,15 @@ function openTaskModal(editId) {
     const t = DB.Tasks.get(editId);
     if (t) _taskFormData = { ...t };
   } else {
-    _taskFormData = { memberId: '', projectId: '', phaseId: '', content: '', estimatedHours: 1, note: '' };
+    _taskFormData = {
+      memberId: _taskFilter.memberId || _personalMemberId || '',
+      projectId: '',
+      phaseId: '',
+      content: '',
+      estimatedHours: 1,
+      note: '',
+      date: _taskFilter.date || DB.today(),
+    };
   }
 
   const memberOpts  = members.map(m =>
@@ -713,6 +769,12 @@ function openTaskModal(editId) {
       <select class="form-select" id="tf-phase" onchange="_taskFormData.phaseId=this.value">
         ${phaseOpts}
       </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">作業日 *</label>
+      <input type="date" class="form-input" id="tf-date"
+             value="${_taskFormData.date || DB.today()}"
+             onchange="_taskFormData.date=this.value">
     </div>
     <div class="form-group">
       <label class="form-label">タスク内容 *</label>
@@ -764,6 +826,7 @@ function saveTask(editId) {
   const memberId = document.getElementById('tf-member')?.value;
   const content  = document.getElementById('tf-content')?.value?.trim();
   const note     = document.getElementById('tf-note')?.value?.trim() || '';
+  const taskDate = document.getElementById('tf-date')?.value || DB.today();
   if (!memberId) { showToast('担当者を選択してください', 'error'); return; }
   if (!content)  { showToast('タスク内容を入力してください', 'error'); return; }
 
@@ -773,6 +836,7 @@ function saveTask(editId) {
     phaseId:   _taskFormData.phaseId   || null,
     content,
     note,
+    date: taskDate,
     estimatedHours: _taskFormData.estimatedHours || 1,
   };
 
@@ -806,6 +870,9 @@ function openBulkTaskModal() {
   if (!_bulkTaskData.ownerMemberId) _bulkTaskData.ownerMemberId = getDefaultOwnerMemberId();
   members = DB.Members.all();
 
+  if (!_bulkTaskData.date) _bulkTaskData.date = _taskFilter.date || DB.today();
+  if (!_bulkTaskData.memberId) _bulkTaskData.memberId = _taskFilter.memberId || _personalMemberId || '';
+
   const memberOpts = members.map(m =>
     `<option value="${m.id}" ${_bulkTaskData.memberId === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
   const ownerOpts = members.map(m =>
@@ -823,6 +890,10 @@ function openBulkTaskModal() {
       <select class="form-select" id="bulk-owner">
         <option value="">未入力なら私</option>${ownerOpts}
       </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">作業日 *</label>
+      <input type="date" class="form-input" id="bulk-date" value="${_bulkTaskData.date || DB.today()}">
     </div>
     <div class="form-group">
       <label class="form-label">タスク本文 *</label>
@@ -845,8 +916,9 @@ function openBulkTaskModal() {
 function previewBulkTasks() {
   const memberId = document.getElementById('bulk-member')?.value || '';
   const ownerMemberId = document.getElementById('bulk-owner')?.value || '';
+  const date = document.getElementById('bulk-date')?.value || DB.today();
   const text = document.getElementById('bulk-text')?.value || '';
-  _bulkTaskData = { memberId, ownerMemberId, text, preview: parseBulkTaskText(text) };
+  _bulkTaskData = { memberId, ownerMemberId, date, text, preview: parseBulkTaskText(text) };
 
   const previewEl = document.getElementById('bulk-preview');
   if (previewEl) previewEl.innerHTML = bulkPreviewHTML(_bulkTaskData.preview);
@@ -855,6 +927,7 @@ function previewBulkTasks() {
 function saveBulkTasks() {
   const memberId = document.getElementById('bulk-member')?.value || '';
   const ownerMemberId = document.getElementById('bulk-owner')?.value || getDefaultOwnerMemberId();
+  const date = document.getElementById('bulk-date')?.value || DB.today();
   const text = document.getElementById('bulk-text')?.value || '';
   if (!memberId) { showToast('タスク担当者を選択してください', 'error'); return; }
   if (!ownerMemberId) { showToast('先にメンバーを登録してください', 'error'); return; }
@@ -875,12 +948,14 @@ function saveBulkTasks() {
         phaseId: null,
         content: task.content,
         note: task.note || '',
+        date,
         estimatedHours: task.hours,
       });
     });
   });
 
-  _bulkTaskData = { memberId, ownerMemberId, text: '', preview: null };
+  _taskFilter.date = date;
+  _bulkTaskData = { memberId, ownerMemberId, date, text: '', preview: null };
   closeModal();
   showToast(`${totalTasks}件のタスクを登録しました`, 'success');
   renderTodayTasks();
@@ -1499,7 +1574,9 @@ function renderSettings() {
 function membersTabHTML(members) {
   const memberCards = members.length === 0
     ? `<div class="empty-state"><div class="icon">👥</div><div class="title">メンバーが登録されていません</div></div>`
-    : members.map(m => `
+    : members.map(m => {
+      const memberUrl = getMemberPageUrl(m.id);
+      return `
         <div class="card" style="display:flex;align-items:center;gap:12px;margin-bottom:8px;padding:14px 18px">
           ${avatarHTML(m, 42)}
           <div style="flex:1">
@@ -1508,12 +1585,15 @@ function membersTabHTML(members) {
               <span style="width:10px;height:10px;border-radius:50%;background:${m.color};display:inline-block"></span>
               ${m.color}
             </div>
+            <div class="member-url">${escHtml(memberUrl)}</div>
           </div>
           <div style="display:flex;gap:5px">
+            <button class="btn btn-ghost btn-sm" onclick="copyMemberPageUrl('${m.id}')">個人URL</button>
             <button class="btn btn-ghost btn-sm" onclick="openMemberModal('${m.id}')">編集</button>
             <button class="btn btn-danger btn-sm" onclick="deleteMember('${m.id}')">削除</button>
           </div>
-        </div>`).join('');
+        </div>`;
+    }).join('');
 
   return `
     <div class="action-row">
@@ -1767,7 +1847,12 @@ function updateSidebarDate() {
 document.addEventListener('DOMContentLoaded', async () => {
   await DB.initStore();
   DB.seedDemoData();       // 初回のみデモデータを投入
+  const urlMember = resolveMemberFromUrl();
+  if (urlMember) {
+    _personalMemberId = urlMember.id;
+    _taskFilter.memberId = urlMember.id;
+  }
   updateSidebarDate();
   updateMorningBadge();
-  navigate('dashboard');
+  navigate(_personalMemberId ? 'tasks' : 'dashboard');
 });
