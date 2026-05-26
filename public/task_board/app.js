@@ -1650,10 +1650,12 @@ function openTemplateModal(editId) {
 
 function tplPhaseRow(value, i) {
   return `
-    <div style="display:flex;gap:6px;margin-bottom:6px" id="tpl-row-${i}">
-      <span style="min-width:18px;text-align:right;font-size:11px;color:var(--text-3);padding-top:9px">${i+1}</span>
-      <input class="form-input" style="flex:1" placeholder="フェーズ名" value="${escHtml(value)}" id="tpl-ph-${i}">
-      <button class="btn btn-danger btn-sm btn-icon" onclick="document.getElementById('tpl-row-${i}').remove()">✕</button>
+    <div class="tpl-phase-row" id="tpl-row-${i}">
+      <span class="tpl-phase-number">${i+1}</span>
+      <input class="form-input tpl-phase-input" placeholder="フェーズ名" value="${escHtml(value)}" id="tpl-ph-${i}">
+      <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplPhaseRow(this, -1)" title="上へ">↑</button>
+      <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplPhaseRow(this, 1)" title="下へ">↓</button>
+      <button class="btn btn-danger btn-sm btn-icon" onclick="this.closest('.tpl-phase-row').remove();renumberTplPhases()">✕</button>
     </div>`;
 }
 
@@ -1665,17 +1667,41 @@ function addTplPhaseRow() {
   const id  = `tpl-dyn-${_tplRowCount}`;
   const idx = list.children.length + 1;
   const div = document.createElement('div');
-  div.style.cssText = 'display:flex;gap:6px;margin-bottom:6px';
+  div.className = 'tpl-phase-row';
   div.id = id;
   div.innerHTML = `
-    <span style="min-width:18px;text-align:right;font-size:11px;color:var(--text-3);padding-top:9px">${idx}</span>
-    <input class="form-input" style="flex:1" placeholder="フェーズ名" id="tf-dyn-ph-${_tplRowCount}">
-    <button class="btn btn-danger btn-sm btn-icon" onclick="document.getElementById('${id}').remove()">✕</button>`;
+    <span class="tpl-phase-number">${idx}</span>
+    <input class="form-input tpl-phase-input" placeholder="フェーズ名" id="tf-dyn-ph-${_tplRowCount}">
+    <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplPhaseRow(this, -1)" title="上へ">↑</button>
+    <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplPhaseRow(this, 1)" title="下へ">↓</button>
+    <button class="btn btn-danger btn-sm btn-icon" onclick="this.closest('.tpl-phase-row').remove();renumberTplPhases()">✕</button>`;
   list.appendChild(div);
+  renumberTplPhases();
+}
+
+function moveTplPhaseRow(button, direction) {
+  const row = button.closest('.tpl-phase-row');
+  const list = document.getElementById('tpl-phases-list');
+  if (!row || !list) return;
+
+  if (direction < 0 && row.previousElementSibling) {
+    list.insertBefore(row, row.previousElementSibling);
+  }
+  if (direction > 0 && row.nextElementSibling) {
+    list.insertBefore(row.nextElementSibling, row);
+  }
+  renumberTplPhases();
+}
+
+function renumberTplPhases() {
+  document.querySelectorAll('#tpl-phases-list .tpl-phase-row').forEach((row, i) => {
+    const num = row.querySelector('.tpl-phase-number');
+    if (num) num.textContent = String(i + 1);
+  });
 }
 
 function getTemplatePhases() {
-  return Array.from(document.querySelectorAll('[id^="tpl-ph-"], [id^="tf-dyn-ph-"]'))
+  return Array.from(document.querySelectorAll('#tpl-phases-list input'))
     .map(el => el.value.trim()).filter(Boolean);
 }
 

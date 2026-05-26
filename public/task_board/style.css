@@ -462,6 +462,21 @@ body {
   font-size: 11px;
   flex-shrink: 0;
 }
+.tpl-phase-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.tpl-phase-number {
+  min-width: 22px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.tpl-phase-input {
+  flex: 1;
+}
 
 /* ─── Progress Bar ───────────────────────────────────────── */
 .progress-bar {
