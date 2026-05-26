@@ -602,6 +602,12 @@ body {
   font-weight: 700;
   flex-shrink: 0;
 }
+.bulk-note {
+  margin-top: 3px;
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.45;
+}
 
 /* Streak chip */
 .streak-chip {
@@ -641,6 +647,16 @@ body {
   font-weight: 500;
   color: var(--text-1);
   line-height: 1.4;
+}
+.task-note {
+  margin-top: 5px;
+  padding: 7px 9px;
+  border-left: 3px solid var(--warning);
+  border-radius: 6px;
+  background: var(--warning-lite);
+  color: var(--text-1);
+  font-size: 12px;
+  line-height: 1.45;
 }
 .task-meta {
   display: flex;

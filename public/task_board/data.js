@@ -324,11 +324,12 @@ const Tasks = {
   todayTasks()     { return this.byDate(today()); },
   yesterdayTasks() { return this.byDate(yesterday()); },
 
-  add({ memberId, projectId = null, phaseId = null, content, estimatedHours, date = today() }) {
+  add({ memberId, projectId = null, phaseId = null, content, estimatedHours, note = '', date = today() }) {
     const list = this.all();
     const task = {
       id: genId(), date, memberId, projectId, phaseId,
       content, estimatedHours: parseFloat(estimatedHours),
+      note,
       completed: null,        // null=未確認, true=完了, false=未完了
       incompleteReason: '',
       createdAt: new Date().toISOString(),

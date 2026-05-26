@@ -562,7 +562,7 @@ function updateMorningBadge() {
    今日のタスク
    ============================================================ */
 let _taskFilter = { memberId: '', projectId: '' };
-let _taskFormData = { memberId: '', projectId: '', phaseId: '', content: '', estimatedHours: 1 };
+let _taskFormData = { memberId: '', projectId: '', phaseId: '', content: '', estimatedHours: 1, note: '' };
 let _bulkTaskData = { memberId: '', ownerMemberId: '', text: '', preview: null };
 
 function renderTodayTasks() {
@@ -652,6 +652,7 @@ function todayTaskRow(task) {
       <div class="task-accent-bar"></div>
       <div class="flex-1">
         <div class="task-title">${escHtml(task.content)}</div>
+        ${task.note ? `<div class="task-note">備考：${escHtml(task.note)}</div>` : ''}
         <div class="task-meta">
           <span>担当：${escHtml(ownerLabel)}</span>
           ${projectLabel ? `<span>${projectLabel}</span>` : '<span style="color:var(--text-3)">プロジェクト未選択</span>'}
@@ -680,7 +681,7 @@ function openTaskModal(editId) {
     const t = DB.Tasks.get(editId);
     if (t) _taskFormData = { ...t };
   } else {
-    _taskFormData = { memberId: '', projectId: '', phaseId: '', content: '', estimatedHours: 1 };
+    _taskFormData = { memberId: '', projectId: '', phaseId: '', content: '', estimatedHours: 1, note: '' };
   }
 
   const memberOpts  = members.map(m =>
@@ -720,6 +721,12 @@ function openTaskModal(editId) {
                 oninput="_taskFormData.content=this.value">${escHtml(_taskFormData.content || '')}</textarea>
     </div>
     <div class="form-group">
+      <label class="form-label">備考・問いかけ</label>
+      <textarea class="form-textarea" id="tf-note"
+                placeholder="困っていること、全員への確認、助けてほしいことなど"
+                oninput="_taskFormData.note=this.value">${escHtml(_taskFormData.note || '')}</textarea>
+    </div>
+    <div class="form-group">
       <label class="form-label">予測稼働時間（0.5h 単位）</label>
       <div class="hours-stepper">
         <button class="hours-btn" onclick="stepHours(-0.5)" type="button">－</button>
@@ -756,6 +763,7 @@ function stepHours(delta) {
 function saveTask(editId) {
   const memberId = document.getElementById('tf-member')?.value;
   const content  = document.getElementById('tf-content')?.value?.trim();
+  const note     = document.getElementById('tf-note')?.value?.trim() || '';
   if (!memberId) { showToast('担当者を選択してください', 'error'); return; }
   if (!content)  { showToast('タスク内容を入力してください', 'error'); return; }
 
@@ -764,6 +772,7 @@ function saveTask(editId) {
     projectId: _taskFormData.projectId || null,
     phaseId:   _taskFormData.phaseId   || null,
     content,
+    note,
     estimatedHours: _taskFormData.estimatedHours || 1,
   };
 
@@ -818,9 +827,9 @@ function openBulkTaskModal() {
     <div class="form-group">
       <label class="form-label">タスク本文 *</label>
       <textarea class="form-textarea bulk-textarea" id="bulk-text"
-                placeholder="プロジェクト名, タスク, 時間, 内容&#10;〇〇株式会社 パンフレット, 表紙修正, 1, 赤字反映と画像差し替え&#10;△△商事 Web更新, お知らせ更新, 0.5, 原稿を反映して公開確認">${escHtml(_bulkTaskData.text || '')}</textarea>
+                placeholder="プロジェクト名, タスク, 時間, 内容, 備考&#10;〇〇株式会社 パンフレット, 表紙修正, 1, 赤字反映と画像差し替え, 写真素材の確認をお願いします&#10;△△商事 Web更新, お知らせ更新, 0.5, 原稿を反映して公開確認, 公開前にURL確認をお願いします">${escHtml(_bulkTaskData.text || '')}</textarea>
       <div class="form-help">
-        1行に1タスク。区切りはカンマ、読点、タブのどれでもOKです。
+        1行に1タスク。最後の備考には、困っていること・全員への確認・助けてほしいことを書けます。
       </div>
     </div>
     <div id="bulk-preview">${_bulkTaskData.preview ? bulkPreviewHTML(_bulkTaskData.preview) : ''}</div>
@@ -865,6 +874,7 @@ function saveBulkTasks() {
         projectId: project?.id || null,
         phaseId: null,
         content: task.content,
+        note: task.note || '',
         estimatedHours: task.hours,
       });
     });
@@ -925,8 +935,8 @@ function parseChatTaskRows(text) {
       labelled = {};
       return;
     }
-    if (/^(プロジェクト名|プロジェクト|案件名|案件|タスク|作業|時間|工数|内容|詳細)\s*[:：]/.test(line)) {
-      const [, key, value] = line.match(/^(プロジェクト名|プロジェクト|案件名|案件|タスク|作業|時間|工数|内容|詳細)\s*[:：]\s*(.*)$/) || [];
+    if (/^(プロジェクト名|プロジェクト|案件名|案件|タスク|作業|時間|工数|内容|詳細|備考|コメント|相談)\s*[:：]/.test(line)) {
+      const [, key, value] = line.match(/^(プロジェクト名|プロジェクト|案件名|案件|タスク|作業|時間|工数|内容|詳細|備考|コメント|相談)\s*[:：]\s*(.*)$/) || [];
       if (key) {
         const normalizedKey = normalizeChatTaskKey(key);
         labelled[normalizedKey] = value.trim();
@@ -948,6 +958,7 @@ function parseChatTaskRows(text) {
     groupsByProject[projectName].tasks.push({
       content: row.content,
       hours: row.hours,
+      note: row.note,
     });
   });
 
@@ -962,30 +973,33 @@ function splitTaskRow(line) {
 }
 
 function isBulkHeaderRow(cells) {
-  return cells.join('').replace(/\s/g, '') === 'プロジェクト名タスク時間内容';
+  return /^プロジェクト名タスク時間内容(備考|コメント|相談)?$/.test(cells.join('').replace(/\s/g, ''));
 }
 
 function normalizeChatTaskKey(key) {
   if (/プロジェクト|案件/.test(key)) return 'projectName';
   if (/タスク|作業/.test(key)) return 'task';
   if (/時間|工数/.test(key)) return 'hours';
+  if (/備考|コメント|相談/.test(key)) return 'note';
   return 'detail';
 }
 
 function pushLabelledTask(rows, data) {
   if (!data || !Object.keys(data).length) return;
   if (!data.projectName && !data.task && !data.detail) return;
-  rows.push(rowToTask([data.projectName || '', data.task || '', data.hours || '', data.detail || '']));
+  rows.push(rowToTask([data.projectName || '', data.task || '', data.hours || '', data.detail || '', data.note || '']));
 }
 
 function rowToTask(cells) {
-  const [projectName = '', taskName = '', hoursText = '', detail = ''] = cells;
+  const [projectName = '', taskName = '', hoursText = '', detail = '', ...noteParts] = cells;
   const hours = extractHours(hoursText);
   const contentParts = [taskName, detail].map(s => s.trim()).filter(Boolean);
+  const note = noteParts.join('、').trim();
   return {
     projectName: projectName.trim(),
     content: contentParts.join(' - ') || '未入力タスク',
     hours,
+    note,
   };
 }
 
@@ -999,9 +1013,12 @@ async function copyBulkTaskTemplate() {
   const template = [
     '明日のタスクを以下の形式で送ってください。',
     '',
-    'プロジェクト名, タスク, 時間, 内容',
-    '例）〇〇株式会社 パンフレット, 表紙修正, 1, 赤字反映と画像差し替え',
-    '例）△△商事 Web更新, お知らせ更新, 0.5, 原稿を反映して公開確認',
+    '#task',
+    'プロジェクト名, タスク, 時間, 内容, 備考',
+    '例）〇〇株式会社 パンフレット, 表紙修正, 1, 赤字反映と画像差し替え, 写真素材の確認をお願いします',
+    '例）△△商事 Web更新, お知らせ更新, 0.5, 原稿を反映して公開確認, 公開前にURL確認をお願いします',
+    '',
+    '※ 備考には、困っていること・全員への確認・助けてほしいことを書いてください。',
   ].join('\n');
 
   try {
@@ -1104,7 +1121,14 @@ function bulkPreviewHTML(parsed) {
                 : '<span class="status-badge personal">個人タスク</span>'}
             </div>
             <ul>
-              ${group.tasks.map(task => `<li>${escHtml(task.content)} <span>${task.hours}h</span></li>`).join('')}
+              ${group.tasks.map(task => `
+                <li>
+                  <div>
+                    ${escHtml(task.content)}
+                    ${task.note ? `<div class="bulk-note">備考：${escHtml(task.note)}</div>` : ''}
+                  </div>
+                  <span>${task.hours}h</span>
+                </li>`).join('')}
             </ul>
           </div>`;
       }).join('')}
