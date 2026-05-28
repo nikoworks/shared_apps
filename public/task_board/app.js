@@ -164,6 +164,13 @@ function getMemberPageUrl(memberId) {
   return url.toString();
 }
 
+function getMemberProjectEditUrl(memberId, projectId) {
+  const url = new URL(window.location.href);
+  if (memberId) url.searchParams.set('member', memberId);
+  url.searchParams.set('project', projectId);
+  return url.toString();
+}
+
 async function copyMemberPageUrl(memberId) {
   const url = getMemberPageUrl(memberId);
   try {
@@ -599,6 +606,7 @@ function markTaskFail(taskId) {
     DB.Tasks.setCompletion(taskId, null, '');
   } else {
     DB.Tasks.setCompletion(taskId, false, '');
+    if (task.date < DB.today()) DB.Tasks.carryOverTask(taskId);
   }
   renderMorningCheck();
 }
@@ -625,6 +633,8 @@ function updateMorningBadge() {
 let _taskFilter = { memberId: '', projectId: '', date: '' };
 let _taskFormData = { memberId: '', projectId: '', phaseId: '', content: '', estimatedHours: 1, note: '', date: '' };
 let _bulkTaskData = { memberId: '', ownerMemberId: '', date: '', text: '', preview: null };
+const CHATWORK_ROOM_KEY = 'tb_chatwork_room_id';
+const CHATWORK_IMPORT_KEY = 'tb_chatwork_import_key';
 
 function renderTodayTasks() {
   const main       = document.getElementById('main-content');
@@ -721,6 +731,7 @@ function todayTaskRow(task) {
   const phaseName    = getPhaseName(task);
   const projectLabel = getProjectLabel(task);
   const ownerLabel = getTaskOwnerLabel(task);
+  const linkedAsk = getTaskLinkedAsk(task.id);
   return `
     <div class="task-row" id="task-row-${task.id}">
       <div class="task-accent-bar"></div>
@@ -728,9 +739,12 @@ function todayTaskRow(task) {
         <div class="task-title">${escHtml(task.content)}</div>
         ${task.note ? `<div class="task-note">備考：${escHtml(task.note)}</div>` : ''}
         <div class="task-meta">
+          <span class="tag tag-date">${DB.fmtDate(task.date)}</span>
           <span>担当：${escHtml(ownerLabel)}</span>
           ${projectLabel ? `<span>${projectLabel}</span>` : '<span style="color:var(--text-3)">プロジェクト未選択</span>'}
           ${phaseName ? `<span class="tag tag-phase">${phaseName}</span>` : ''}
+          ${task.carriedFromTaskId ? '<span class="tag tag-carry">繰り越し</span>' : ''}
+          ${linkedAsk ? '<span class="tag tag-ask">確認あり</span>' : ''}
           <span class="tag-hours">${task.estimatedHours}h</span>
         </div>
       </div>
@@ -755,13 +769,13 @@ function renderMemberAskPanel(memberId) {
     <div class="ask-panel">
       ${toMe.length ? `
         <div class="ask-section">
-          <div class="ask-section-title">あなた宛の確認・お願い</div>
+          <div class="ask-section-title">あなた宛の進行確認</div>
           ${toMe.map(askCardHTML).join('')}
         </div>
       ` : ''}
       ${fromMe.length ? `
         <div class="ask-section">
-          <div class="ask-section-title">自分が出した確認・お願い</div>
+          <div class="ask-section-title">自分が出した進行確認</div>
           ${fromMe.map(askCardHTML).join('')}
         </div>
       ` : ''}
@@ -772,6 +786,7 @@ function askCardHTML(ask) {
   const fromMember = ask.fromMemberId ? DB.Members.get(ask.fromMemberId) : null;
   const toMember = ask.toMemberId ? DB.Members.get(ask.toMemberId) : null;
   const projectLabel = ask.projectId ? projectLabelById(ask.projectId) : ask.projectName;
+  const relatedTask = ask.taskId ? DB.Tasks.get(ask.taskId) : null;
   const typeClass = normalizeAskType(ask.type);
   return `
     <div class="ask-card ${typeClass}">
@@ -781,6 +796,7 @@ function askCardHTML(ask) {
           ${projectLabel ? `<span class="ask-project">${escHtml(projectLabel)}</span>` : ''}
           ${ask.dueText ? `<span class="ask-due">期限：${escHtml(ask.dueText)}</span>` : ''}
         </div>
+        ${relatedTask ? `<div class="ask-related">関連タスク：${escHtml(relatedTask.content)}</div>` : ''}
         <div class="ask-content">${escHtml(ask.content)}</div>
         <div class="ask-meta">
           ${fromMember ? `依頼元：${escHtml(fromMember.name)}` : ''}
@@ -806,9 +822,14 @@ function projectLabelById(projectId) {
   return p ? `${p.clientName} / ${p.name}` : '';
 }
 
+function getTaskLinkedAsk(taskId) {
+  if (!taskId) return null;
+  return DB.Asks.all().find(a => a.taskId === taskId && a.status !== 'done') || null;
+}
+
 function completeAsk(askId) {
   DB.Asks.update(askId, { status: 'done', completedAt: new Date().toISOString() });
-  showToast('確認・お願いを完了にしました', 'success');
+  showToast('進行確認を完了にしました', 'success');
   renderTodayTasks();
 }
 
@@ -865,6 +886,9 @@ function openTaskModal(editId) {
   const phaseOpts = `<option value="">フェーズなし</option>` +
     curPhases.map(ph =>
       `<option value="${ph.id}" ${_taskFormData.phaseId === ph.id ? 'selected' : ''}>${ph.name}</option>`).join('');
+  const linkedAsk = editId ? getTaskLinkedAsk(editId) : null;
+  const askMemberOpts = `<option value="">宛先を選択...</option>` + members.map(m =>
+    `<option value="${m.id}" ${linkedAsk?.toMemberId === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
 
   openModal(`
     <div class="form-group">
@@ -899,9 +923,9 @@ function openTaskModal(editId) {
                 oninput="_taskFormData.content=this.value">${escHtml(_taskFormData.content || '')}</textarea>
     </div>
     <div class="form-group">
-      <label class="form-label">備考・問いかけ</label>
+      <label class="form-label">備考</label>
       <textarea class="form-textarea" id="tf-note"
-                placeholder="困っていること、全員への確認、助けてほしいことなど"
+                placeholder="作業メモ、補足、引き継ぎのメモなど"
                 oninput="_taskFormData.note=this.value">${escHtml(_taskFormData.note || '')}</textarea>
     </div>
     <div class="form-group">
@@ -910,6 +934,27 @@ function openTaskModal(editId) {
         <button class="hours-btn" onclick="stepHours(-0.5)" type="button">－</button>
         <span class="hours-display" id="tf-hours-display">${_taskFormData.estimatedHours || 1}h</span>
         <button class="hours-btn" onclick="stepHours(0.5)" type="button">＋</button>
+      </div>
+    </div>
+    <div class="task-ask-box">
+      <div class="task-ask-title">進行に関わる確認</div>
+      <div class="form-help">次の工程・納期・判断に影響する確認だけを入れます。個人的な作業相談はここに残さず、直接確認してください。</div>
+      <div class="task-ask-grid">
+        <div class="form-group">
+          <label class="form-label">誰に</label>
+          <select class="form-select" id="tf-ask-to">${askMemberOpts}</select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">いつまでに</label>
+          <input type="text" class="form-input" id="tf-ask-due"
+                 value="${escHtml(linkedAsk?.dueText || '')}"
+                 placeholder="例：今日中 / 5/29 / 午前中">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">内容</label>
+        <textarea class="form-textarea" id="tf-ask-content"
+                  placeholder="例：この画像で次工程へ進めてよいか確認してください">${escHtml(linkedAsk?.content || '')}</textarea>
       </div>
     </div>
     <div class="modal-actions">
@@ -943,8 +988,13 @@ function saveTask(editId) {
   const content  = document.getElementById('tf-content')?.value?.trim();
   const note     = document.getElementById('tf-note')?.value?.trim() || '';
   const taskDate = document.getElementById('tf-date')?.value || DB.today();
+  const askPayload = readTaskAskForm();
   if (!memberId) { showToast('担当者を選択してください', 'error'); return; }
   if (!content)  { showToast('タスク内容を入力してください', 'error'); return; }
+  if (askPayload.hasAny && (!askPayload.toMemberId || !askPayload.dueText || !askPayload.content)) {
+    showToast('進行確認は「誰に」「いつまでに」「内容」を入力してください', 'error');
+    return;
+  }
 
   const payload = {
     memberId,
@@ -956,15 +1006,60 @@ function saveTask(editId) {
     estimatedHours: _taskFormData.estimatedHours || 1,
   };
 
+  let savedTask;
   if (editId) {
     DB.Tasks.update(editId, payload);
+    savedTask = DB.Tasks.get(editId);
     showToast('タスクを更新しました', 'success');
   } else {
-    DB.Tasks.add(payload);
+    savedTask = DB.Tasks.add(payload);
     showToast('タスクを追加しました', 'success');
   }
+  saveTaskLinkedAsk(savedTask, askPayload);
   closeModal();
   renderTodayTasks();
+}
+
+function readTaskAskForm() {
+  const toMemberId = document.getElementById('tf-ask-to')?.value || '';
+  const dueText = document.getElementById('tf-ask-due')?.value?.trim() || '';
+  const content = document.getElementById('tf-ask-content')?.value?.trim() || '';
+  return {
+    toMemberId,
+    dueText,
+    content,
+    hasAny: Boolean(toMemberId || dueText || content),
+  };
+}
+
+function saveTaskLinkedAsk(task, askPayload) {
+  if (!task) return;
+  const existing = getTaskLinkedAsk(task.id);
+  if (!askPayload.hasAny) {
+    if (existing) DB.Asks.remove(existing.id);
+    return;
+  }
+
+  const project = task.projectId ? DB.Projects.get(task.projectId) : null;
+  const patch = {
+    type: '確認',
+    fromMemberId: task.memberId,
+    toMemberId: askPayload.toMemberId,
+    toName: '',
+    content: askPayload.content,
+    projectId: task.projectId || null,
+    projectName: project ? `${project.clientName} / ${project.name}` : '',
+    dueText: askPayload.dueText,
+    status: 'open',
+    date: task.date,
+    taskId: task.id,
+  };
+
+  if (existing) {
+    DB.Asks.update(existing.id, patch);
+  } else {
+    DB.Asks.add(patch);
+  }
 }
 
 function deleteTask(taskId) {
@@ -1011,6 +1106,25 @@ function openBulkTaskModal() {
       <label class="form-label">作業日 *</label>
       <input type="date" class="form-input" id="bulk-date" value="${_bulkTaskData.date || DB.today()}">
     </div>
+    <div class="chatwork-import-box">
+      <div class="task-ask-title">Chatworkから取得</div>
+      <div class="form-help">最新100件から #task / #ask を含む投稿だけ取得します。取得後、内容を確認してから登録してください。</div>
+      <div class="chatwork-import-grid">
+        <div class="form-group">
+          <label class="form-label">ルームID</label>
+          <input type="text" class="form-input" id="cw-room-id"
+                 value="${escHtml(getSavedChatworkRoomId())}"
+                 placeholder="例：123456789">
+        </div>
+        <div class="form-group">
+          <label class="form-label">取り込みキー</label>
+          <input type="password" class="form-input" id="cw-import-key"
+                 value="${escHtml(getSavedChatworkImportKey())}"
+                 placeholder="未設定なら空でOK">
+        </div>
+      </div>
+      <button class="btn btn-ghost btn-sm" type="button" onclick="importChatworkMessages()">Chatwork取得</button>
+    </div>
     <div class="form-group">
       <label class="form-label">タスク本文 *</label>
       <textarea class="form-textarea bulk-textarea" id="bulk-text"
@@ -1038,6 +1152,70 @@ function previewBulkTasks() {
 
   const previewEl = document.getElementById('bulk-preview');
   if (previewEl) previewEl.innerHTML = bulkPreviewHTML(_bulkTaskData.preview);
+}
+
+function getSavedChatworkRoomId() {
+  return localStorage.getItem(CHATWORK_ROOM_KEY) || '';
+}
+
+function getSavedChatworkImportKey() {
+  return localStorage.getItem(CHATWORK_IMPORT_KEY) || '';
+}
+
+async function importChatworkMessages() {
+  const roomId = document.getElementById('cw-room-id')?.value?.trim() || '';
+  const importKey = document.getElementById('cw-import-key')?.value?.trim() || '';
+  const textarea = document.getElementById('bulk-text');
+  if (!roomId) {
+    showToast('ChatworkのルームIDを入力してください', 'error');
+    return;
+  }
+  if (!textarea) return;
+
+  localStorage.setItem(CHATWORK_ROOM_KEY, roomId);
+  if (importKey) localStorage.setItem(CHATWORK_IMPORT_KEY, importKey);
+
+  try {
+    showToast('Chatworkから取得しています', 'info');
+    const res = await fetch(`/api/chatwork/messages?roomId=${encodeURIComponent(roomId)}&force=1`, {
+      headers: importKey ? { 'x-taskboard-key': importKey } : {},
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast(data.error || 'Chatwork取得に失敗しました', 'error');
+      return;
+    }
+
+    const text = chatworkMessagesToBulkText(data.messages || []);
+    if (!text) {
+      showToast('#task / #ask を含む投稿が見つかりませんでした', 'info');
+      return;
+    }
+
+    if (textarea.value.trim() && !confirm('今の入力欄をChatworkの内容で置き換えますか？')) return;
+    textarea.value = text;
+    _bulkTaskData.text = text;
+    previewBulkTasks();
+    showToast(`${data.importedCount || 0}件のChatwork投稿を取り込みました`, 'success');
+  } catch {
+    showToast('Chatwork取得APIに接続できませんでした。公開版で設定を確認してください', 'error');
+  }
+}
+
+function chatworkMessagesToBulkText(messages) {
+  return messages
+    .map(m => normalizeChatworkBody(m.body || ''))
+    .filter(body => /(^|\n)\s*#(?:task|ask)\b/i.test(body))
+    .join('\n\n');
+}
+
+function normalizeChatworkBody(body) {
+  return String(body || '')
+    .replace(/\[To:\d+\][^\n]*\n?/g, '')
+    .replace(/\[rp aid=\d+ to=\d+-\d+\][^\n]*\n?/g, '')
+    .replace(/\[info\]|\[\/info\]/g, '')
+    .replace(/\[title\]|\[\/title\]/g, '')
+    .trim();
 }
 
 function saveBulkTasks() {
@@ -1090,7 +1268,7 @@ function saveBulkTasks() {
   _taskFilter.date = date;
   _bulkTaskData = { memberId, ownerMemberId, date, text: '', preview: null };
   closeModal();
-  showToast(`${totalTasks}件のタスク、${totalAsks}件の確認・お願いを登録しました`, 'success');
+  showToast(`${totalTasks}件のタスク、${totalAsks}件の進行確認を登録しました`, 'success');
   renderTodayTasks();
 }
 
@@ -1299,12 +1477,13 @@ async function copyBulkTaskTemplate() {
     '',
     '※ 先頭が「+」なら、直前と同じプロジェクトです。',
     '※ 先頭が「?」なら、プロジェクト未設定として登録されます。',
-    '※ 備考には、困っていること・全員への確認・助けてほしいことを書いてください。',
+    '※ 備考には、作業メモ・補足・引き継ぎを書いてください。',
     '',
     '#ask',
+    '※ #ask は進行が止まる確認、次工程に渡す確認だけに使ってください。',
     '種別, 宛先, 内容, 関連プロジェクト, 期限',
     '例）確認, 田中さん, A社LPの画像方向を確認してください, A社サイト制作, 今日中',
-    '例）質問, 鈴木さん, バナーサイズは1080x1080で合っていますか？, A社広告, 今日中',
+    '例）確認, 鈴木さん, 広告入稿に進めてよいか確認してください, A社広告, 今日中',
   ].join('\n');
 
   try {
@@ -1434,7 +1613,7 @@ function bulkPreviewHTML(parsed) {
       ${asks.length ? `
         <div class="bulk-preview-group ask-preview-group">
           <div class="bulk-project-name">
-            <span class="status-badge ask">確認・お願い</span>
+            <span class="status-badge ask">進行確認</span>
             ${asks.length}件
           </div>
           <ul>
@@ -1498,7 +1677,8 @@ let _projectView = 'active'; // 'active' | 'archived'
 
 function renderProjects() {
   const main     = document.getElementById('main-content');
-  const projects = _projectView === 'active' ? DB.Projects.active() : DB.Projects.archived();
+  const projects = sortProjectsByDelivery(_projectView === 'active' ? DB.Projects.active() : DB.Projects.archived());
+  const missingDelivery = projects.filter(p => !p.deliveryDate);
 
   main.innerHTML = `
     <div class="page-header"><div class="page-header-left">
@@ -1506,6 +1686,12 @@ function renderProjects() {
       <p>プロジェクトとフェーズの管理</p>
     </div></div>
     <div class="page-body fade-in">
+      ${missingDelivery.length ? `
+        <div class="banner banner-warning">
+          <span>納品日未設定のプロジェクトが ${missingDelivery.length}件あります。一定時間入力がなければ佐久間さんへChatworkで一報してください。</span>
+          <button class="btn btn-ghost btn-sm" onclick="copySakumaDeliveryNotice()">佐久間さんへ一報</button>
+        </div>
+      ` : ''}
 
       <div class="action-row">
         <div class="tab-bar" style="margin-bottom:0">
@@ -1530,6 +1716,15 @@ function renderProjects() {
     </div>`;
 }
 
+function sortProjectsByDelivery(projects) {
+  return [...projects].sort((a, b) => {
+    if (a.deliveryDate && b.deliveryDate) return a.deliveryDate.localeCompare(b.deliveryDate);
+    if (a.deliveryDate) return -1;
+    if (b.deliveryDate) return 1;
+    return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+  });
+}
+
 function projectCard(project) {
   const phases    = project.phases || [];
   const allTasks  = DB.Tasks.all();
@@ -1537,6 +1732,7 @@ function projectCard(project) {
   const statusBadges = [
     project.projectType === 'recurring' ? '<span class="status-badge recurring">定期案件</span>' : '',
     project.isProvisional ? '<span class="status-badge provisional">仮登録</span>' : '',
+    !project.deliveryDate ? '<span class="status-badge missing">納期未設定</span>' : '',
   ].filter(Boolean).join('');
 
   const stepsHTML = phases.map((ph, i) => {
@@ -1580,13 +1776,22 @@ function projectCard(project) {
             ${statusBadges}
             ${project.deliveryDate ? dayChipHTML(project.deliveryDate) : ''}
           </div>
-          <div style="font-size:11.5px;color:var(--text-3);margin-top:3px;display:flex;gap:12px;flex-wrap:wrap">
-            ${project.deliveryDate ? `<span>納品日：${DB.fmtDate(project.deliveryDate)}</span>` : ''}
-            ${project.budget ? `<span>予算：¥${Number(project.budget).toLocaleString()}</span>` : ''}
-            ${project.recurringSeries ? `<span>定期案件：${escHtml(project.recurringSeries)}</span>` : ''}
-            <span>窓口：${owner ? escHtml(owner.name) : '未設定'}</span>
-            ${project.detailsDueAt ? `<span>詳細登録期限：${DB.fmtDate(project.detailsDueAt)}</span>` : ''}
+          <div class="project-meta">
+            <span class="project-meta-item ${project.deliveryDate ? '' : 'missing'}">
+              <strong>納品日</strong>${project.deliveryDate ? DB.fmtDate(project.deliveryDate) : '未設定'}
+            </span>
+            ${project.budget ? `<span class="project-meta-item"><strong>予算</strong>¥${Number(project.budget).toLocaleString()}</span>` : ''}
+            ${project.recurringSeries ? `<span class="project-meta-item"><strong>定期案件</strong>${escHtml(project.recurringSeries)}</span>` : ''}
+            <span class="project-meta-item"><strong>窓口</strong>${owner ? escHtml(owner.name) : '未設定'}</span>
+            ${project.detailsDueAt ? `<span class="project-meta-item"><strong>詳細登録期限</strong>${DB.fmtDate(project.detailsDueAt)}</span>` : ''}
           </div>
+          ${!project.deliveryDate ? `
+            <div class="project-warning">
+              納品日が未設定です。
+              <button class="btn btn-ghost btn-sm" onclick="copyDeliveryDateRequest('${project.id}')">Chatwork文をコピー</button>
+              <button class="btn btn-ghost btn-sm" onclick="copySakumaDeliveryNotice('${project.id}')">佐久間さんへ一報</button>
+            </div>
+          ` : ''}
         </div>
         <div style="display:flex;gap:5px;flex-shrink:0;flex-wrap:wrap">
           <button class="btn btn-ghost btn-sm" onclick="openProjectModal('${project.id}')">編集</button>
@@ -1723,7 +1928,7 @@ function openProjectModal(editId) {
       <input class="form-input" id="pj-name" placeholder="例：会社案内パンフレット" value="${escHtml(project?.name||'')}">
     </div>
     <div class="form-group">
-      <label class="form-label">納品日</label>
+      <label class="form-label">納品日 *</label>
       <input type="date" class="form-input" id="pj-delivery" value="${project?.deliveryDate||''}">
     </div>
     <div class="form-group">
@@ -1764,10 +1969,12 @@ function saveProjectNew() {
   const clientName = document.getElementById('pj-client')?.value?.trim();
   const name       = document.getElementById('pj-name')?.value?.trim();
   if (!clientName || !name) { showToast('クライアント名とプロジェクト名は必須です', 'error'); return; }
+  const deliveryDate = document.getElementById('pj-delivery')?.value || '';
+  if (!confirmProjectDeliveryDate(deliveryDate)) return;
   const projectType = document.getElementById('pj-type')?.value || 'standard';
   DB.Projects.add({
     clientName, name,
-    deliveryDate: document.getElementById('pj-delivery')?.value || '',
+    deliveryDate,
     budget:       document.getElementById('pj-budget')?.value   || '',
     templateId:   document.getElementById('pj-template')?.value || '',
     projectType,
@@ -1785,10 +1992,12 @@ function saveProjectEdit(projectId) {
   const clientName = document.getElementById('pj-client')?.value?.trim();
   const name       = document.getElementById('pj-name')?.value?.trim();
   if (!clientName || !name) { showToast('クライアント名とプロジェクト名は必須です', 'error'); return; }
+  const deliveryDate = document.getElementById('pj-delivery')?.value || '';
+  if (!confirmProjectDeliveryDate(deliveryDate)) return;
   const projectType = document.getElementById('pj-type')?.value || 'standard';
   DB.Projects.update(projectId, {
     clientName, name,
-    deliveryDate: document.getElementById('pj-delivery')?.value || '',
+    deliveryDate,
     budget:       document.getElementById('pj-budget')?.value   || '',
     projectType,
     recurringSeries: document.getElementById('pj-recurring')?.value?.trim() || '',
@@ -1799,6 +2008,68 @@ function saveProjectEdit(projectId) {
   closeModal();
   showToast('プロジェクトを更新しました', 'success');
   renderProjects();
+}
+
+function confirmProjectDeliveryDate(deliveryDate) {
+  if (deliveryDate) return true;
+  return confirm('納品日が未入力です。納品日は必須項目です。\n未入力のまま保存すると、プロジェクト画面に警告が出ます。\nこのまま保存しますか？');
+}
+
+async function copyDeliveryDateRequest(projectId) {
+  const project = DB.Projects.get(projectId);
+  if (!project) return;
+  const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
+  const url = getMemberProjectEditUrl(owner?.id || '', project.id);
+  const projectName = `${project.clientName} / ${project.name}`;
+  const message = [
+    '[info][title]納品日の確認をお願いします[/title]',
+    `${projectName} の納品日が未設定です。`,
+    '下のURLから開いて、プロジェクト編集画面で納品日を入力してください。',
+    '',
+    `入力URL：${url}`,
+    '',
+    '一定時間入力がない場合は、佐久間さんへChatworkで一報します。',
+    '[/info]',
+  ].join('\n');
+
+  try {
+    await navigator.clipboard.writeText(message);
+    showToast('Chatwork用の納期確認文をコピーしました', 'success');
+  } catch {
+    window.prompt('この文章をコピーしてください', message);
+  }
+}
+
+async function copySakumaDeliveryNotice(projectId = '') {
+  const projects = projectId
+    ? [DB.Projects.get(projectId)].filter(Boolean)
+    : sortProjectsByDelivery(DB.Projects.active().filter(p => !p.deliveryDate));
+
+  if (!projects.length) {
+    showToast('納品日未設定のプロジェクトはありません', 'info');
+    return;
+  }
+
+  const message = [
+    '[info][title]納品日未設定の確認をお願いします[/title]',
+    '一定時間たっても納品日が入力されていないプロジェクトがあります。',
+    '確認して、TaskBoardに納品日を入力してください。',
+    '',
+    ...projects.map((p, i) => {
+      const owner = p.ownerMemberId ? DB.Members.get(p.ownerMemberId) : null;
+      return `${i + 1}. ${p.clientName} / ${p.name}${owner ? `（窓口：${owner.name}）` : ''}`;
+    }),
+    '',
+    `確認URL：${window.location.origin}${window.location.pathname}`,
+    '[/info]',
+  ].join('\n');
+
+  try {
+    await navigator.clipboard.writeText(message);
+    showToast('佐久間さん宛のChatwork文をコピーしました', 'success');
+  } catch {
+    window.prompt('この文章をコピーしてください', message);
+  }
 }
 
 function archiveProject(id) {
@@ -2128,6 +2399,7 @@ function updateSidebarDate() {
 document.addEventListener('DOMContentLoaded', async () => {
   await DB.initStore();
   DB.seedDemoData();       // 初回のみデモデータを投入
+  const carriedCount = DB.Tasks.carryOverOpenTasks();
   const urlMember = resolveMemberFromUrl();
   if (urlMember) {
     _personalMemberId = urlMember.id;
@@ -2136,4 +2408,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   updateSidebarDate();
   updateMorningBadge();
   navigate(_personalMemberId ? 'tasks' : 'dashboard');
+  openUrlRequestedProject();
+  if (carriedCount > 0) {
+    showToast(`${carriedCount}件の未達成タスクを今日へ繰り越しました`, 'info');
+  }
 });
+
+function openUrlRequestedProject() {
+  const params = new URLSearchParams(window.location.search);
+  const projectId = params.get('project');
+  if (!projectId || !DB.Projects.get(projectId)) return;
+
+  setTimeout(() => {
+    navigate('projects');
+    openProjectModal(projectId);
+  }, 250);
+}

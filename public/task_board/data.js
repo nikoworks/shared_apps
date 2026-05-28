@@ -328,12 +328,17 @@ const Tasks = {
   todayTasks()     { return this.byDate(today()); },
   yesterdayTasks() { return this.byDate(yesterday()); },
 
-  add({ memberId, projectId = null, phaseId = null, content, estimatedHours, note = '', date = today() }) {
+  add({
+    memberId, projectId = null, phaseId = null, content, estimatedHours,
+    note = '', date = today(), carriedFromTaskId = null,
+  }) {
     const list = this.all();
     const task = {
       id: genId(), date, memberId, projectId, phaseId,
       content, estimatedHours: parseFloat(estimatedHours),
       note,
+      carriedFromTaskId,
+      carriedOverToTaskId: null,
       completed: null,        // null=未確認, true=完了, false=未完了
       incompleteReason: '',
       createdAt: new Date().toISOString(),
@@ -352,6 +357,41 @@ const Tasks = {
     this.update(id, { completed, incompleteReason: reason });
   },
   get(id) { return this.all().find(t => t.id === id) ?? null; },
+
+  carryOverTask(taskId, targetDate = today()) {
+    const source = this.get(taskId);
+    if (!source || source.completed === true || source.date >= targetDate) return null;
+    if (source.carriedOverToTaskId && this.get(source.carriedOverToTaskId)) return null;
+
+    const exists = this.all().find(t => t.carriedFromTaskId === source.id && t.date === targetDate);
+    if (exists) return exists;
+
+    const carried = this.add({
+      memberId: source.memberId,
+      projectId: source.projectId,
+      phaseId: source.phaseId,
+      content: source.content,
+      estimatedHours: source.estimatedHours,
+      note: source.note,
+      date: targetDate,
+      carriedFromTaskId: source.id,
+    });
+    this.update(source.id, { carriedOverToTaskId: carried.id });
+    return carried;
+  },
+
+  carryOverOpenTasks(targetDate = today()) {
+    const candidates = this.all().filter(t =>
+      t.date < targetDate &&
+      t.completed !== true &&
+      !t.carriedOverToTaskId
+    );
+    let count = 0;
+    candidates.forEach(t => {
+      if (this.carryOverTask(t.id, targetDate)) count++;
+    });
+    return count;
+  },
 
   /** 指定プロジェクト・フェーズのタスク完了率 */
   progressByPhase(projectId, phaseId) {
@@ -397,7 +437,7 @@ const Asks = {
   add({
     type = '質問', fromMemberId = '', toMemberId = '', toName = '',
     content, projectId = null, projectName = '', dueText = '', status = 'open',
-    date = today(),
+    date = today(), taskId = null,
   }) {
     const list = this.all();
     const ask = {
@@ -409,6 +449,7 @@ const Asks = {
       content,
       projectId,
       projectName,
+      taskId,
       dueText,
       status,
       date,
