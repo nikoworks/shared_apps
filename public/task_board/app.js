@@ -1088,6 +1088,7 @@ function openBulkTaskModal() {
     `<option value="${m.id}" ${_bulkTaskData.memberId === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
   const ownerOpts = members.map(m =>
     `<option value="${m.id}" ${_bulkTaskData.ownerMemberId === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
+  const showChatworkImport = !_personalMemberId && !_taskFilter.memberId;
 
   openModal(`
     <div class="form-group">
@@ -1106,7 +1107,7 @@ function openBulkTaskModal() {
       <label class="form-label">作業日 *</label>
       <input type="date" class="form-input" id="bulk-date" value="${_bulkTaskData.date || DB.today()}">
     </div>
-    <div class="chatwork-import-box">
+    ${showChatworkImport ? `<div class="chatwork-import-box">
       <div class="task-ask-title">Chatworkから取得</div>
       <div class="form-help">最新100件から #task / #ask を含む投稿だけ取得します。取得後、内容を確認してから登録してください。</div>
       <div class="chatwork-import-grid">
@@ -1124,7 +1125,7 @@ function openBulkTaskModal() {
         </div>
       </div>
       <button class="btn btn-ghost btn-sm" type="button" onclick="importChatworkMessages()">Chatwork取得</button>
-    </div>
+    </div>` : ''}
     <div class="form-group">
       <label class="form-label">タスク本文 *</label>
       <textarea class="form-textarea bulk-textarea" id="bulk-text"
