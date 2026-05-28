@@ -576,6 +576,11 @@ body {
   background: var(--bg-glass);
   border-color: var(--border);
 }
+.status-badge.ask {
+  color: #a78bfa;
+  background: rgba(167,139,250,.12);
+  border-color: rgba(167,139,250,.24);
+}
 
 .bulk-preview {
   margin-top: 12px;
@@ -594,6 +599,24 @@ body {
   font-size: 13px;
   font-weight: 800;
   margin-bottom: 10px;
+}
+.bulk-alert {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(245,158,11,.3);
+  border-radius: var(--radius-sm);
+  background: var(--warning-lite);
+  color: var(--text-1);
+  font-size: 12.5px;
+}
+.bulk-alert p {
+  margin-top: 3px;
+  color: var(--text-2);
+  line-height: 1.5;
 }
 .bulk-preview-group {
   padding: 10px 0;
@@ -632,6 +655,12 @@ body {
   color: var(--warning);
   font-size: 12px;
   line-height: 1.45;
+}
+.ask-inline-type {
+  display: inline-block;
+  margin-right: 5px;
+  color: var(--primary);
+  font-weight: 800;
 }
 
 /* Streak chip */
@@ -682,6 +711,76 @@ body {
   color: var(--text-1);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.ask-panel {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.ask-section {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(255,255,255,.035);
+}
+.ask-section-title {
+  margin-bottom: 10px;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text-1);
+}
+.ask-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--primary);
+  border-radius: var(--radius-sm);
+  background: rgba(15,23,42,.22);
+}
+.ask-card + .ask-card { margin-top: 8px; }
+.ask-card.confirm { border-left-color: var(--warning); }
+.ask-card.request { border-left-color: var(--danger); }
+.ask-card.share { border-left-color: var(--success); }
+.ask-main { min-width: 0; }
+.ask-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+}
+.ask-type {
+  padding: 2px 7px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--primary);
+  background: var(--primary-lite);
+}
+.ask-project,
+.ask-due {
+  font-size: 11px;
+  color: var(--text-2);
+}
+.ask-content {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-1);
+  line-height: 1.5;
+}
+.ask-meta {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.ask-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 .task-meta {
   display: flex;

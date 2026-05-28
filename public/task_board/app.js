@@ -105,6 +105,31 @@ function getTaskOwnerLabel(task) {
   return member ? member.name : '未設定';
 }
 
+function normalizeNameText(value) {
+  return String(value ?? '')
+    .replace(/さん|様|氏/g, '')
+    .replace(/\s+/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+function findMemberByName(name) {
+  const target = normalizeNameText(name);
+  if (!target) return null;
+  return DB.Members.all().find(m => normalizeNameText(m.name) === target) || null;
+}
+
+function findProjectByName(name) {
+  const target = normalizeMatchText(name);
+  if (!target) return null;
+  return DB.Projects.active().find(p =>
+    normalizeMatchText(`${p.clientName} ${p.name}`) === target ||
+    normalizeMatchText(`${p.clientName}/${p.name}`) === target ||
+    normalizeMatchText(p.clientName) === target ||
+    normalizeMatchText(p.name) === target
+  ) || null;
+}
+
 /** 未登録案件の窓口デフォルト。佐久間/私/自分がいなければ先頭メンバー */
 function getDefaultOwnerMemberId() {
   const members = DB.Members.all();
@@ -638,6 +663,7 @@ function renderTodayTasks() {
           <button class="btn btn-ghost btn-sm" onclick="_taskFilter.memberId='';renderTodayTasks()">全メンバー表示</button>
         </div>
       ` : ''}
+      ${_taskFilter.memberId ? renderMemberAskPanel(_taskFilter.memberId) : ''}
 
       <div class="action-row">
         <div class="filter-bar">
@@ -713,6 +739,96 @@ function todayTaskRow(task) {
         <button class="btn btn-danger btn-sm" onclick="deleteTask('${task.id}')">削除</button>
       </div>
     </div>`;
+}
+
+function renderMemberAskPanel(memberId) {
+  const toMe = DB.Asks.byMember(memberId)
+    .filter(a => a.status !== 'done')
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  const fromMe = DB.Asks.fromMember(memberId)
+    .filter(a => a.status !== 'done')
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+
+  if (!toMe.length && !fromMe.length) return '';
+
+  return `
+    <div class="ask-panel">
+      ${toMe.length ? `
+        <div class="ask-section">
+          <div class="ask-section-title">あなた宛の確認・お願い</div>
+          ${toMe.map(askCardHTML).join('')}
+        </div>
+      ` : ''}
+      ${fromMe.length ? `
+        <div class="ask-section">
+          <div class="ask-section-title">自分が出した確認・お願い</div>
+          ${fromMe.map(askCardHTML).join('')}
+        </div>
+      ` : ''}
+    </div>`;
+}
+
+function askCardHTML(ask) {
+  const fromMember = ask.fromMemberId ? DB.Members.get(ask.fromMemberId) : null;
+  const toMember = ask.toMemberId ? DB.Members.get(ask.toMemberId) : null;
+  const projectLabel = ask.projectId ? projectLabelById(ask.projectId) : ask.projectName;
+  const typeClass = normalizeAskType(ask.type);
+  return `
+    <div class="ask-card ${typeClass}">
+      <div class="ask-main">
+        <div class="ask-head">
+          <span class="ask-type">${escHtml(ask.type || '質問')}</span>
+          ${projectLabel ? `<span class="ask-project">${escHtml(projectLabel)}</span>` : ''}
+          ${ask.dueText ? `<span class="ask-due">期限：${escHtml(ask.dueText)}</span>` : ''}
+        </div>
+        <div class="ask-content">${escHtml(ask.content)}</div>
+        <div class="ask-meta">
+          ${fromMember ? `依頼元：${escHtml(fromMember.name)}` : ''}
+          ${toMember ? `宛先：${escHtml(toMember.name)}` : ask.toName ? `宛先：${escHtml(ask.toName)}` : ''}
+        </div>
+      </div>
+      <div class="ask-actions">
+        <button class="btn btn-ghost btn-sm" onclick="copyAskReplyMessage('${ask.id}')">返信文</button>
+        <button class="btn btn-success btn-sm" onclick="completeAsk('${ask.id}')">完了</button>
+      </div>
+    </div>`;
+}
+
+function normalizeAskType(type) {
+  if (/確認/.test(type)) return 'confirm';
+  if (/依頼|お願い/.test(type)) return 'request';
+  if (/共有/.test(type)) return 'share';
+  return 'question';
+}
+
+function projectLabelById(projectId) {
+  const p = DB.Projects.get(projectId);
+  return p ? `${p.clientName} / ${p.name}` : '';
+}
+
+function completeAsk(askId) {
+  DB.Asks.update(askId, { status: 'done', completedAt: new Date().toISOString() });
+  showToast('確認・お願いを完了にしました', 'success');
+  renderTodayTasks();
+}
+
+async function copyAskReplyMessage(askId) {
+  const ask = DB.Asks.get(askId);
+  if (!ask) return;
+  const member = ask.toMemberId ? DB.Members.get(ask.toMemberId) : null;
+  const message = [
+    '#askreply',
+    `${ask.type || '質問'}：${ask.content}`,
+    `返信：`,
+    member ? `送信者：${member.name}` : '',
+  ].filter(Boolean).join('\n');
+
+  try {
+    await navigator.clipboard.writeText(message);
+    showToast('返信用フォーマットをコピーしました', 'success');
+  } catch {
+    window.prompt('この文章をコピーしてください', message);
+  }
 }
 
 /* ─ タスクモーダル ─ */
@@ -898,9 +1014,9 @@ function openBulkTaskModal() {
     <div class="form-group">
       <label class="form-label">タスク本文 *</label>
       <textarea class="form-textarea bulk-textarea" id="bulk-text"
-                placeholder="プロジェクト名, タスク, 時間, 内容, 備考&#10;〇〇株式会社 パンフレット, 表紙修正, 1, 赤字反映と画像差し替え, 写真素材の確認をお願いします&#10;△△商事 Web更新, お知らせ更新, 0.5, 原稿を反映して公開確認, 公開前にURL確認をお願いします">${escHtml(_bulkTaskData.text || '')}</textarea>
+                placeholder="#task&#10;A社サイト制作, トップページデザイン, 1, 画像差し替え&#10;+, 画像制作, 1, バナー用画像の制作&#10;?, 原稿確認, 0.5, プロジェクト名が不明&#10;&#10;#ask&#10;確認, 田中さん, A社LPの画像方向を確認してください, A社サイト制作, 今日中">${escHtml(_bulkTaskData.text || '')}</textarea>
       <div class="form-help">
-        1行に1タスク。最後の備考には、困っていること・全員への確認・助けてほしいことを書けます。
+        #task と #ask を同じ本文に貼れます。タスクの先頭が「+」なら直前と同じプロジェクト、「?」なら未設定です。
       </div>
     </div>
     <div id="bulk-preview">${_bulkTaskData.preview ? bulkPreviewHTML(_bulkTaskData.preview) : ''}</div>
@@ -918,7 +1034,7 @@ function previewBulkTasks() {
   const ownerMemberId = document.getElementById('bulk-owner')?.value || '';
   const date = document.getElementById('bulk-date')?.value || DB.today();
   const text = document.getElementById('bulk-text')?.value || '';
-  _bulkTaskData = { memberId, ownerMemberId, date, text, preview: parseBulkTaskText(text) };
+  _bulkTaskData = { memberId, ownerMemberId, date, text, preview: parseBulkInput(text) };
 
   const previewEl = document.getElementById('bulk-preview');
   if (previewEl) previewEl.innerHTML = bulkPreviewHTML(_bulkTaskData.preview);
@@ -932,11 +1048,12 @@ function saveBulkTasks() {
   if (!memberId) { showToast('タスク担当者を選択してください', 'error'); return; }
   if (!ownerMemberId) { showToast('先にメンバーを登録してください', 'error'); return; }
 
-  const parsed = parseBulkTaskText(text);
-  const totalTasks = parsed.groups.reduce((sum, group) => sum + group.tasks.length, 0);
-  if (!totalTasks) { showToast('登録できるタスクが見つかりません', 'error'); return; }
+  const parsed = parseBulkInput(text);
+  const totalTasks = parsed.tasks.groups.reduce((sum, group) => sum + group.tasks.length, 0);
+  const totalAsks = parsed.asks.length;
+  if (!totalTasks && !totalAsks) { showToast('登録できる内容が見つかりません', 'error'); return; }
 
-  parsed.groups.forEach(group => {
+  parsed.tasks.groups.forEach(group => {
     const project = group.projectName
       ? findOrCreateBulkProject(group.projectName, ownerMemberId)
       : null;
@@ -954,11 +1071,50 @@ function saveBulkTasks() {
     });
   });
 
+  parsed.asks.forEach(ask => {
+    const toMember = ask.toName === '全員' ? null : findMemberByName(ask.toName);
+    const project = ask.projectName ? findProjectByName(ask.projectName) : null;
+    DB.Asks.add({
+      type: ask.type,
+      fromMemberId: memberId,
+      toMemberId: toMember?.id || '',
+      toName: ask.toName,
+      content: ask.content,
+      projectId: project?.id || null,
+      projectName: ask.projectName,
+      dueText: ask.dueText,
+      date,
+    });
+  });
+
   _taskFilter.date = date;
   _bulkTaskData = { memberId, ownerMemberId, date, text: '', preview: null };
   closeModal();
-  showToast(`${totalTasks}件のタスクを登録しました`, 'success');
+  showToast(`${totalTasks}件のタスク、${totalAsks}件の確認・お願いを登録しました`, 'success');
   renderTodayTasks();
+}
+
+function parseBulkInput(text) {
+  const sections = splitBulkSections(text);
+  const taskText = sections.task.join('\n');
+  const askText = sections.ask.join('\n');
+  return {
+    tasks: parseBulkTaskText(taskText || (sections.hasAsk ? '' : text)),
+    asks: parseAskText(askText),
+  };
+}
+
+function splitBulkSections(text) {
+  const sections = { task: [], ask: [], hasTask: false, hasAsk: false };
+  let mode = '';
+  (text || '').split(/\r?\n/).forEach(raw => {
+    const line = raw.trim();
+    if (/^#task\b/i.test(line)) { mode = 'task'; sections.hasTask = true; return; }
+    if (/^#ask\b/i.test(line)) { mode = 'ask'; sections.hasAsk = true; return; }
+    if (!mode) mode = 'task';
+    sections[mode].push(raw);
+  });
+  return sections;
 }
 
 function parseBulkTaskText(text) {
@@ -1026,18 +1182,65 @@ function parseChatTaskRows(text) {
   });
   pushLabelledTask(rows, labelled);
 
-  const groupsByProject = {};
+  const groups = [];
+  let currentProject = '';
   rows.filter(Boolean).forEach(row => {
-    const projectName = row.projectName || '';
-    if (!groupsByProject[projectName]) groupsByProject[projectName] = { projectName, tasks: [] };
-    groupsByProject[projectName].tasks.push({
+    const marker = row.projectName.trim();
+    let projectName = marker;
+
+    if (marker === '+' || marker === '＋') {
+      projectName = currentProject;
+    } else if (marker === '?' || marker === '？' || !marker) {
+      projectName = '';
+    } else {
+      currentProject = marker;
+    }
+
+    let group = groups.find(g => g.projectName === projectName);
+    if (!group) {
+      group = { projectName, tasks: [] };
+      groups.push(group);
+    }
+    group.tasks.push({
       content: row.content,
       hours: row.hours,
       note: row.note,
     });
   });
 
-  return { groups: Object.values(groupsByProject).filter(group => group.tasks.length) };
+  return { groups: groups.filter(group => group.tasks.length) };
+}
+
+function parseAskText(text) {
+  const asks = [];
+  (text || '').split(/\r?\n/).forEach(raw => {
+    const line = raw.trim();
+    if (!line) return;
+    const cells = splitTaskRow(line);
+    if (cells.length < 3 || isAskHeaderRow(cells)) return;
+
+    const [type = '質問', toName = '', content = '', projectName = '', dueText = ''] = cells;
+    asks.push({
+      type: normalizeAskKind(type),
+      toName: toName.trim(),
+      content: content.trim(),
+      projectName: projectName.trim(),
+      dueText: dueText.trim(),
+    });
+  });
+  return asks.filter(ask => ask.toName && ask.content);
+}
+
+function isAskHeaderRow(cells) {
+  return /^種別宛先内容(関連プロジェクト|プロジェクト)?期限?$/.test(cells.join('').replace(/\s/g, ''));
+}
+
+function normalizeAskKind(type) {
+  const raw = String(type || '').trim();
+  if (/確認/.test(raw)) return '確認';
+  if (/依頼|お願い/.test(raw)) return '依頼';
+  if (/共有|報告/.test(raw)) return '共有';
+  return '質問';
 }
 
 function splitTaskRow(line) {
@@ -1090,10 +1293,18 @@ async function copyBulkTaskTemplate() {
     '',
     '#task',
     'プロジェクト名, タスク, 時間, 内容, 備考',
-    '例）〇〇株式会社 パンフレット, 表紙修正, 1, 赤字反映と画像差し替え, 写真素材の確認をお願いします',
-    '例）△△商事 Web更新, お知らせ更新, 0.5, 原稿を反映して公開確認, 公開前にURL確認をお願いします',
+    '例）A社サイト制作, トップページデザイン, 1, 画像差し替え',
+    '例）+, 画像制作, 1, バナー用画像の制作',
+    '例）?, 原稿確認, 0.5, プロジェクト名が不明',
     '',
+    '※ 先頭が「+」なら、直前と同じプロジェクトです。',
+    '※ 先頭が「?」なら、プロジェクト未設定として登録されます。',
     '※ 備考には、困っていること・全員への確認・助けてほしいことを書いてください。',
+    '',
+    '#ask',
+    '種別, 宛先, 内容, 関連プロジェクト, 期限',
+    '例）確認, 田中さん, A社LPの画像方向を確認してください, A社サイト制作, 今日中',
+    '例）質問, 鈴木さん, バナーサイズは1080x1080で合っていますか？, A社広告, 今日中',
   ].join('\n');
 
   try {
@@ -1179,14 +1390,27 @@ function tomorrowDate() {
 }
 
 function bulkPreviewHTML(parsed) {
-  if (!parsed.groups.length) {
+  const taskParsed = parsed.tasks || parsed;
+  const asks = parsed.asks || [];
+  if (!taskParsed.groups.length && !asks.length) {
     return `<div class="bulk-preview empty">登録候補がありません</div>`;
   }
+
+  const missingTasks = getMissingProjectTasks(taskParsed);
 
   return `
     <div class="bulk-preview">
       <div class="bulk-preview-title">登録前の確認</div>
-      ${parsed.groups.map(group => {
+      ${missingTasks.length ? `
+        <div class="bulk-alert">
+          <div>
+            <strong>プロジェクト未設定が ${missingTasks.length}件あります。</strong>
+            <p>登録はできます。あとで本人が個人URLから開いて、タスク編集でプロジェクトを直してください。</p>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="copyMissingProjectMessage()">Chatwork文をコピー</button>
+        </div>
+      ` : ''}
+      ${taskParsed.groups.map(group => {
         const project = group.projectName ? parseProjectName(group.projectName) : null;
         return `
           <div class="bulk-preview-group">
@@ -1207,7 +1431,64 @@ function bulkPreviewHTML(parsed) {
             </ul>
           </div>`;
       }).join('')}
+      ${asks.length ? `
+        <div class="bulk-preview-group ask-preview-group">
+          <div class="bulk-project-name">
+            <span class="status-badge ask">確認・お願い</span>
+            ${asks.length}件
+          </div>
+          <ul>
+            ${asks.map(ask => `
+              <li>
+                <div>
+                  <span class="ask-inline-type">${escHtml(ask.type)}</span>
+                  ${escHtml(ask.toName)}へ：${escHtml(ask.content)}
+                  ${ask.projectName ? `<div class="bulk-note">関連：${escHtml(ask.projectName)}</div>` : ''}
+                </div>
+                <span>${escHtml(ask.dueText || '-')}</span>
+              </li>`).join('')}
+          </ul>
+        </div>
+      ` : ''}
     </div>`;
+}
+
+function getMissingProjectTasks(parsed) {
+  return (parsed.groups || [])
+    .filter(group => !group.projectName)
+    .flatMap(group => group.tasks || []);
+}
+
+async function copyMissingProjectMessage() {
+  const text = document.getElementById('bulk-text')?.value || _bulkTaskData.text || '';
+  const parsed = parseBulkInput(text);
+  const missingTasks = getMissingProjectTasks(parsed.tasks);
+  const memberId = document.getElementById('bulk-member')?.value || _bulkTaskData.memberId || _personalMemberId || '';
+  const member = memberId ? DB.Members.get(memberId) : null;
+  const url = memberId ? getMemberPageUrl(memberId) : window.location.href;
+
+  if (!missingTasks.length) {
+    showToast('未設定タスクはありません', 'info');
+    return;
+  }
+
+  const message = [
+    '[info][title]プロジェクト未設定のタスクがあります[/title]',
+    '下のタスクにプロジェクト名が入っていません。',
+    member ? `${member.name}さんの個人ページから開いて、タスク編集でプロジェクトを直してください。` : '個人ページから開いて、タスク編集でプロジェクトを直してください。',
+    '',
+    ...missingTasks.map((task, i) => `${i + 1}. ${task.content} / ${task.hours}h${task.note ? ` / ${task.note}` : ''}`),
+    '',
+    `修正URL：${url}`,
+    '[/info]',
+  ].join('\n');
+
+  try {
+    await navigator.clipboard.writeText(message);
+    showToast('Chatwork用の修正依頼文をコピーしました', 'success');
+  } catch {
+    window.prompt('この文章をコピーしてください', message);
+  }
 }
 
 /* ============================================================

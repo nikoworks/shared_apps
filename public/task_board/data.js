@@ -10,6 +10,7 @@ const KEYS = {
   MEMBERS:   'tb_members',
   PROJECTS:  'tb_projects',
   TASKS:     'tb_tasks',
+  ASKS:      'tb_asks',
   TEMPLATES: 'tb_templates',
   META:      'tb_meta',
 };
@@ -69,6 +70,7 @@ function getStoreSnapshot() {
     members: load(KEYS.MEMBERS) ?? [],
     projects: load(KEYS.PROJECTS) ?? [],
     tasks: load(KEYS.TASKS) ?? [],
+    asks: load(KEYS.ASKS) ?? [],
     templates: load(KEYS.TEMPLATES) ?? [],
     meta: load(KEYS.META) ?? { lastDate: today() },
   };
@@ -78,6 +80,7 @@ function applyStoreSnapshot(data = {}) {
   saveLocalOnly(KEYS.MEMBERS, data.members ?? []);
   saveLocalOnly(KEYS.PROJECTS, data.projects ?? []);
   saveLocalOnly(KEYS.TASKS, data.tasks ?? []);
+  saveLocalOnly(KEYS.ASKS, data.asks ?? []);
   saveLocalOnly(KEYS.TEMPLATES, data.templates ?? DEFAULT_TEMPLATES.map(t => ({ ...t, custom: false })));
   saveLocalOnly(KEYS.META, data.meta ?? { lastDate: today() });
 }
@@ -172,6 +175,7 @@ async function initStore() {
   if (!load(KEYS.MEMBERS))  save(KEYS.MEMBERS,  []);
   if (!load(KEYS.PROJECTS)) save(KEYS.PROJECTS, []);
   if (!load(KEYS.TASKS))    save(KEYS.TASKS,    []);
+  if (!load(KEYS.ASKS))     save(KEYS.ASKS,     []);
   if (!load(KEYS.META))     save(KEYS.META,     { lastDate: today() });
 }
 
@@ -386,6 +390,50 @@ const Tasks = {
 };
 
 // ============================================================
+// 確認・お願い
+// ============================================================
+const Asks = {
+  all() { return load(KEYS.ASKS) ?? []; },
+  add({
+    type = '質問', fromMemberId = '', toMemberId = '', toName = '',
+    content, projectId = null, projectName = '', dueText = '', status = 'open',
+    date = today(),
+  }) {
+    const list = this.all();
+    const ask = {
+      id: genId(),
+      type,
+      fromMemberId,
+      toMemberId,
+      toName,
+      content,
+      projectId,
+      projectName,
+      dueText,
+      status,
+      date,
+      createdAt: new Date().toISOString(),
+    };
+    list.push(ask);
+    save(KEYS.ASKS, list);
+    return ask;
+  },
+  update(id, patch) {
+    save(KEYS.ASKS, this.all().map(a => a.id === id ? { ...a, ...patch } : a));
+  },
+  remove(id) {
+    save(KEYS.ASKS, this.all().filter(a => a.id !== id));
+  },
+  byMember(memberId) {
+    return this.all().filter(a => a.toMemberId === memberId || a.toName === '全員');
+  },
+  fromMember(memberId) {
+    return this.all().filter(a => a.fromMemberId === memberId);
+  },
+  get(id) { return this.all().find(a => a.id === id) ?? null; },
+};
+
+// ============================================================
 // テンプレート
 // ============================================================
 const Templates = {
@@ -425,7 +473,7 @@ function buildPhasesFromTemplate(templateId) {
 // エクスポート（グローバル）
 // ============================================================
 window.DB = {
-  Members, Projects, Tasks, Templates,
+  Members, Projects, Tasks, Asks, Templates,
   today, yesterday, prevDay, fmtDate, daysLeft, genId,
   initStore, seedDemoData,
 };
