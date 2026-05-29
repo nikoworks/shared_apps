@@ -592,6 +592,8 @@ function morningTaskRow(task) {
   const phaseName   = getPhaseName(task);
   const projectLabel = getProjectLabel(task);
   const ownerLabel = getTaskOwnerLabel(task);
+  const originDate = sourceDateForTask(task);
+  const isCarry = Boolean(task.carriedFromTaskId);
   const isDone   = task.completed === true;
   const isFail   = task.completed === false;
 
@@ -605,7 +607,7 @@ function morningTaskRow(task) {
     </div>` : '';
 
   return `
-    <div class="task-row" id="morning-task-${task.id}">
+    <div class="task-row ${isCarry ? 'task-row-carry' : ''}" id="morning-task-${task.id}">
       <div style="display:flex;gap:5px;padding-top:2px">
         <button class="check-btn ${isDone ? 'done' : ''}"
                 onclick="markTaskComplete('${task.id}')"
@@ -618,7 +620,8 @@ function morningTaskRow(task) {
       <div class="flex-1">
         <div class="task-title" style="${isDone ? 'text-decoration:line-through;opacity:.45' : ''}">${escHtml(task.content)}</div>
         <div class="task-meta">
-          ${taskDateTagHTML(task.date)}
+          ${taskDateTagHTML(originDate, { carried: isCarry })}
+          ${isCarry ? `<span class="tag tag-carry">繰り越し</span>` : ''}
           <span>担当：${escHtml(ownerLabel)}</span>
           ${projectLabel ? `<span>${projectLabel}</span>` : ''}
           ${phaseName ? `<span class="tag tag-phase">${phaseName}</span>` : ''}
@@ -769,18 +772,20 @@ function todayTaskRow(task) {
   const projectLabel = getProjectLabel(task);
   const ownerLabel = getTaskOwnerLabel(task);
   const linkedAsk = getTaskLinkedAsk(task.id);
+  const originDate = sourceDateForTask(task);
+  const isCarry = Boolean(task.carriedFromTaskId);
   return `
-    <div class="task-row" id="task-row-${task.id}">
+    <div class="task-row ${isCarry ? 'task-row-carry' : ''}" id="task-row-${task.id}">
       <div class="task-accent-bar"></div>
       <div class="flex-1">
         <div class="task-title">${escHtml(task.content)}</div>
         ${task.note ? `<div class="task-note">備考：${escHtml(task.note)}</div>` : ''}
         <div class="task-meta">
-          ${taskDateTagHTML(task.date)}
+          ${taskDateTagHTML(originDate, { carried: isCarry })}
           <span>担当：${escHtml(ownerLabel)}</span>
           ${projectLabel ? `<span>${projectLabel}</span>` : '<span style="color:var(--text-3)">プロジェクト未選択</span>'}
           ${phaseName ? `<span class="tag tag-phase">${phaseName}</span>` : ''}
-          ${task.carriedFromTaskId ? '<span class="tag tag-carry">繰り越し</span>' : ''}
+          ${isCarry ? '<span class="tag tag-carry tag-carry-strong">繰り越し</span>' : ''}
           ${linkedAsk ? '<span class="tag tag-ask">確認あり</span>' : ''}
           <span class="tag-hours">${task.estimatedHours}h</span>
         </div>
@@ -792,8 +797,39 @@ function todayTaskRow(task) {
     </div>`;
 }
 
-function taskDateTagHTML(dateStr) {
-  return `<span class="tag tag-date tag-date-${dateTone(dateStr)}">${DB.fmtDate(dateStr)}</span>`;
+function taskDateTagHTML(dateStr, options = {}) {
+  const carriedClass = options.carried ? ' tag-date-carry' : '';
+  const label = options.label || relativeDateLabel(dateStr);
+  return `<span class="tag tag-date tag-date-${dateTone(dateStr)}${carriedClass}" title="${escHtml(DB.fmtDate(dateStr))}">${escHtml(label)}</span>`;
+}
+
+function sourceDateForTask(task) {
+  if (!task?.carriedFromTaskId) return task?.date || '';
+  return getCarryOriginTask(task)?.date || task.date;
+}
+
+function getCarryOriginTask(task) {
+  let current = task;
+  const seen = new Set();
+  while (current?.carriedFromTaskId && !seen.has(current.id)) {
+    seen.add(current.id);
+    const previous = DB.Tasks.get(current.carriedFromTaskId);
+    if (!previous) break;
+    current = previous;
+  }
+  return current || task;
+}
+
+function relativeDateLabel(dateStr, baseDate = DB.today()) {
+  if (!dateStr) return '日付なし';
+  const date = new Date(dateStr + 'T00:00:00');
+  const base = new Date(baseDate + 'T00:00:00');
+  const diff = Math.round((base - date) / 86400000);
+  if (diff === 0) return '今日';
+  if (diff === 1) return '昨日';
+  if (diff > 1 && diff <= 6) return `${diff}日前`;
+  if (diff < 0) return DB.fmtDate(dateStr);
+  return `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
 function dateTone(dateStr) {
