@@ -12,6 +12,7 @@ const KEYS = {
   TASKS:     'tb_tasks',
   ASKS:      'tb_asks',
   TEMPLATES: 'tb_templates',
+  CHATWORK_IMPORTS: 'tb_chatwork_imports',
   META:      'tb_meta',
 };
 
@@ -72,6 +73,7 @@ function getStoreSnapshot() {
     tasks: load(KEYS.TASKS) ?? [],
     asks: load(KEYS.ASKS) ?? [],
     templates: load(KEYS.TEMPLATES) ?? [],
+    chatworkImports: load(KEYS.CHATWORK_IMPORTS) ?? [],
     meta: load(KEYS.META) ?? { lastDate: today() },
   };
 }
@@ -82,6 +84,7 @@ function applyStoreSnapshot(data = {}) {
   saveLocalOnly(KEYS.TASKS, data.tasks ?? []);
   saveLocalOnly(KEYS.ASKS, data.asks ?? []);
   saveLocalOnly(KEYS.TEMPLATES, data.templates ?? DEFAULT_TEMPLATES.map(t => ({ ...t, custom: false })));
+  saveLocalOnly(KEYS.CHATWORK_IMPORTS, data.chatworkImports ?? []);
   saveLocalOnly(KEYS.META, data.meta ?? { lastDate: today() });
 }
 
@@ -176,6 +179,7 @@ async function initStore() {
   if (!load(KEYS.PROJECTS)) save(KEYS.PROJECTS, []);
   if (!load(KEYS.TASKS))    save(KEYS.TASKS,    []);
   if (!load(KEYS.ASKS))     save(KEYS.ASKS,     []);
+  if (!load(KEYS.CHATWORK_IMPORTS)) save(KEYS.CHATWORK_IMPORTS, []);
   if (!load(KEYS.META))     save(KEYS.META,     { lastDate: today() });
 }
 
@@ -475,6 +479,34 @@ const Asks = {
 };
 
 // ============================================================
+// Chatwork取り込み履歴
+// ============================================================
+const ChatworkImports = {
+  all() { return load(KEYS.CHATWORK_IMPORTS) ?? []; },
+  key(roomId, messageId) { return `${roomId}:${messageId}`; },
+  has(roomId, messageId) {
+    const key = this.key(roomId, messageId);
+    return this.all().some(item => item.key === key);
+  },
+  add({ roomId, messageId, accountName = '', taskCount = 0, askCount = 0 }) {
+    if (!roomId || !messageId || this.has(roomId, messageId)) return null;
+    const list = this.all();
+    const item = {
+      key: this.key(roomId, messageId),
+      roomId: String(roomId),
+      messageId: String(messageId),
+      accountName,
+      taskCount,
+      askCount,
+      importedAt: new Date().toISOString(),
+    };
+    list.push(item);
+    save(KEYS.CHATWORK_IMPORTS, list.slice(-1000));
+    return item;
+  },
+};
+
+// ============================================================
 // テンプレート
 // ============================================================
 const Templates = {
@@ -514,7 +546,7 @@ function buildPhasesFromTemplate(templateId) {
 // エクスポート（グローバル）
 // ============================================================
 window.DB = {
-  Members, Projects, Tasks, Asks, Templates,
+  Members, Projects, Tasks, Asks, ChatworkImports, Templates,
   today, yesterday, prevDay, fmtDate, daysLeft, genId,
   initStore, seedDemoData,
 };

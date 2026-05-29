@@ -767,6 +767,9 @@ function renderTodayTasks() {
         </div>
         <div style="display:flex;align-items:center;gap:12px">
           <span style="font-size:13px;color:var(--text-2)">合計 <strong style="color:var(--primary)">${totalH}h</strong></span>
+          <button class="btn btn-ghost" onclick="importChatworkTasksDirect()">
+            TASK取得
+          </button>
           <button class="btn btn-ghost" onclick="openBulkTaskModal()">
             一括入力
           </button>
@@ -1336,6 +1339,146 @@ async function importChatworkMessages() {
   } catch {
     showToast('Chatwork取得APIに接続できませんでした。公開版で設定を確認してください', 'error');
   }
+}
+
+async function importChatworkTasksDirect() {
+  let roomId = getSavedChatworkRoomId();
+  const importKey = getSavedChatworkImportKey();
+  const targetDate = _taskFilter.date || DB.today();
+  const ownerMemberId = getDefaultOwnerMemberId();
+
+  if (!roomId) {
+    roomId = window.prompt('ChatworkのTASK部屋のルームIDを入力してください', '')?.trim() || '';
+    if (!roomId) return;
+    localStorage.setItem(CHATWORK_ROOM_KEY, roomId);
+  }
+
+  try {
+    showToast('ChatworkからTASK部屋を確認しています', 'info');
+    const res = await fetch(`/api/chatwork/messages?roomId=${encodeURIComponent(roomId)}&force=1`, {
+      headers: importKey ? { 'x-taskboard-key': importKey } : {},
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast(data.error || 'Chatwork取得に失敗しました', 'error');
+      return;
+    }
+
+    const result = importChatworkMessageList({
+      roomId,
+      messages: data.messages || [],
+      targetDate,
+      ownerMemberId,
+    });
+
+    if (result.importedMessages === 0 && result.skippedDuplicates > 0) {
+      showToast('新しく取り込むTASKはありませんでした', 'info');
+    } else if (result.importedMessages === 0) {
+      showToast('#task / #ask の新規投稿が見つかりませんでした', 'info');
+    } else {
+      showToast(`${result.taskCount}件のタスク、${result.askCount}件の確認を取り込みました`, 'success');
+    }
+
+    if (result.unknownMembers.length) {
+      showToast(`未登録メンバーの投稿は未取り込みです：${result.unknownMembers.join('、')}`, 'error');
+    }
+
+    _taskFilter.date = targetDate;
+    renderTodayTasks();
+    updateMorningBadge();
+  } catch {
+    showToast('Chatwork取得APIに接続できませんでした。Vercel設定を確認してください', 'error');
+  }
+}
+
+function importChatworkMessageList({ roomId, messages, targetDate, ownerMemberId }) {
+  const result = {
+    importedMessages: 0,
+    skippedDuplicates: 0,
+    taskCount: 0,
+    askCount: 0,
+    unknownMembers: [],
+  };
+
+  (messages || []).forEach(message => {
+    const messageId = String(message.message_id || '');
+    if (!messageId) return;
+    if (DB.ChatworkImports.has(roomId, messageId)) {
+      result.skippedDuplicates++;
+      return;
+    }
+
+    const accountName = message.account?.name || '';
+    const member = findMemberByName(accountName);
+    if (!member) {
+      if (accountName && !result.unknownMembers.includes(accountName)) result.unknownMembers.push(accountName);
+      return;
+    }
+
+    const normalizedBody = normalizeChatworkBody(message.body || '');
+    const parsed = parseBulkInput(normalizedBody);
+    const taskCount = saveParsedChatworkTasks(parsed.tasks, member.id, targetDate, ownerMemberId);
+    const askCount = saveParsedChatworkAsks(parsed.asks, member.id, targetDate);
+
+    if (taskCount || askCount) {
+      DB.ChatworkImports.add({
+        roomId,
+        messageId,
+        accountName,
+        taskCount,
+        askCount,
+      });
+      result.importedMessages++;
+      result.taskCount += taskCount;
+      result.askCount += askCount;
+    }
+  });
+
+  return result;
+}
+
+function saveParsedChatworkTasks(taskParsed, memberId, date, ownerMemberId) {
+  let count = 0;
+  (taskParsed.groups || []).forEach(group => {
+    const project = group.projectName
+      ? findOrCreateBulkProject(group.projectName, ownerMemberId)
+      : null;
+
+    (group.tasks || []).forEach(task => {
+      DB.Tasks.add({
+        memberId,
+        projectId: project?.id || null,
+        phaseId: null,
+        content: task.content,
+        note: task.note || '',
+        date,
+        estimatedHours: task.hours,
+      });
+      count++;
+    });
+  });
+  return count;
+}
+
+function saveParsedChatworkAsks(asks, memberId, date) {
+  let count = 0;
+  (asks || []).forEach(ask => {
+    const toMember = ask.toName === '全員' ? null : findMemberByName(ask.toName);
+    const project = ask.projectName ? findProjectByName(ask.projectName) : null;
+    DB.Asks.add({
+      type: ask.type,
+      fromMemberId: memberId,
+      toMemberId: toMember?.id || '',
+      toName: ask.toName,
+      content: ask.content,
+      projectId: project?.id || null,
+      projectName: ask.projectName,
+      dueText: ask.dueText,
+      date,
+    });
+    count++;
+  });
+  return count;
 }
 
 function chatworkMessagesToBulkText(messages) {
