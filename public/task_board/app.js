@@ -488,21 +488,36 @@ function renderDashCalendar(projects) {
 /* ============================================================
    朝のチェック
    ============================================================ */
+let _morningFilter = { memberId: '', projectId: '', date: '' };
+
 function renderMorningCheck() {
   const main        = document.getElementById('main-content');
-  const yesterdayTasks = DB.Tasks.yesterdayTasks();
+  const members     = DB.Members.all();
+  const projects    = DB.Projects.active();
+  const selectedDate = _morningFilter.date || DB.yesterday();
+  const selectedMemberId = _morningFilter.memberId || '';
+  const dateTasks = DB.Tasks.byDate(selectedDate);
+  const filteredTasks = dateTasks.filter(t => {
+    if (selectedMemberId && t.memberId !== selectedMemberId) return false;
+    if (_morningFilter.projectId && t.projectId !== _morningFilter.projectId) return false;
+    return true;
+  });
+  const personalMember = _personalMemberId ? DB.Members.get(_personalMemberId) : null;
+  const memberOpts = members.map(m => `<option value="${m.id}" ${selectedMemberId === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
+  const projectOpts = projects.map(p => `<option value="${p.id}" ${_morningFilter.projectId === p.id ? 'selected' : ''}>${p.clientName} / ${p.name}</option>`).join('');
 
-  if (!yesterdayTasks.length) {
+  if (!filteredTasks.length) {
     main.innerHTML = `
       <div class="page-header"><div class="page-header-left">
-        <h2>朝のチェック</h2>
-        <p>${DB.fmtDate(DB.yesterday())} のタスク確認</p>
+        <h2>${personalMember ? `${escHtml(personalMember.name)}さんの朝チェック` : '朝のチェック'}</h2>
+        <p>${DB.fmtDate(selectedDate)} のタスク確認${personalMember ? '・個人ページ' : ''}</p>
       </div></div>
       <div class="page-body fade-in">
+        ${morningFilterBarHTML(memberOpts, projectOpts, selectedDate, selectedMemberId)}
         <div class="empty-state" style="margin-top:40px">
           <div class="icon">☀️</div>
-          <div class="title">前日のタスクはありません</div>
-          <div class="sub">「今日のタスク」からタスクを登録してください</div>
+          <div class="title">対象のタスクはありません</div>
+          <div class="sub">絞り込み条件を変えるか、「今日のタスク」からタスクを登録してください</div>
         </div>
       </div>`;
     updateMorningBadge();
@@ -511,11 +526,11 @@ function renderMorningCheck() {
 
   // メンバーごとにグループ化
   const byMember = {};
-  yesterdayTasks.forEach(t => {
+  filteredTasks.forEach(t => {
     (byMember[t.memberId] = byMember[t.memberId] || []).push(t);
   });
 
-  const unchecked = yesterdayTasks.filter(t => t.completed === null).length;
+  const unchecked = filteredTasks.filter(t => t.completed === null).length;
   const bannerHTML = unchecked === 0
     ? `<div class="banner banner-success">✓ 全員のチェックが完了しています！お疲れ様でした。</div>`
     : `<div class="banner banner-warning">⚠ ${unchecked}件のタスクが未確認です</div>`;
@@ -542,14 +557,35 @@ function renderMorningCheck() {
 
   main.innerHTML = `
     <div class="page-header"><div class="page-header-left">
-      <h2>朝のチェック</h2>
-      <p>${DB.fmtDate(DB.yesterday())} のタスク確認</p>
+      <h2>${personalMember ? `${escHtml(personalMember.name)}さんの朝チェック` : '朝のチェック'}</h2>
+      <p>${DB.fmtDate(selectedDate)} のタスク確認${personalMember ? '・個人ページ' : ''}</p>
     </div></div>
     <div class="page-body fade-in">
+      ${morningFilterBarHTML(memberOpts, projectOpts, selectedDate, selectedMemberId)}
       ${bannerHTML}
       ${memberBlocks}
     </div>`;
   updateMorningBadge();
+}
+
+function morningFilterBarHTML(memberOpts, projectOpts, selectedDate, selectedMemberId) {
+  return `
+    <div class="action-row">
+      <div class="filter-bar">
+        <select class="form-select" style="width:145px" id="morning-filter-member"
+                onchange="_morningFilter.memberId=this.value;renderMorningCheck()">
+          <option value="">全メンバー</option>${memberOpts}
+        </select>
+        <select class="form-select" style="width:210px" id="morning-filter-project"
+                onchange="_morningFilter.projectId=this.value;renderMorningCheck()">
+          <option value="">全プロジェクト</option>${projectOpts}
+        </select>
+        <input type="date" class="form-input" style="width:150px" id="morning-filter-date"
+               value="${selectedDate}" onchange="_morningFilter.date=this.value;renderMorningCheck()">
+        <button class="btn btn-ghost btn-sm" onclick="_morningFilter.date=DB.yesterday();renderMorningCheck()">昨日</button>
+        ${_personalMemberId || selectedMemberId ? `<button class="btn btn-ghost btn-sm" onclick="_morningFilter.memberId='';renderMorningCheck()">全メンバー表示</button>` : ''}
+      </div>
+    </div>`;
 }
 
 function morningTaskRow(task) {
@@ -582,6 +618,7 @@ function morningTaskRow(task) {
       <div class="flex-1">
         <div class="task-title" style="${isDone ? 'text-decoration:line-through;opacity:.45' : ''}">${escHtml(task.content)}</div>
         <div class="task-meta">
+          ${taskDateTagHTML(task.date)}
           <span>担当：${escHtml(ownerLabel)}</span>
           ${projectLabel ? `<span>${projectLabel}</span>` : ''}
           ${phaseName ? `<span class="tag tag-phase">${phaseName}</span>` : ''}
@@ -739,7 +776,7 @@ function todayTaskRow(task) {
         <div class="task-title">${escHtml(task.content)}</div>
         ${task.note ? `<div class="task-note">備考：${escHtml(task.note)}</div>` : ''}
         <div class="task-meta">
-          <span class="tag tag-date">${DB.fmtDate(task.date)}</span>
+          ${taskDateTagHTML(task.date)}
           <span>担当：${escHtml(ownerLabel)}</span>
           ${projectLabel ? `<span>${projectLabel}</span>` : '<span style="color:var(--text-3)">プロジェクト未選択</span>'}
           ${phaseName ? `<span class="tag tag-phase">${phaseName}</span>` : ''}
@@ -753,6 +790,17 @@ function todayTaskRow(task) {
         <button class="btn btn-danger btn-sm" onclick="deleteTask('${task.id}')">削除</button>
       </div>
     </div>`;
+}
+
+function taskDateTagHTML(dateStr) {
+  return `<span class="tag tag-date tag-date-${dateTone(dateStr)}">${DB.fmtDate(dateStr)}</span>`;
+}
+
+function dateTone(dateStr) {
+  if (!dateStr) return '0';
+  let sum = 0;
+  String(dateStr).split('').forEach(ch => { sum += ch.charCodeAt(0); });
+  return String((sum % 6) + 1);
 }
 
 function renderMemberAskPanel(memberId) {
@@ -1689,8 +1737,7 @@ function renderProjects() {
     <div class="page-body fade-in">
       ${missingDelivery.length ? `
         <div class="banner banner-warning">
-          <span>納品日未設定のプロジェクトが ${missingDelivery.length}件あります。一定時間入力がなければ佐久間さんへChatworkで一報してください。</span>
-          <button class="btn btn-ghost btn-sm" onclick="copySakumaDeliveryNotice()">佐久間さんへ一報</button>
+          <span>納品日未設定のプロジェクトが ${missingDelivery.length}件あります。プロジェクト編集から納品日を入力してください。</span>
         </div>
       ` : ''}
 
@@ -1790,7 +1837,6 @@ function projectCard(project) {
             <div class="project-warning">
               納品日が未設定です。
               <button class="btn btn-ghost btn-sm" onclick="copyDeliveryDateRequest('${project.id}')">Chatwork文をコピー</button>
-              <button class="btn btn-ghost btn-sm" onclick="copySakumaDeliveryNotice('${project.id}')">佐久間さんへ一報</button>
             </div>
           ` : ''}
         </div>
@@ -2028,46 +2074,12 @@ async function copyDeliveryDateRequest(projectId) {
     '下のURLから開いて、プロジェクト編集画面で納品日を入力してください。',
     '',
     `入力URL：${url}`,
-    '',
-    '一定時間入力がない場合は、佐久間さんへChatworkで一報します。',
     '[/info]',
   ].join('\n');
 
   try {
     await navigator.clipboard.writeText(message);
     showToast('Chatwork用の納期確認文をコピーしました', 'success');
-  } catch {
-    window.prompt('この文章をコピーしてください', message);
-  }
-}
-
-async function copySakumaDeliveryNotice(projectId = '') {
-  const projects = projectId
-    ? [DB.Projects.get(projectId)].filter(Boolean)
-    : sortProjectsByDelivery(DB.Projects.active().filter(p => !p.deliveryDate));
-
-  if (!projects.length) {
-    showToast('納品日未設定のプロジェクトはありません', 'info');
-    return;
-  }
-
-  const message = [
-    '[info][title]納品日未設定の確認をお願いします[/title]',
-    '一定時間たっても納品日が入力されていないプロジェクトがあります。',
-    '確認して、TaskBoardに納品日を入力してください。',
-    '',
-    ...projects.map((p, i) => {
-      const owner = p.ownerMemberId ? DB.Members.get(p.ownerMemberId) : null;
-      return `${i + 1}. ${p.clientName} / ${p.name}${owner ? `（窓口：${owner.name}）` : ''}`;
-    }),
-    '',
-    `確認URL：${window.location.origin}${window.location.pathname}`,
-    '[/info]',
-  ].join('\n');
-
-  try {
-    await navigator.clipboard.writeText(message);
-    showToast('佐久間さん宛のChatwork文をコピーしました', 'success');
   } catch {
     window.prompt('この文章をコピーしてください', message);
   }
@@ -2405,6 +2417,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (urlMember) {
     _personalMemberId = urlMember.id;
     _taskFilter.memberId = urlMember.id;
+    _morningFilter.memberId = urlMember.id;
   }
   updateSidebarDate();
   updateMorningBadge();
