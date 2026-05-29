@@ -977,11 +977,11 @@ function openTaskModal(editId) {
                 oninput="_taskFormData.note=this.value">${escHtml(_taskFormData.note || '')}</textarea>
     </div>
     <div class="form-group">
-      <label class="form-label">予測稼働時間（0.5h 単位）</label>
+      <label class="form-label">予測稼働時間（0.25h 単位）</label>
       <div class="hours-stepper">
-        <button class="hours-btn" onclick="stepHours(-0.5)" type="button">－</button>
+        <button class="hours-btn" onclick="stepHours(-0.25)" type="button">－</button>
         <span class="hours-display" id="tf-hours-display">${_taskFormData.estimatedHours || 1}h</span>
-        <button class="hours-btn" onclick="stepHours(0.5)" type="button">＋</button>
+        <button class="hours-btn" onclick="stepHours(0.25)" type="button">＋</button>
       </div>
     </div>
     <div class="task-ask-box">
@@ -1025,8 +1025,9 @@ function refreshModalPhases() {
 }
 
 function stepHours(delta) {
-  _taskFormData.estimatedHours = Math.max(0.5, Math.min(24,
+  const next = Math.max(0.25, Math.min(24,
     parseFloat((_taskFormData.estimatedHours || 1)) + delta));
+  _taskFormData.estimatedHours = Math.round(next * 4) / 4;
   const disp = document.getElementById('tf-hours-display');
   if (disp) disp.textContent = `${_taskFormData.estimatedHours}h`;
 }
@@ -1177,7 +1178,7 @@ function openBulkTaskModal() {
     <div class="form-group">
       <label class="form-label">タスク本文 *</label>
       <textarea class="form-textarea bulk-textarea" id="bulk-text"
-                placeholder="#task&#10;A社サイト制作, トップページデザイン, 1, 画像差し替え&#10;+, 画像制作, 1, バナー用画像の制作&#10;?, 原稿確認, 0.5, プロジェクト名が不明&#10;&#10;#ask&#10;確認, 田中さん, A社LPの画像方向を確認してください, A社サイト制作, 今日中">${escHtml(_bulkTaskData.text || '')}</textarea>
+                placeholder="#task&#10;A社サイト制作, トップページデザイン, 1, 画像差し替え&#10;+, 画像制作, 1, バナー用画像の制作&#10;?, 原稿確認, 0.25, プロジェクト名が不明&#10;&#10;#ask&#10;確認, 田中さん, A社LPの画像方向を確認してください, A社サイト制作, 今日中">${escHtml(_bulkTaskData.text || '')}</textarea>
       <div class="form-help">
         #task と #ask を同じ本文に貼れます。タスクの先頭が「+」なら直前と同じプロジェクト、「?」なら未設定です。
       </div>
@@ -1511,7 +1512,7 @@ function rowToTask(cells) {
 function extractHours(value) {
   const normalized = normalizeNumberText(String(value || ''));
   const match = normalized.match(/([0-9]+(?:\.[0-9]+)?)/);
-  return match ? Math.max(0.5, parseFloat(match[1])) : 1;
+  return match ? Math.max(0.25, parseFloat(match[1])) : 1;
 }
 
 async function copyBulkTaskTemplate() {
@@ -1522,7 +1523,7 @@ async function copyBulkTaskTemplate() {
     'プロジェクト名, タスク, 時間, 内容, 備考',
     '例）A社サイト制作, トップページデザイン, 1, 画像差し替え',
     '例）+, 画像制作, 1, バナー用画像の制作',
-    '例）?, 原稿確認, 0.5, プロジェクト名が不明',
+    '例）?, 原稿確認, 0.25, プロジェクト名が不明',
     '',
     '※ 先頭が「+」なら、直前と同じプロジェクトです。',
     '※ 先頭が「?」なら、プロジェクト未設定として登録されます。',
@@ -1554,7 +1555,7 @@ function cleanBulkLine(line) {
 function taskFromBulkLine(line) {
   const normalized = normalizeNumberText(line);
   const match = normalized.match(/([0-9]+(?:\.[0-9]+)?)\s*(?:時間|h)/i);
-  const hours = match ? Math.max(0.5, parseFloat(match[1])) : 1;
+  const hours = match ? Math.max(0.25, parseFloat(match[1])) : 1;
   const content = normalized.replace(/([0-9]+(?:\.[0-9]+)?)\s*(?:時間|h)/ig, '').trim();
   return { content: content || '未入力タスク', hours };
 }
