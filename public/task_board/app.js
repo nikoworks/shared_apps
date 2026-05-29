@@ -494,7 +494,7 @@ function renderMorningCheck() {
   const main        = document.getElementById('main-content');
   const members     = DB.Members.all();
   const projects    = DB.Projects.active();
-  const selectedDate = _morningFilter.date || DB.yesterday();
+  const selectedDate = _morningFilter.date || DB.today();
   const selectedMemberId = _morningFilter.memberId || '';
   const dateTasks = DB.Tasks.byDate(selectedDate);
   const filteredTasks = dateTasks.filter(t => {
@@ -510,14 +510,14 @@ function renderMorningCheck() {
     main.innerHTML = `
       <div class="page-header"><div class="page-header-left">
         <h2>${personalMember ? `${escHtml(personalMember.name)}さんの朝チェック` : '朝のチェック'}</h2>
-        <p>${DB.fmtDate(selectedDate)} のタスク確認${personalMember ? '・個人ページ' : ''}</p>
+        <p>${DB.fmtDate(selectedDate)} の作業量確認${personalMember ? '・個人ページ' : ''}</p>
       </div></div>
       <div class="page-body fade-in">
         ${morningFilterBarHTML(memberOpts, projectOpts, selectedDate, selectedMemberId)}
         <div class="empty-state" style="margin-top:40px">
           <div class="icon">☀️</div>
-          <div class="title">対象のタスクはありません</div>
-          <div class="sub">絞り込み条件を変えるか、「今日のタスク」からタスクを登録してください</div>
+          <div class="title">この条件のタスクはありません</div>
+          <div class="sub">メンバー・プロジェクト・日付を変えるか、「今日のタスク」から登録してください</div>
         </div>
       </div>`;
     updateMorningBadge();
@@ -531,9 +531,11 @@ function renderMorningCheck() {
   });
 
   const unchecked = filteredTasks.filter(t => t.completed === null).length;
+  const totalH = filteredTasks.reduce((sum, t) => sum + (t.estimatedHours || 0), 0);
+  const carryCount = filteredTasks.filter(t => t.carriedFromTaskId).length;
   const bannerHTML = unchecked === 0
-    ? `<div class="banner banner-success">✓ 全員のチェックが完了しています！お疲れ様でした。</div>`
-    : `<div class="banner banner-warning">⚠ ${unchecked}件のタスクが未確認です</div>`;
+    ? `<div class="banner banner-success">✓ この日のチェックは完了しています。</div>`
+    : `<div class="banner banner-warning">⚠ ${unchecked}件が未確認です。合計 ${totalH}h${carryCount ? `、繰り越し ${carryCount}件` : ''} あります。</div>`;
 
   const memberBlocks = Object.entries(byMember).map(([memberId, tasks]) => {
     const member   = DB.Members.get(memberId);
@@ -547,7 +549,7 @@ function renderMorningCheck() {
           <div>
             <div style="font-size:15px;font-weight:700">${member ? member.name : '（不明）'}</div>
             <div style="font-size:11px;color:var(--text-2)">
-              ${tasks.length}件 　✓${doneCount}　✗${failCount}　未${tasks.length - doneCount - failCount}
+              ${tasks.length}件 / ${tasks.reduce((s, t) => s + (t.estimatedHours || 0), 0)}h 　✓${doneCount}　✗${failCount}　未${tasks.length - doneCount - failCount}
             </div>
           </div>
         </div>
@@ -558,10 +560,11 @@ function renderMorningCheck() {
   main.innerHTML = `
     <div class="page-header"><div class="page-header-left">
       <h2>${personalMember ? `${escHtml(personalMember.name)}さんの朝チェック` : '朝のチェック'}</h2>
-      <p>${DB.fmtDate(selectedDate)} のタスク確認${personalMember ? '・個人ページ' : ''}</p>
+      <p>${DB.fmtDate(selectedDate)} の作業量確認${personalMember ? '・個人ページ' : ''}</p>
     </div></div>
     <div class="page-body fade-in">
       ${morningFilterBarHTML(memberOpts, projectOpts, selectedDate, selectedMemberId)}
+      ${morningLoadSummaryHTML(filteredTasks, members, selectedMemberId)}
       ${bannerHTML}
       ${memberBlocks}
     </div>`;
@@ -582,10 +585,43 @@ function morningFilterBarHTML(memberOpts, projectOpts, selectedDate, selectedMem
         </select>
         <input type="date" class="form-input" style="width:150px" id="morning-filter-date"
                value="${selectedDate}" onchange="_morningFilter.date=this.value;renderMorningCheck()">
+        <button class="btn btn-ghost btn-sm" onclick="_morningFilter.date=DB.today();renderMorningCheck()">今日</button>
         <button class="btn btn-ghost btn-sm" onclick="_morningFilter.date=DB.yesterday();renderMorningCheck()">昨日</button>
         ${_personalMemberId || selectedMemberId ? `<button class="btn btn-ghost btn-sm" onclick="_morningFilter.memberId='';renderMorningCheck()">全メンバー表示</button>` : ''}
       </div>
     </div>`;
+}
+
+function morningLoadSummaryHTML(tasks, members, selectedMemberId) {
+  const targetMembers = selectedMemberId
+    ? members.filter(m => m.id === selectedMemberId)
+    : members.filter(m => tasks.some(t => t.memberId === m.id));
+
+  if (!targetMembers.length) return '';
+
+  const cards = targetMembers.map(member => {
+    const memberTasks = tasks.filter(t => t.memberId === member.id);
+    const totalH = memberTasks.reduce((sum, t) => sum + (t.estimatedHours || 0), 0);
+    const carryCount = memberTasks.filter(t => t.carriedFromTaskId).length;
+    const unchecked = memberTasks.filter(t => t.completed === null).length;
+    const loadClass = totalH >= 8 ? 'danger' : totalH >= 6 ? 'warn' : 'normal';
+    return `
+      <div class="morning-load-card ${loadClass}">
+        <div class="morning-load-head">
+          ${avatarHTML(member, 30)}
+          <div>
+            <div class="morning-load-name">${escHtml(member.name)}</div>
+            <div class="morning-load-sub">${memberTasks.length}件 / ${totalH}h</div>
+          </div>
+        </div>
+        <div class="morning-load-tags">
+          <span>未確認 ${unchecked}</span>
+          <span>繰越 ${carryCount}</span>
+        </div>
+      </div>`;
+  }).join('');
+
+  return `<div class="morning-load-grid">${cards}</div>`;
 }
 
 function morningTaskRow(task) {
@@ -656,7 +692,7 @@ function saveIncompleteReason(taskId, reason) {
 }
 
 function updateMorningBadge() {
-  const unchecked = DB.Tasks.yesterdayTasks().filter(t => t.completed === null).length;
+  const unchecked = DB.Tasks.todayTasks().filter(t => t.completed === null).length;
   const badge = document.getElementById('morning-badge');
   if (!badge) return;
   if (unchecked > 0) {

@@ -749,6 +749,57 @@ body {
   color: var(--danger);
 }
 
+.morning-load-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.morning-load-card {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,.04);
+}
+.morning-load-card.warn {
+  border-color: rgba(245,158,11,.34);
+  background: rgba(245,158,11,.075);
+}
+.morning-load-card.danger {
+  border-color: rgba(239,68,68,.34);
+  background: rgba(239,68,68,.075);
+}
+.morning-load-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.morning-load-name {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-1);
+}
+.morning-load-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--primary);
+  font-weight: 800;
+}
+.morning-load-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 9px;
+}
+.morning-load-tags span {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.06);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 700;
+}
+
 /* ─── Task Rows ──────────────────────────────────────────── */
 .task-row {
   display: flex;
