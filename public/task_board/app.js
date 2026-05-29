@@ -810,8 +810,13 @@ function todayTaskRow(task) {
   const linkedAsk = getTaskLinkedAsk(task.id);
   const originDate = sourceDateForTask(task);
   const isCarry = Boolean(task.carriedFromTaskId);
+  const isDone = task.completed === true;
   return `
-    <div class="task-row ${isCarry ? 'task-row-carry' : ''}" id="task-row-${task.id}">
+    <div class="task-row ${isCarry ? 'task-row-carry' : ''} ${isDone ? 'task-row-done' : ''}" id="task-row-${task.id}">
+      <button class="check-btn ${isDone ? 'done' : ''}"
+              onclick="toggleTodayTaskComplete('${task.id}')"
+              title="${isDone ? '未完了に戻す' : '完了にする'}"
+              aria-label="${isDone ? '未完了に戻す' : '完了にする'}">✓</button>
       <div class="task-accent-bar"></div>
       <div class="flex-1">
         <div class="task-title">${escHtml(task.content)}</div>
@@ -822,6 +827,7 @@ function todayTaskRow(task) {
           ${projectLabel ? `<span>${projectLabel}</span>` : '<span style="color:var(--text-3)">プロジェクト未選択</span>'}
           ${phaseName ? `<span class="tag tag-phase">${phaseName}</span>` : ''}
           ${isCarry ? '<span class="tag tag-carry tag-carry-strong">繰り越し</span>' : ''}
+          ${isDone ? '<span class="tag tag-done">完了</span>' : ''}
           ${linkedAsk ? '<span class="tag tag-ask">確認あり</span>' : ''}
           <span class="tag-hours">${task.estimatedHours}h</span>
         </div>
@@ -831,6 +837,14 @@ function todayTaskRow(task) {
         <button class="btn btn-danger btn-sm" onclick="deleteTask('${task.id}')">削除</button>
       </div>
     </div>`;
+}
+
+function toggleTodayTaskComplete(taskId) {
+  const task = DB.Tasks.get(taskId);
+  if (!task) return;
+  DB.Tasks.setCompletion(taskId, task.completed === true ? null : true, '');
+  renderTodayTasks();
+  updateMorningBadge();
 }
 
 function taskDateTagHTML(dateStr, options = {}) {

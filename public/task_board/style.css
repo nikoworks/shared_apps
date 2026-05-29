@@ -555,6 +555,10 @@ body {
   border: 1px solid rgba(245,158,11,.34);
   font-weight: 800;
 }
+.tag-done {
+  background: var(--success-lite);
+  color: var(--success);
+}
 .tag-hours {
   color: var(--primary);
   font-weight: 700;
@@ -816,6 +820,12 @@ body {
 }
 .task-row-carry:hover {
   background: rgba(245,158,11,.075);
+}
+.task-row-done {
+  opacity: .62;
+}
+.task-row-done .task-title {
+  text-decoration: line-through;
 }
 
 .task-accent-bar {
