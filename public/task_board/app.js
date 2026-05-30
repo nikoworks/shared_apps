@@ -1347,15 +1347,10 @@ async function importChatworkTasksDirect() {
   const targetDate = _taskFilter.date || DB.today();
   const ownerMemberId = getDefaultOwnerMemberId();
 
-  if (!roomId) {
-    roomId = window.prompt('ChatworkのTASK部屋のルームIDを入力してください', '')?.trim() || '';
-    if (!roomId) return;
-    localStorage.setItem(CHATWORK_ROOM_KEY, roomId);
-  }
-
   try {
     showToast('ChatworkからTASK部屋を確認しています', 'info');
-    const res = await fetch(`/api/chatwork/messages?roomId=${encodeURIComponent(roomId)}&force=1`, {
+    const roomQuery = roomId ? `roomId=${encodeURIComponent(roomId)}&` : '';
+    const res = await fetch(`/api/chatwork/messages?${roomQuery}force=1`, {
       headers: importKey ? { 'x-taskboard-key': importKey } : {},
     });
     const data = await res.json().catch(() => ({}));
@@ -1363,6 +1358,9 @@ async function importChatworkTasksDirect() {
       showToast(data.error || 'Chatwork取得に失敗しました', 'error');
       return;
     }
+
+    roomId = String(data.roomId || roomId || '').trim();
+    if (roomId) localStorage.setItem(CHATWORK_ROOM_KEY, roomId);
 
     const result = importChatworkMessageList({
       roomId,
