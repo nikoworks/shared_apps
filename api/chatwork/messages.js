@@ -7,16 +7,11 @@ module.exports = async function handler(req, res) {
   }
 
   const token = process.env.CHATWORK_API_TOKEN;
-  const requiredKey = process.env.TASKBOARD_IMPORT_KEY || '';
-  const providedKey = req.headers['x-taskboard-key'] || '';
   const roomId = String(req.query.roomId || process.env.CHATWORK_ROOM_ID || '').trim();
   const force = req.query.force === '1' ? '1' : '0';
 
   if (!token) {
     return res.status(500).json({ error: 'VercelにCHATWORK_API_TOKENが設定されていません' });
-  }
-  if (requiredKey && providedKey !== requiredKey) {
-    return res.status(401).json({ error: '取り込みキーが違います' });
   }
   if (!/^\d+$/.test(roomId)) {
     return res.status(400).json({ error: 'ChatworkのルームIDを指定してください' });
