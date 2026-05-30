@@ -31,7 +31,7 @@ module.exports = async function handler(req, res) {
   });
 
   if (cwRes.status === 204) {
-    return res.status(200).json({ messages: [], importedCount: 0 });
+    return res.status(200).json({ roomId, messages: [], importedCount: 0 });
   }
 
   const text = await cwRes.text();
@@ -66,6 +66,7 @@ module.exports = async function handler(req, res) {
   const imported = messages.filter(message => /(^|\n)\s*#(?:task|ask)\b/i.test(message.body || ''));
 
   return res.status(200).json({
+    roomId,
     messages: imported,
     importedCount: imported.length,
   });
