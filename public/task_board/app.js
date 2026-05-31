@@ -2,6 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
+const APP_BUILD_LABEL = 'CW取得版 2026-05-31-01';
 
 /* ============================================================
    ルーター
@@ -2630,7 +2631,8 @@ function updateSidebarDate() {
   const el = document.getElementById('sidebar-date');
   if (el) {
     const now = new Date();
-    el.textContent = now.toLocaleDateString('ja-JP', { month:'numeric', day:'numeric', weekday:'short' });
+    const today = now.toLocaleDateString('ja-JP', { month:'numeric', day:'numeric', weekday:'short' });
+    el.innerHTML = `${today}<br><span style="color:var(--primary);font-weight:700">${APP_BUILD_LABEL}</span>`;
   }
 }
 
