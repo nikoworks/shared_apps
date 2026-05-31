@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'CW取得版 2026-05-31-01';
+const APP_BUILD_LABEL = 'CW取得版 2026-05-31-02';
 
 /* ============================================================
    ルーター
@@ -1295,7 +1295,11 @@ function previewBulkTasks() {
 }
 
 function getSavedChatworkRoomId() {
-  return localStorage.getItem(CHATWORK_ROOM_KEY) || '';
+  const roomId = String(localStorage.getItem(CHATWORK_ROOM_KEY) || '').trim();
+  if (!roomId) return '';
+  if (/^\d+$/.test(roomId)) return roomId;
+  localStorage.removeItem(CHATWORK_ROOM_KEY);
+  return '';
 }
 
 function getSavedChatworkImportKey() {
@@ -1350,7 +1354,7 @@ async function importChatworkTasksDirect() {
 
   try {
     showToast('ChatworkからTASK部屋を確認しています', 'info');
-    const roomQuery = roomId ? `roomId=${encodeURIComponent(roomId)}&` : '';
+    const roomQuery = /^\d+$/.test(roomId) ? `roomId=${encodeURIComponent(roomId)}&` : '';
     const res = await fetch(`/api/chatwork/messages?${roomQuery}force=1`, {
       headers: importKey ? { 'x-taskboard-key': importKey } : {},
     });
