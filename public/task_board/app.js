@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'CW取得版 2026-05-31-02';
+const APP_BUILD_LABEL = '日付入力版 2026-06-02-01';
 
 /* ============================================================
    ルーター
@@ -24,7 +24,7 @@ function renderPage(page) {
   main.innerHTML = '';
   switch (page) {
     case 'dashboard': renderDashboard(); break;
-    case 'morning':   renderMorningCheck(); break;
+    case 'morning':   currentPage = 'tasks'; renderTodayTasks(); break;
     case 'tasks':     renderTodayTasks(); break;
     case 'projects':  renderProjects(); break;
     case 'settings':  renderSettings(); break;
@@ -750,6 +750,7 @@ function renderTodayTasks() {
           <button class="btn btn-ghost btn-sm" onclick="_taskFilter.memberId='';renderTodayTasks()">全メンバー表示</button>
         </div>
       ` : ''}
+      ${renderSharedAskPanel(selectedDate)}
       ${_taskFilter.memberId ? renderMemberAskPanel(_taskFilter.memberId) : ''}
 
       <div class="action-row">
@@ -809,7 +810,7 @@ function renderTodayTasks() {
 
 function todayTaskRow(task) {
   const phaseName    = getPhaseName(task);
-  const projectLabel = getProjectLabel(task);
+  const projectHTML = taskProjectDisplayHTML(task);
   const ownerLabel = getTaskOwnerLabel(task);
   const linkedAsk = getTaskLinkedAsk(task.id);
   const originDate = sourceDateForTask(task);
@@ -828,7 +829,7 @@ function todayTaskRow(task) {
         <div class="task-meta">
           ${taskDateTagHTML(originDate, { carried: isCarry })}
           <span>担当：${escHtml(ownerLabel)}</span>
-          ${projectLabel ? `<span>${projectLabel}</span>` : '<span style="color:var(--text-3)">プロジェクト未選択</span>'}
+          ${projectHTML}
           ${phaseName ? `<span class="tag tag-phase">${phaseName}</span>` : ''}
           ${isCarry ? '<span class="tag tag-carry tag-carry-strong">繰り越し</span>' : ''}
           ${isDone ? '<span class="tag tag-done">完了</span>' : ''}
@@ -841,6 +842,15 @@ function todayTaskRow(task) {
         <button class="btn btn-danger btn-sm" onclick="deleteTask('${task.id}')">削除</button>
       </div>
     </div>`;
+}
+
+function taskProjectDisplayHTML(task) {
+  const projectLabel = getProjectLabel(task);
+  if (projectLabel) return `<span>${escHtml(projectLabel)}</span>`;
+  if (task.sourceProjectName) {
+    return `<span class="tag tag-missing-project">プロジェクト確認待ち：${escHtml(task.sourceProjectName)}</span>`;
+  }
+  return '<span style="color:var(--text-3)">プロジェクト未選択</span>';
 }
 
 function toggleTodayTaskComplete(taskId) {
@@ -920,7 +930,25 @@ function renderMemberAskPanel(memberId) {
     </div>`;
 }
 
-function askCardHTML(ask) {
+function renderSharedAskPanel(selectedDate) {
+  const asks = DB.Asks.all()
+    .filter(a => a.status !== 'done')
+    .filter(a => !_taskFilter.memberId || a.toMemberId === _taskFilter.memberId || a.fromMemberId === _taskFilter.memberId || a.toName === '全員')
+    .filter(a => !_taskFilter.projectId || a.projectId === _taskFilter.projectId)
+    .sort((a, b) => String(a.dueText || a.date || '').localeCompare(String(b.dueText || b.date || '')));
+
+  if (!asks.length) return '';
+  return `
+    <div class="ask-panel ask-panel-shared">
+      <div class="ask-section">
+        <div class="ask-section-title">共有確認・お願い</div>
+        <div class="form-help">進行に関わる確認だけをここに残します。作業上の細かい相談は個別に確認してください。</div>
+        ${asks.map(ask => askCardHTML(ask, selectedDate)).join('')}
+      </div>
+    </div>`;
+}
+
+function askCardHTML(ask, selectedDate = DB.today()) {
   const fromMember = ask.fromMemberId ? DB.Members.get(ask.fromMemberId) : null;
   const toMember = ask.toMemberId ? DB.Members.get(ask.toMemberId) : null;
   const projectLabel = ask.projectId ? projectLabelById(ask.projectId) : ask.projectName;
@@ -931,6 +959,7 @@ function askCardHTML(ask) {
       <div class="ask-main">
         <div class="ask-head">
           <span class="ask-type">${escHtml(ask.type || '質問')}</span>
+          ${ask.date ? taskDateTagHTML(ask.date, { label: relativeDateLabel(ask.date, selectedDate) }) : ''}
           ${projectLabel ? `<span class="ask-project">${escHtml(projectLabel)}</span>` : ''}
           ${ask.dueText ? `<span class="ask-due">期限：${escHtml(ask.dueText)}</span>` : ''}
         </div>
@@ -1143,6 +1172,8 @@ function saveTask(editId) {
     note,
     date: taskDate,
     estimatedHours: _taskFormData.estimatedHours || 1,
+    sourceProjectName: _taskFormData.projectId ? '' : (_taskFormData.sourceProjectName || ''),
+    needsProjectReview: _taskFormData.projectId ? false : Boolean(_taskFormData.needsProjectReview),
   };
 
   let savedTask;
@@ -1268,9 +1299,9 @@ function openBulkTaskModal() {
     <div class="form-group">
       <label class="form-label">タスク本文 *</label>
       <textarea class="form-textarea bulk-textarea" id="bulk-text"
-                placeholder="#task&#10;A社サイト制作, トップページデザイン, 1, 画像差し替え&#10;+, 画像制作, 1, バナー用画像の制作&#10;?, 原稿確認, 0.25, プロジェクト名が不明&#10;&#10;#ask&#10;確認, 田中さん, A社LPの画像方向を確認してください, A社サイト制作, 今日中">${escHtml(_bulkTaskData.text || '')}</textarea>
+                placeholder="#task&#10;2026/06/05, A社サイト制作, トップページデザイン, 1, 画像差し替え&#10;2026/06/05, +, 画像制作, 1, バナー用画像の制作&#10;2026/06/06, ?, 原稿確認, 0.25, プロジェクト名が不明&#10;&#10;#ask&#10;2026/06/05, 確認, 田中さん, A社LPの画像方向を確認してください, A社サイト制作, 今日中">${escHtml(_bulkTaskData.text || '')}</textarea>
       <div class="form-help">
-        #task と #ask を同じ本文に貼れます。タスクの先頭が「+」なら直前と同じプロジェクト、「?」なら未設定です。
+        #task と #ask を同じ本文に貼れます。基本は「日付, プロジェクト, タスク, 時間, 内容, 備考」です。「+」は直前と同じプロジェクト、「?」は未設定です。
       </div>
     </div>
     <div id="bulk-preview">${_bulkTaskData.preview ? bulkPreviewHTML(_bulkTaskData.preview) : ''}</div>
@@ -1443,9 +1474,7 @@ function importChatworkMessageList({ roomId, messages, targetDate, ownerMemberId
 function saveParsedChatworkTasks(taskParsed, memberId, date, ownerMemberId) {
   let count = 0;
   (taskParsed.groups || []).forEach(group => {
-    const project = group.projectName
-      ? findOrCreateBulkProject(group.projectName, ownerMemberId)
-      : null;
+    const project = resolveInputProject(group.projectName);
 
     (group.tasks || []).forEach(task => {
       DB.Tasks.add({
@@ -1453,9 +1482,11 @@ function saveParsedChatworkTasks(taskParsed, memberId, date, ownerMemberId) {
         projectId: project?.id || null,
         phaseId: null,
         content: task.content,
-        note: task.note || '',
-        date,
+        note: buildInputTaskNote(task.note, group.projectName, project),
+        date: task.date || date,
         estimatedHours: task.hours,
+        sourceProjectName: project ? '' : (group.projectName || ''),
+        needsProjectReview: Boolean(group.projectName && !project),
       });
       count++;
     });
@@ -1477,7 +1508,7 @@ function saveParsedChatworkAsks(asks, memberId, date) {
       projectId: project?.id || null,
       projectName: ask.projectName,
       dueText: ask.dueText,
-      date,
+      date: ask.date || date,
     });
     count++;
   });
@@ -1514,9 +1545,7 @@ function saveBulkTasks() {
   if (!totalTasks && !totalAsks) { showToast('登録できる内容が見つかりません', 'error'); return; }
 
   parsed.tasks.groups.forEach(group => {
-    const project = group.projectName
-      ? findOrCreateBulkProject(group.projectName, ownerMemberId)
-      : null;
+    const project = resolveInputProject(group.projectName);
 
     group.tasks.forEach(task => {
       DB.Tasks.add({
@@ -1524,9 +1553,11 @@ function saveBulkTasks() {
         projectId: project?.id || null,
         phaseId: null,
         content: task.content,
-        note: task.note || '',
-        date,
+        note: buildInputTaskNote(task.note, group.projectName, project),
+        date: task.date || date,
         estimatedHours: task.hours,
+        sourceProjectName: project ? '' : (group.projectName || ''),
+        needsProjectReview: Boolean(group.projectName && !project),
       });
     });
   });
@@ -1543,7 +1574,7 @@ function saveBulkTasks() {
       projectId: project?.id || null,
       projectName: ask.projectName,
       dueText: ask.dueText,
-      date,
+      date: ask.date || date,
     });
   });
 
@@ -1626,8 +1657,8 @@ function parseChatTaskRows(text) {
       labelled = {};
       return;
     }
-    if (/^(プロジェクト名|プロジェクト|案件名|案件|タスク|作業|時間|工数|内容|詳細|備考|コメント|相談)\s*[:：]/.test(line)) {
-      const [, key, value] = line.match(/^(プロジェクト名|プロジェクト|案件名|案件|タスク|作業|時間|工数|内容|詳細|備考|コメント|相談)\s*[:：]\s*(.*)$/) || [];
+    if (/^(日付|作業日|予定日|プロジェクト名|プロジェクト|案件名|案件|タスク|作業|時間|工数|内容|詳細|備考|コメント|相談)\s*[:：]/.test(line)) {
+      const [, key, value] = line.match(/^(日付|作業日|予定日|プロジェクト名|プロジェクト|案件名|案件|タスク|作業|時間|工数|内容|詳細|備考|コメント|相談)\s*[:：]\s*(.*)$/) || [];
       if (key) {
         const normalizedKey = normalizeChatTaskKey(key);
         labelled[normalizedKey] = value.trim();
@@ -1665,6 +1696,7 @@ function parseChatTaskRows(text) {
       content: row.content,
       hours: row.hours,
       note: row.note,
+      date: row.date,
     });
   });
 
@@ -1679,20 +1711,28 @@ function parseAskText(text) {
     const cells = splitTaskRow(line);
     if (cells.length < 3 || isAskHeaderRow(cells)) return;
 
-    const [type = '質問', toName = '', content = '', projectName = '', dueText = ''] = cells;
+    let date = '';
+    let askCells = cells;
+    const firstDate = normalizeInputDate(cells[0]);
+    if (firstDate) {
+      date = firstDate;
+      askCells = cells.slice(1);
+    }
+    const [type = '質問', toName = '', content = '', projectName = '', dueText = ''] = askCells;
     asks.push({
       type: normalizeAskKind(type),
       toName: toName.trim(),
       content: content.trim(),
       projectName: projectName.trim(),
       dueText: dueText.trim(),
+      date,
     });
   });
   return asks.filter(ask => ask.toName && ask.content);
 }
 
 function isAskHeaderRow(cells) {
-  return /^種別宛先内容(関連プロジェクト|プロジェクト)?期限?$/.test(cells.join('').replace(/\s/g, ''));
+  return /^(日付|作業日|予定日)?種別宛先内容(関連プロジェクト|プロジェクト)?期限?$/.test(cells.join('').replace(/\s/g, ''));
 }
 
 function normalizeAskKind(type) {
@@ -1711,10 +1751,11 @@ function splitTaskRow(line) {
 }
 
 function isBulkHeaderRow(cells) {
-  return /^プロジェクト名タスク時間内容(備考|コメント|相談)?$/.test(cells.join('').replace(/\s/g, ''));
+  return /^(日付|作業日|予定日)?プロジェクト名タスク時間内容(備考|コメント|相談)?$/.test(cells.join('').replace(/\s/g, ''));
 }
 
 function normalizeChatTaskKey(key) {
+  if (/日付|作業日|予定日/.test(key)) return 'date';
   if (/プロジェクト|案件/.test(key)) return 'projectName';
   if (/タスク|作業/.test(key)) return 'task';
   if (/時間|工数/.test(key)) return 'hours';
@@ -1725,20 +1766,66 @@ function normalizeChatTaskKey(key) {
 function pushLabelledTask(rows, data) {
   if (!data || !Object.keys(data).length) return;
   if (!data.projectName && !data.task && !data.detail) return;
-  rows.push(rowToTask([data.projectName || '', data.task || '', data.hours || '', data.detail || '', data.note || '']));
+  rows.push(rowToTask([data.date || '', data.projectName || '', data.task || '', data.hours || '', data.detail || '', data.note || '']));
 }
 
 function rowToTask(cells) {
-  const [projectName = '', taskName = '', hoursText = '', detail = '', ...noteParts] = cells;
+  let date = '';
+  let taskCells = cells;
+  const firstDate = normalizeInputDate(cells[0]);
+  if (firstDate) {
+    date = firstDate;
+    taskCells = cells.slice(1);
+  }
+  const [projectName = '', taskName = '', hoursText = '', detail = '', ...noteParts] = taskCells;
   const hours = extractHours(hoursText);
   const contentParts = [taskName, detail].map(s => s.trim()).filter(Boolean);
   const note = noteParts.join('、').trim();
   return {
+    date,
     projectName: projectName.trim(),
     content: contentParts.join(' - ') || '未入力タスク',
     hours,
     note,
   };
+}
+
+function normalizeInputDate(value) {
+  const raw = normalizeNumberText(String(value || '').trim());
+  if (!raw) return '';
+  if (raw === '今日') return DB.today();
+  if (raw === '昨日') return DB.yesterday();
+  if (raw === '明日') return tomorrowDate();
+
+  let match = raw.match(/^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?$/);
+  if (match) return datePartsToISO(match[1], match[2], match[3]);
+
+  match = raw.match(/^(\d{1,2})[-/.月](\d{1,2})日?$/);
+  if (match) return datePartsToISO(new Date().getFullYear(), match[1], match[2]);
+
+  return '';
+}
+
+function datePartsToISO(year, month, day) {
+  const y = String(year).padStart(4, '0');
+  const m = String(month).padStart(2, '0');
+  const d = String(day).padStart(2, '0');
+  const date = new Date(`${y}-${m}-${d}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return '';
+  if (date.getFullYear() !== Number(y) || date.getMonth() + 1 !== Number(m) || date.getDate() !== Number(d)) return '';
+  return `${y}-${m}-${d}`;
+}
+
+function resolveInputProject(projectName) {
+  if (!projectName) return null;
+  return findProjectByName(projectName);
+}
+
+function buildInputTaskNote(note, projectName, project) {
+  const parts = [];
+  if (projectName && !project) parts.push(`元プロジェクト名：${projectName}`);
+  if (note) parts.push(note);
+  return parts.join(' / ');
 }
 
 function extractHours(value) {
@@ -1749,23 +1836,24 @@ function extractHours(value) {
 
 async function copyBulkTaskTemplate() {
   const template = [
-    '明日のタスクを以下の形式で送ってください。',
+    'タスクを以下の形式で送ってください。',
     '',
     '#task',
-    'プロジェクト名, タスク, 時間, 内容, 備考',
-    '例）A社サイト制作, トップページデザイン, 1, 画像差し替え',
-    '例）+, 画像制作, 1, バナー用画像の制作',
-    '例）?, 原稿確認, 0.25, プロジェクト名が不明',
+    '日付, プロジェクト名, タスク, 時間, 内容, 備考',
+    '例）2026/06/05, A社サイト制作, トップページデザイン, 1, 画像差し替え',
+    '例）2026/06/05, +, 画像制作, 1, バナー用画像の制作',
+    '例）2026/06/06, ?, 原稿確認, 0.25, プロジェクト名が不明',
     '',
     '※ 先頭が「+」なら、直前と同じプロジェクトです。',
     '※ 先頭が「?」なら、プロジェクト未設定として登録されます。',
+    '※ プロジェクトはアプリに登録済みのものだけ紐づきます。未登録名は確認待ちとして残ります。',
     '※ 備考には、作業メモ・補足・引き継ぎを書いてください。',
     '',
     '#ask',
     '※ #ask は進行が止まる確認、次工程に渡す確認だけに使ってください。',
-    '種別, 宛先, 内容, 関連プロジェクト, 期限',
-    '例）確認, 田中さん, A社LPの画像方向を確認してください, A社サイト制作, 今日中',
-    '例）確認, 鈴木さん, 広告入稿に進めてよいか確認してください, A社広告, 今日中',
+    '日付, 種別, 宛先, 内容, 関連プロジェクト, 期限',
+    '例）2026/06/05, 確認, 田中さん, A社LPの画像方向を確認してください, A社サイト制作, 今日中',
+    '例）2026/06/05, 共有, 全員, 先方確認が戻りました, A社広告, -',
   ].join('\n');
 
   try {
@@ -1872,18 +1960,20 @@ function bulkPreviewHTML(parsed) {
         </div>
       ` : ''}
       ${taskParsed.groups.map(group => {
-        const project = group.projectName ? parseProjectName(group.projectName) : null;
+        const project = group.projectName ? resolveInputProject(group.projectName) : null;
+        const projectMissing = Boolean(group.projectName && !project);
         return `
           <div class="bulk-preview-group">
             <div class="bulk-project-name">
-              ${project
-                ? `${project.recurringSeries ? '<span class="status-badge recurring">定期</span>' : '<span class="status-badge provisional">仮登録</span>'} ${escHtml(project.clientName)} / ${escHtml(project.name)}`
+              ${group.projectName
+                ? `${projectMissing ? '<span class="status-badge provisional">確認待ち</span>' : '<span class="status-badge recurring">登録済み</span>'} ${escHtml(project ? `${project.clientName} / ${project.name}` : group.projectName)}`
                 : '<span class="status-badge personal">個人タスク</span>'}
             </div>
             <ul>
               ${group.tasks.map(task => `
                 <li>
                   <div>
+                    ${task.date ? `${taskDateTagHTML(task.date)} ` : ''}
                     ${escHtml(task.content)}
                     ${task.note ? `<div class="bulk-note">備考：${escHtml(task.note)}</div>` : ''}
                   </div>
@@ -1903,6 +1993,7 @@ function bulkPreviewHTML(parsed) {
               <li>
                 <div>
                   <span class="ask-inline-type">${escHtml(ask.type)}</span>
+                  ${ask.date ? `${taskDateTagHTML(ask.date)} ` : ''}
                   ${escHtml(ask.toName)}へ：${escHtml(ask.content)}
                   ${ask.projectName ? `<div class="bulk-note">関連：${escHtml(ask.projectName)}</div>` : ''}
                 </div>
@@ -1916,7 +2007,7 @@ function bulkPreviewHTML(parsed) {
 
 function getMissingProjectTasks(parsed) {
   return (parsed.groups || [])
-    .filter(group => !group.projectName)
+    .filter(group => !group.projectName || !resolveInputProject(group.projectName))
     .flatMap(group => group.tasks || []);
 }
 

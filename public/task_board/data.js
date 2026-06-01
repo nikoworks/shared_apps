@@ -335,12 +335,15 @@ const Tasks = {
   add({
     memberId, projectId = null, phaseId = null, content, estimatedHours,
     note = '', date = today(), carriedFromTaskId = null,
+    sourceProjectName = '', needsProjectReview = false,
   }) {
     const list = this.all();
     const task = {
       id: genId(), date, memberId, projectId, phaseId,
       content, estimatedHours: parseFloat(estimatedHours),
       note,
+      sourceProjectName,
+      needsProjectReview,
       carriedFromTaskId,
       carriedOverToTaskId: null,
       completed: null,        // null=未確認, true=完了, false=未完了
@@ -379,6 +382,8 @@ const Tasks = {
       note: source.note,
       date: targetDate,
       carriedFromTaskId: source.id,
+      sourceProjectName: source.sourceProjectName || '',
+      needsProjectReview: Boolean(source.needsProjectReview),
     });
     this.update(source.id, { carriedOverToTaskId: carried.id });
     return carried;

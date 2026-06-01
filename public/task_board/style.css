@@ -861,6 +861,9 @@ body {
   gap: 12px;
   margin-bottom: 16px;
 }
+.ask-panel-shared {
+  margin-top: -4px;
+}
 .ask-section {
   padding: 14px;
   border: 1px solid var(--border);
@@ -933,6 +936,10 @@ body {
 .tag-ask {
   background: var(--warning-lite);
   color: var(--warning);
+}
+.tag-missing-project {
+  background: var(--danger-lite);
+  color: var(--danger);
 }
 .task-ask-box {
   margin-top: 12px;
