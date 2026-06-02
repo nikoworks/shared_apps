@@ -329,7 +329,14 @@ const Projects = {
 const Tasks = {
   all()            { return load(KEYS.TASKS) ?? []; },
   byDate(date)     { return this.all().filter(t => t.date === date); },
-  todayTasks()     { return this.byDate(today()); },
+  byDateRange(startDate, endDate) {
+    const start = startDate || today();
+    const end = endDate || start;
+    const from = start <= end ? start : end;
+    const to = start <= end ? end : start;
+    return this.all().filter(t => t.date >= from && t.date <= to);
+  },
+  todayTasks()     { return this.byDate(today()).filter(t => t.completed !== true); },
   yesterdayTasks() { return this.byDate(yesterday()); },
 
   add({

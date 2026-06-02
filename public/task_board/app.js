@@ -714,24 +714,62 @@ function updateMorningBadge() {
 /* ============================================================
    今日のタスク
    ============================================================ */
-let _taskFilter = { memberId: '', projectId: '', date: '' };
+let _taskFilter = { memberId: '', projectId: '', date: '', startDate: '', endDate: '', showCompleted: false };
 let _taskFormData = { memberId: '', projectId: '', phaseId: '', content: '', estimatedHours: 1, note: '', date: '' };
 let _bulkTaskData = { memberId: '', ownerMemberId: '', date: '', text: '', preview: null };
 const CHATWORK_ROOM_KEY = 'tb_chatwork_room_id';
 const CHATWORK_IMPORT_KEY = 'tb_chatwork_import_key';
 
+function getTaskRange() {
+  const start = _taskFilter.startDate || _taskFilter.date || DB.today();
+  const end = _taskFilter.endDate || _taskFilter.date || start;
+  return start <= end ? { start, end } : { start: end, end: start };
+}
+
+function getTaskDefaultDate() {
+  const range = getTaskRange();
+  return range.start === range.end ? range.start : DB.today();
+}
+
+function setTaskFilterStartDate(value) {
+  _taskFilter.startDate = value || DB.today();
+  if (!_taskFilter.endDate) _taskFilter.endDate = _taskFilter.startDate;
+  _taskFilter.date = _taskFilter.startDate;
+  renderTodayTasks();
+}
+
+function setTaskFilterEndDate(value) {
+  _taskFilter.endDate = value || (_taskFilter.startDate || DB.today());
+  _taskFilter.date = _taskFilter.startDate || _taskFilter.endDate;
+  renderTodayTasks();
+}
+
+function setTaskFilterToday() {
+  const today = DB.today();
+  _taskFilter.date = today;
+  _taskFilter.startDate = today;
+  _taskFilter.endDate = today;
+  renderTodayTasks();
+}
+
+function taskRangeLabel(range) {
+  if (range.start === range.end) return `${DB.fmtDate(range.start)} の作業予定`;
+  return `${DB.fmtDate(range.start)}〜${DB.fmtDate(range.end)} のタスク`;
+}
+
 function renderTodayTasks() {
   const main       = document.getElementById('main-content');
   const members    = DB.Members.all();
   const projects   = DB.Projects.active();
-  const selectedDate = _taskFilter.date || DB.today();
-  const dateTasks = DB.Tasks.byDate(selectedDate);
+  const range = getTaskRange();
+  const dateTasks = DB.Tasks.byDateRange(range.start, range.end);
   const personalMember = _personalMemberId ? DB.Members.get(_personalMemberId) : null;
 
   // フィルタ適用
   const filtered = dateTasks.filter(t => {
     if (_taskFilter.memberId  && t.memberId  !== _taskFilter.memberId)  return false;
     if (_taskFilter.projectId && t.projectId !== _taskFilter.projectId) return false;
+    if (!_taskFilter.showCompleted && t.completed === true) return false;
     return true;
   });
 
@@ -747,7 +785,7 @@ function renderTodayTasks() {
   main.innerHTML = `
     <div class="page-header"><div class="page-header-left">
       <h2>${personalMember ? `${escHtml(personalMember.name)}さんのタスク` : '今日のタスク'}</h2>
-      <p>${DB.fmtDate(selectedDate)} の作業予定${personalMember ? '・個人ページ' : ''}</p>
+      <p>${taskRangeLabel(range)}${personalMember ? '・個人ページ' : ''}</p>
     </div></div>
     <div class="page-body fade-in">
       ${personalMember ? `
@@ -757,7 +795,7 @@ function renderTodayTasks() {
           <button class="btn btn-ghost btn-sm" onclick="_taskFilter.memberId='';renderTodayTasks()">全メンバー表示</button>
         </div>
       ` : ''}
-      ${renderSharedAskPanel(selectedDate)}
+      ${renderSharedAskPanel(range.start)}
       ${_taskFilter.memberId ? renderMemberAskPanel(_taskFilter.memberId) : ''}
 
       <div class="action-row">
@@ -770,9 +808,15 @@ function renderTodayTasks() {
                   onchange="_taskFilter.projectId=this.value;renderTodayTasks()">
             <option value="">全プロジェクト</option>${projectOpts}
           </select>
-          <input type="date" class="form-input" style="width:150px" id="filter-date"
-                 value="${selectedDate}" onchange="_taskFilter.date=this.value;renderTodayTasks()">
-          <button class="btn btn-ghost btn-sm" onclick="_taskFilter.date=DB.today();renderTodayTasks()">今日</button>
+          <input type="date" class="form-input" style="width:150px" id="filter-start-date"
+                 value="${range.start}" onchange="setTaskFilterStartDate(this.value)" title="開始日">
+          <span style="font-size:13px;color:var(--text-2)">〜</span>
+          <input type="date" class="form-input" style="width:150px" id="filter-end-date"
+                 value="${range.end}" onchange="setTaskFilterEndDate(this.value)" title="終了日">
+          <button class="btn btn-ghost btn-sm" onclick="setTaskFilterToday()">今日</button>
+          <button class="btn btn-ghost btn-sm" onclick="_taskFilter.showCompleted=!_taskFilter.showCompleted;renderTodayTasks()">
+            ${_taskFilter.showCompleted ? '未完了のみ' : '完了済みも表示'}
+          </button>
         </div>
         <div style="display:flex;align-items:center;gap:12px">
           <span style="font-size:13px;color:var(--text-2)">合計 <strong style="color:var(--primary)">${totalH}h</strong></span>
@@ -1047,7 +1091,7 @@ function openTaskModal(editId) {
       content: '',
       estimatedHours: 1,
       note: '',
-      date: _taskFilter.date || DB.today(),
+      date: getTaskDefaultDate(),
     };
   }
 
@@ -1258,7 +1302,7 @@ function openBulkTaskModal() {
   if (!_bulkTaskData.ownerMemberId) _bulkTaskData.ownerMemberId = getDefaultOwnerMemberId();
   members = DB.Members.all();
 
-  if (!_bulkTaskData.date) _bulkTaskData.date = _taskFilter.date || DB.today();
+  if (!_bulkTaskData.date) _bulkTaskData.date = getTaskDefaultDate();
   if (!_bulkTaskData.memberId) _bulkTaskData.memberId = _taskFilter.memberId || _personalMemberId || '';
 
   const memberOpts = members.map(m =>
@@ -1387,7 +1431,7 @@ async function importChatworkMessages() {
 async function importChatworkTasksDirect() {
   let roomId = getSavedChatworkRoomId();
   const importKey = getSavedChatworkImportKey();
-  const targetDate = _taskFilter.date || DB.today();
+  const targetDate = getTaskDefaultDate();
   const ownerMemberId = getDefaultOwnerMemberId();
 
   try {
@@ -1425,6 +1469,8 @@ async function importChatworkTasksDirect() {
     }
 
     _taskFilter.date = targetDate;
+    _taskFilter.startDate = targetDate;
+    _taskFilter.endDate = targetDate;
     renderTodayTasks();
     updateMorningBadge();
   } catch {
@@ -1586,6 +1632,8 @@ function saveBulkTasks() {
   });
 
   _taskFilter.date = date;
+  _taskFilter.startDate = date;
+  _taskFilter.endDate = date;
   _bulkTaskData = { memberId, ownerMemberId, date, text: '', preview: null };
   closeModal();
   showToast(`${totalTasks}件のタスク、${totalAsks}件の進行確認を登録しました`, 'success');
