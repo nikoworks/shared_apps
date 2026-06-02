@@ -24,7 +24,7 @@ function renderPage(page) {
   main.innerHTML = '';
   switch (page) {
     case 'dashboard': renderDashboard(); break;
-    case 'morning':   currentPage = 'tasks'; renderTodayTasks(); break;
+    case 'morning':   _currentPage = 'tasks'; renderTodayTasks(); break;
     case 'tasks':     renderTodayTasks(); break;
     case 'projects':  renderProjects(); break;
     case 'settings':  renderSettings(); break;
@@ -1299,9 +1299,9 @@ function openBulkTaskModal() {
     <div class="form-group">
       <label class="form-label">タスク本文 *</label>
       <textarea class="form-textarea bulk-textarea" id="bulk-text"
-                placeholder="#task&#10;2026/06/05, A社サイト制作, トップページデザイン, 1, 画像差し替え&#10;2026/06/05, +, 画像制作, 1, バナー用画像の制作&#10;2026/06/06, ?, 原稿確認, 0.25, プロジェクト名が不明&#10;&#10;#ask&#10;2026/06/05, 確認, 田中さん, A社LPの画像方向を確認してください, A社サイト制作, 今日中">${escHtml(_bulkTaskData.text || '')}</textarea>
+                placeholder="6月2日&#10;#task&#10;A社サイト制作 / トップページデザイン / 1 / 画像差し替え&#10;+ / 画像制作 / 1 / バナー用画像の制作&#10;? / 原稿確認 / 0.25 / プロジェクト名が不明&#10;&#10;#ask&#10;確認 / 田中さん / A社LPの画像方向を確認してください / A社サイト制作 / 今日中">${escHtml(_bulkTaskData.text || '')}</textarea>
       <div class="form-help">
-        #task と #ask を同じ本文に貼れます。基本は「日付, プロジェクト, タスク, 時間, 内容, 備考」です。「+」は直前と同じプロジェクト、「?」は未設定です。
+        #task と #ask を同じ本文に貼れます。区切りは「,」または「/」です。日付だけの行を書くと、その下の行に同じ日付が入ります。「+」は直前と同じプロジェクト、「?」は未設定です。
       </div>
     </div>
     <div id="bulk-preview">${_bulkTaskData.preview ? bulkPreviewHTML(_bulkTaskData.preview) : ''}</div>
@@ -1649,14 +1649,24 @@ function parseBulkTaskText(text) {
 function parseChatTaskRows(text) {
   const rows = [];
   let labelled = {};
+  let currentDate = '';
 
   (text || '').split(/\r?\n/).forEach(raw => {
     const line = raw.trim();
     if (!line) {
-      pushLabelledTask(rows, labelled);
+      pushLabelledTask(rows, labelled, currentDate);
       labelled = {};
       return;
     }
+
+    const standaloneDate = normalizeInputDate(line);
+    if (standaloneDate) {
+      pushLabelledTask(rows, labelled, currentDate);
+      labelled = {};
+      currentDate = standaloneDate;
+      return;
+    }
+
     if (/^(日付|作業日|予定日|プロジェクト名|プロジェクト|案件名|案件|タスク|作業|時間|工数|内容|詳細|備考|コメント|相談)\s*[:：]/.test(line)) {
       const [, key, value] = line.match(/^(日付|作業日|予定日|プロジェクト名|プロジェクト|案件名|案件|タスク|作業|時間|工数|内容|詳細|備考|コメント|相談)\s*[:：]\s*(.*)$/) || [];
       if (key) {
@@ -1668,10 +1678,10 @@ function parseChatTaskRows(text) {
 
     const cells = splitTaskRow(line);
     if (cells.length >= 3 && !isBulkHeaderRow(cells)) {
-      rows.push(rowToTask(cells));
+      rows.push(rowToTask(cells, currentDate));
     }
   });
-  pushLabelledTask(rows, labelled);
+  pushLabelledTask(rows, labelled, currentDate);
 
   const groups = [];
   let currentProject = '';
@@ -1705,13 +1715,21 @@ function parseChatTaskRows(text) {
 
 function parseAskText(text) {
   const asks = [];
+  let currentDate = '';
   (text || '').split(/\r?\n/).forEach(raw => {
     const line = raw.trim();
     if (!line) return;
+
+    const standaloneDate = normalizeInputDate(line);
+    if (standaloneDate) {
+      currentDate = standaloneDate;
+      return;
+    }
+
     const cells = splitTaskRow(line);
     if (cells.length < 3 || isAskHeaderRow(cells)) return;
 
-    let date = '';
+    let date = currentDate;
     let askCells = cells;
     const firstDate = normalizeInputDate(cells[0]);
     if (firstDate) {
@@ -1744,10 +1762,33 @@ function normalizeAskKind(type) {
 }
 
 function splitTaskRow(line) {
-  return line
-    .split(/\t|,|、/)
-    .map(cell => cell.trim())
+  const text = String(line || '').trim();
+  if (!text) return [];
+  if (/\t|,|、/.test(text)) return cleanTaskCells(text.split(/\t|,|、/));
+
+  const protectedText = protectDateSlashes(text);
+  if (/[\/／]/.test(protectedText)) {
+    return cleanTaskCells(protectedText.split(/[\/／]/));
+  }
+  return cleanTaskCells([text]);
+}
+
+function cleanTaskCells(cells) {
+  return cells
+    .map(cell => restoreDateSlashes(String(cell).trim()))
     .filter(Boolean);
+}
+
+function protectDateSlashes(text) {
+  return String(text || '').replace(/(\d{1,4})\/(\d{1,2})(?:\/(\d{1,2}))?/g, (match, a, b, c) => {
+    return c
+      ? `${a}__DATE_SLASH__${b}__DATE_SLASH__${c}`
+      : `${a}__DATE_SLASH__${b}`;
+  });
+}
+
+function restoreDateSlashes(text) {
+  return String(text || '').replace(/__DATE_SLASH__/g, '/');
 }
 
 function isBulkHeaderRow(cells) {
@@ -1763,14 +1804,14 @@ function normalizeChatTaskKey(key) {
   return 'detail';
 }
 
-function pushLabelledTask(rows, data) {
+function pushLabelledTask(rows, data, fallbackDate = '') {
   if (!data || !Object.keys(data).length) return;
   if (!data.projectName && !data.task && !data.detail) return;
-  rows.push(rowToTask([data.date || '', data.projectName || '', data.task || '', data.hours || '', data.detail || '', data.note || '']));
+  rows.push(rowToTask([data.date || fallbackDate || '', data.projectName || '', data.task || '', data.hours || '', data.detail || '', data.note || ''], fallbackDate));
 }
 
-function rowToTask(cells) {
-  let date = '';
+function rowToTask(cells, fallbackDate = '') {
+  let date = fallbackDate || '';
   let taskCells = cells;
   const firstDate = normalizeInputDate(cells[0]);
   if (firstDate) {
@@ -1838,12 +1879,15 @@ async function copyBulkTaskTemplate() {
   const template = [
     'タスクを以下の形式で送ってください。',
     '',
+    '6月2日',
     '#task',
-    '日付, プロジェクト名, タスク, 時間, 内容, 備考',
-    '例）2026/06/05, A社サイト制作, トップページデザイン, 1, 画像差し替え',
-    '例）2026/06/05, +, 画像制作, 1, バナー用画像の制作',
-    '例）2026/06/06, ?, 原稿確認, 0.25, プロジェクト名が不明',
+    'プロジェクト名 / タスク / 時間 / 内容 / 備考',
+    '例）A社サイト制作 / トップページデザイン / 1 / 画像差し替え',
+    '例）+ / 画像制作 / 1 / バナー用画像の制作',
+    '例）? / 原稿確認 / 0.25 / プロジェクト名が不明',
     '',
+    '※ 区切りは「,」でも「/」でもOKです。',
+    '※ 先頭に日付だけを書くと、その下のタスク全部に同じ日付が入ります。',
     '※ 先頭が「+」なら、直前と同じプロジェクトです。',
     '※ 先頭が「?」なら、プロジェクト未設定として登録されます。',
     '※ プロジェクトはアプリに登録済みのものだけ紐づきます。未登録名は確認待ちとして残ります。',
@@ -1851,9 +1895,9 @@ async function copyBulkTaskTemplate() {
     '',
     '#ask',
     '※ #ask は進行が止まる確認、次工程に渡す確認だけに使ってください。',
-    '日付, 種別, 宛先, 内容, 関連プロジェクト, 期限',
-    '例）2026/06/05, 確認, 田中さん, A社LPの画像方向を確認してください, A社サイト制作, 今日中',
-    '例）2026/06/05, 共有, 全員, 先方確認が戻りました, A社広告, -',
+    '種別 / 宛先 / 内容 / 関連プロジェクト / 期限',
+    '例）確認 / 田中さん / A社LPの画像方向を確認してください / A社サイト制作 / 今日中',
+    '例）共有 / 全員 / 先方確認が戻りました / A社広告 / -',
   ].join('\n');
 
   try {
