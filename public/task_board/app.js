@@ -117,7 +117,14 @@ function normalizeNameText(value) {
 function findMemberByName(name) {
   const target = normalizeNameText(name);
   if (!target) return null;
-  return DB.Members.all().find(m => normalizeNameText(m.name) === target) || null;
+  const members = DB.Members.all();
+  const exact = members.find(m => normalizeNameText(m.name) === target);
+  if (exact) return exact;
+
+  return members.find(m => {
+    const memberName = normalizeNameText(m.name);
+    return memberName.length >= 3 && target.includes(memberName);
+  }) || null;
 }
 
 function findProjectByName(name) {
