@@ -2621,22 +2621,21 @@ function phaseEditorRow(projectId, ph, i) {
 function addPhaseToProject(projectId) {
   const p = DB.Projects.get(projectId);
   if (!p) return;
-  const newPh = { id: DB.genId(), name: '新フェーズ', status: 'pending', dueDate: '', order: (p.phases||[]).length };
-  DB.Projects.updatePhases(projectId, [...(p.phases||[]), newPh]);
+  const currentPhases = readPhaseEditorValues(p);
+  const newPh = { id: DB.genId(), name: '新フェーズ', status: 'pending', dueDate: '', order: currentPhases.length };
+  DB.Projects.updatePhases(projectId, [...currentPhases, newPh]);
   openPhaseEditor(projectId);
 }
 
 function removePhaseFromEditor(projectId, phaseId) {
   const p = DB.Projects.get(projectId);
   if (!p) return;
-  DB.Projects.updatePhases(projectId, (p.phases||[]).filter(ph => ph.id !== phaseId));
+  DB.Projects.updatePhases(projectId, readPhaseEditorValues(p).filter(ph => ph.id !== phaseId));
   openPhaseEditor(projectId);
 }
 
-function savePhaseEditor(projectId) {
-  const p = DB.Projects.get(projectId);
-  if (!p) return;
-  const updated = (p.phases||[]).map(ph => {
+function readPhaseEditorValues(project) {
+  return (project.phases||[]).map(ph => {
     const nameEl   = document.getElementById(`ph-name-${ph.id}`);
     const statusEl = document.getElementById(`ph-status-${ph.id}`);
     const dueEl    = document.getElementById(`ph-due-${ph.id}`);
@@ -2647,6 +2646,12 @@ function savePhaseEditor(projectId) {
       dueDate: dueEl    ? dueEl.value : ph.dueDate,
     };
   });
+}
+
+function savePhaseEditor(projectId) {
+  const p = DB.Projects.get(projectId);
+  if (!p) return;
+  const updated = readPhaseEditorValues(p);
   DB.Projects.updatePhases(projectId, updated);
   closeModal();
   showToast('フェーズを保存しました', 'success');
