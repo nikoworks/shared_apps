@@ -13,6 +13,7 @@ const KEYS = {
   ASKS:      'tb_asks',
   TEMPLATES: 'tb_templates',
   CHATWORK_IMPORTS: 'tb_chatwork_imports',
+  PROJECT_REVIEWS: 'tb_project_reviews',
   META:      'tb_meta',
 };
 
@@ -74,6 +75,7 @@ function getStoreSnapshot() {
     asks: load(KEYS.ASKS) ?? [],
     templates: load(KEYS.TEMPLATES) ?? [],
     chatworkImports: load(KEYS.CHATWORK_IMPORTS) ?? [],
+    projectReviews: load(KEYS.PROJECT_REVIEWS) ?? [],
     meta: load(KEYS.META) ?? { lastDate: today() },
   };
 }
@@ -85,6 +87,7 @@ function applyStoreSnapshot(data = {}) {
   saveLocalOnly(KEYS.ASKS, data.asks ?? []);
   saveLocalOnly(KEYS.TEMPLATES, data.templates ?? DEFAULT_TEMPLATES.map(t => ({ ...t, custom: false })));
   saveLocalOnly(KEYS.CHATWORK_IMPORTS, data.chatworkImports ?? []);
+  saveLocalOnly(KEYS.PROJECT_REVIEWS, data.projectReviews ?? []);
   saveLocalOnly(KEYS.META, data.meta ?? { lastDate: today() });
 }
 
@@ -180,6 +183,7 @@ async function initStore() {
   if (!load(KEYS.TASKS))    save(KEYS.TASKS,    []);
   if (!load(KEYS.ASKS))     save(KEYS.ASKS,     []);
   if (!load(KEYS.CHATWORK_IMPORTS)) save(KEYS.CHATWORK_IMPORTS, []);
+  if (!load(KEYS.PROJECT_REVIEWS)) save(KEYS.PROJECT_REVIEWS, []);
   if (!load(KEYS.META))     save(KEYS.META,     { lastDate: today() });
 }
 
@@ -519,6 +523,35 @@ const ChatworkImports = {
 };
 
 // ============================================================
+// プロジェクト確認待ち
+// ============================================================
+const ProjectReviews = {
+  all() { return load(KEYS.PROJECT_REVIEWS) ?? []; },
+  add({ roomId = '', messageId = '', accountName = '', memberId = '', groups = [] }) {
+    if (!groups.length) return null;
+    const list = this.all();
+    const review = {
+      id: genId(),
+      roomId: String(roomId || ''),
+      messageId: String(messageId || ''),
+      accountName,
+      memberId,
+      groups,
+      status: 'open',
+      createdAt: new Date().toISOString(),
+      resolvedAt: '',
+    };
+    list.push(review);
+    save(KEYS.PROJECT_REVIEWS, list.slice(-500));
+    return review;
+  },
+  update(id, patch) {
+    save(KEYS.PROJECT_REVIEWS, this.all().map(r => r.id === id ? { ...r, ...patch } : r));
+  },
+  get(id) { return this.all().find(r => r.id === id) ?? null; },
+};
+
+// ============================================================
 // テンプレート
 // ============================================================
 const Templates = {
@@ -558,7 +591,7 @@ function buildPhasesFromTemplate(templateId) {
 // エクスポート（グローバル）
 // ============================================================
 window.DB = {
-  Members, Projects, Tasks, Asks, ChatworkImports, Templates,
+  Members, Projects, Tasks, Asks, ChatworkImports, ProjectReviews, Templates,
   today, yesterday, prevDay, fmtDate, daysLeft, genId,
   initStore, seedDemoData,
 };

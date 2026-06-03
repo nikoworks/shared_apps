@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '日付入力版 2026-06-02-01';
+const APP_BUILD_LABEL = '案件確認版 2026-06-03-01';
 
 /* ============================================================
    ルーター
@@ -26,6 +26,7 @@ function renderPage(page) {
     case 'dashboard': renderDashboard(); break;
     case 'morning':   _currentPage = 'tasks'; renderTodayTasks(); break;
     case 'tasks':     renderTodayTasks(); break;
+    case 'projectReview': renderProjectReviewFromUrl(); break;
     case 'projects':  renderProjects(); break;
     case 'settings':  renderSettings(); break;
     default:          renderDashboard();
@@ -136,6 +137,53 @@ function findProjectByName(name) {
     normalizeMatchText(p.clientName) === target ||
     normalizeMatchText(p.name) === target
   ) || null;
+}
+
+function findSimilarProjects(name, limit = 5) {
+  const target = normalizeProjectSearchText(name);
+  if (!target) return [];
+  return DB.Projects.active()
+    .map(project => {
+      const label = `${project.clientName} ${project.name} ${project.recurringSeries || ''}`;
+      const score = projectSimilarityScore(target, normalizeProjectSearchText(label));
+      return { project, score };
+    })
+    .filter(item => item.score >= 2)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(item => item.project);
+}
+
+function normalizeProjectSearchText(value) {
+  return normalizeMatchText(value)
+    .replace(/仮プロジェクト|プロジェクト|案件|制作|運用|記事/g, '');
+}
+
+function projectSimilarityScore(target, candidate) {
+  if (!target || !candidate) return 0;
+  if (candidate === target) return 100;
+  if (candidate.includes(target) || target.includes(candidate)) return 50;
+
+  const targetTokens = projectTokens(target);
+  const candidateTokens = projectTokens(candidate);
+  let score = 0;
+  targetTokens.forEach(token => {
+    if (candidate.includes(token)) score += token.length >= 4 ? 3 : 1;
+  });
+  candidateTokens.forEach(token => {
+    if (target.includes(token)) score += token.length >= 4 ? 2 : 1;
+  });
+  return score;
+}
+
+function projectTokens(value) {
+  const chunks = String(value || '').split(/[・／/_,，、\s]+/).filter(Boolean);
+  const tokens = new Set(chunks);
+  const compact = String(value || '');
+  for (let i = 0; i < compact.length - 1; i += 1) {
+    tokens.add(compact.slice(i, i + 2));
+  }
+  return Array.from(tokens).filter(token => token.length >= 2);
 }
 
 /** 未登録案件の窓口デフォルト。佐久間/私/自分がいなければ先頭メンバー */
@@ -1467,6 +1515,10 @@ async function importChatworkTasksDirect() {
     if (result.unknownMembers.length) {
       showToast(`未登録メンバーの投稿は未取り込みです：${result.unknownMembers.join('、')}`, 'error');
     }
+    if (result.projectReviews.length) {
+      showToast(`プロジェクト確認が必要な投稿が ${result.projectReviews.length}件あります`, 'info');
+      await notifyProjectReviewsToChatwork(roomId, result.projectReviews, importKey);
+    }
 
     _taskFilter.date = targetDate;
     _taskFilter.startDate = targetDate;
@@ -1485,6 +1537,7 @@ function importChatworkMessageList({ roomId, messages, targetDate, ownerMemberId
     taskCount: 0,
     askCount: 0,
     unknownMembers: [],
+    projectReviews: [],
   };
 
   (messages || []).forEach(message => {
@@ -1504,7 +1557,8 @@ function importChatworkMessageList({ roomId, messages, targetDate, ownerMemberId
 
     const normalizedBody = normalizeChatworkBody(message.body || '');
     const parsed = parseBulkInput(normalizedBody);
-    const taskCount = saveParsedChatworkTasks(parsed.tasks, member.id, targetDate, ownerMemberId);
+    const taskResult = saveParsedChatworkTasks(parsed.tasks, member.id, targetDate, ownerMemberId);
+    const taskCount = taskResult.count;
     const askCount = saveParsedChatworkAsks(parsed.asks, member.id, targetDate);
 
     if (taskCount || askCount) {
@@ -1518,19 +1572,82 @@ function importChatworkMessageList({ roomId, messages, targetDate, ownerMemberId
       result.importedMessages++;
       result.taskCount += taskCount;
       result.askCount += askCount;
+      if (taskResult.reviewGroups.length) {
+        const review = DB.ProjectReviews.add({
+          roomId,
+          messageId,
+          accountName,
+          memberId: member.id,
+          groups: taskResult.reviewGroups,
+        });
+        if (review) result.projectReviews.push(review);
+      }
     }
   });
 
   return result;
 }
 
+async function notifyProjectReviewsToChatwork(roomId, reviews, importKey = '') {
+  for (const review of reviews) {
+    const body = projectReviewChatworkMessage(review);
+    try {
+      const res = await fetch('/api/chatwork/reply', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(importKey ? { 'x-taskboard-key': importKey } : {}),
+        },
+        body: JSON.stringify({ roomId, body }),
+      });
+      if (!res.ok) throw new Error('reply failed');
+    } catch {
+      console.warn('Chatwork project review reply failed:', review.id);
+      showToast('プロジェクト確認URLのChatwork返信に失敗しました', 'error');
+    }
+  }
+}
+
+function projectReviewChatworkMessage(review) {
+  const member = review.memberId ? DB.Members.get(review.memberId) : null;
+  const reviewUrl = getProjectReviewUrl(review.id);
+  const lines = [];
+  review.groups.forEach((group, index) => {
+    const tasks = (group.taskIds || []).map(id => DB.Tasks.get(id)).filter(Boolean);
+    lines.push(`${index + 1}. ${group.sourceProjectName}`);
+    tasks.slice(0, 5).forEach(task => lines.push(`- ${task.content} / ${task.estimatedHours}h`));
+    if (tasks.length > 5) lines.push(`- ほか${tasks.length - 5}件`);
+  });
+
+  return [
+    '[info][title]プロジェクト確認が必要です[/title]',
+    member ? `投稿者：${member.name}` : review.accountName ? `投稿者：${review.accountName}` : '',
+    `対象：${review.groups.length}件`,
+    '',
+    ...lines,
+    '',
+    '下記URLから、正しいプロジェクトを選んでください。',
+    reviewUrl,
+    '[/info]',
+  ].filter(Boolean).join('\n');
+}
+
+function getProjectReviewUrl(reviewId) {
+  const url = new URL(window.location.href);
+  url.search = '';
+  url.hash = '';
+  url.searchParams.set('project_review', reviewId);
+  return url.toString();
+}
+
 function saveParsedChatworkTasks(taskParsed, memberId, date, ownerMemberId) {
-  let count = 0;
+  const result = { count: 0, reviewGroups: [] };
   (taskParsed.groups || []).forEach(group => {
     const project = resolveInputProject(group.projectName);
+    const createdTaskIds = [];
 
     (group.tasks || []).forEach(task => {
-      DB.Tasks.add({
+      const saved = DB.Tasks.add({
         memberId,
         projectId: project?.id || null,
         phaseId: null,
@@ -1541,10 +1658,19 @@ function saveParsedChatworkTasks(taskParsed, memberId, date, ownerMemberId) {
         sourceProjectName: project ? '' : (group.projectName || ''),
         needsProjectReview: Boolean(group.projectName && !project),
       });
-      count++;
+      createdTaskIds.push(saved.id);
+      result.count++;
     });
+
+    if (group.projectName && !project && createdTaskIds.length) {
+      result.reviewGroups.push({
+        sourceProjectName: group.projectName,
+        taskIds: createdTaskIds,
+        suggestionProjectIds: findSimilarProjects(group.projectName).map(p => p.id),
+      });
+    }
   });
-  return count;
+  return result;
 }
 
 function saveParsedChatworkAsks(asks, memberId, date) {
@@ -2140,6 +2266,139 @@ async function copyMissingProjectMessage() {
   } catch {
     window.prompt('この文章をコピーしてください', message);
   }
+}
+
+/* ============================================================
+   プロジェクト確認URL
+   ============================================================ */
+function renderProjectReviewFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  renderProjectReviewPage(params.get('project_review'));
+}
+
+function renderProjectReviewPage(reviewId) {
+  const main = document.getElementById('main-content');
+  const review = reviewId ? DB.ProjectReviews.get(reviewId) : null;
+  if (!review) {
+    main.innerHTML = `
+      <div class="page-header"><div class="page-header-left">
+        <h2>プロジェクト確認</h2>
+        <p>確認対象が見つかりません</p>
+      </div></div>
+      <div class="page-body fade-in">
+        <div class="empty-state">
+          <div class="icon">?</div>
+          <div class="title">確認URLが無効です</div>
+          <div class="sub">すでに削除されたか、別の端末でまだ同期されていない可能性があります。</div>
+          <button class="btn btn-primary btn-sm" onclick="navigate('tasks')">今日のタスクへ</button>
+        </div>
+      </div>`;
+    return;
+  }
+
+  const member = review.memberId ? DB.Members.get(review.memberId) : null;
+  const taskCount = review.groups.reduce((sum, group) => sum + (group.taskIds || []).length, 0);
+  main.innerHTML = `
+    <div class="page-header"><div class="page-header-left">
+      <h2>プロジェクト確認</h2>
+      <p>Chatworkから取り込んだタスクの紐付け先を選んでください</p>
+    </div></div>
+    <div class="page-body fade-in">
+      <div class="banner banner-info">
+        <span>投稿者：${escHtml(member?.name || review.accountName || '不明')}</span>
+        <span>対象タスク：${taskCount}件</span>
+        <span>状態：${review.status === 'open' ? '確認待ち' : '確認済み'}</span>
+      </div>
+      <div class="card">
+        ${(review.groups || []).map((group, index) => projectReviewGroupHTML(group, index)).join('')}
+        <div class="modal-actions" style="margin-top:18px">
+          <button class="btn btn-ghost" onclick="navigate('tasks')">戻る</button>
+          <button class="btn btn-primary" onclick="saveProjectReview('${review.id}')">紐付けを保存</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function projectReviewGroupHTML(group, index) {
+  const tasks = (group.taskIds || []).map(id => DB.Tasks.get(id)).filter(Boolean);
+  const suggestions = (group.suggestionProjectIds || []).map(id => DB.Projects.get(id)).filter(Boolean);
+  const suggestionOptions = suggestions.length
+    ? suggestions.map(project => `<option value="${project.id}">${escHtml(project.clientName)} / ${escHtml(project.name)}${project.deliveryDate ? `（納品 ${escHtml(DB.fmtDate(project.deliveryDate))}）` : ''}</option>`).join('')
+    : '<option value="" disabled>類似プロジェクトが見つかりません</option>';
+
+  return `
+    <div class="bulk-preview-group project-review-group">
+      <div class="bulk-project-name">
+        <span class="status-badge provisional">確認待ち</span>
+        入力されたプロジェクト名：${escHtml(group.sourceProjectName)}
+      </div>
+      <ul>
+        ${tasks.map(task => `
+          <li>
+            <div>
+              ${task.date ? `${taskDateTagHTML(task.date)} ` : ''}
+              ${escHtml(task.content)}
+              ${task.note ? `<div class="bulk-note">備考：${escHtml(task.note)}</div>` : ''}
+            </div>
+            <span>${task.estimatedHours}h</span>
+          </li>`).join('')}
+      </ul>
+      <div class="form-group" style="margin-top:12px">
+        <label class="form-label">紐付け先</label>
+        <select class="form-select" id="project-review-select-${index}">
+          ${suggestionOptions}
+          <option value="__new__">新規プロジェクトとして作成</option>
+          <option value="__admin__">佐久間確認に回す</option>
+        </select>
+      </div>
+    </div>`;
+}
+
+function saveProjectReview(reviewId) {
+  const review = DB.ProjectReviews.get(reviewId);
+  if (!review) return;
+
+  let unresolved = 0;
+  (review.groups || []).forEach((group, index) => {
+    const selected = document.getElementById(`project-review-select-${index}`)?.value || '';
+    if (!selected || selected === '__admin__') {
+      unresolved++;
+      return;
+    }
+
+    let projectId = selected;
+    if (selected === '__new__') {
+      const parsed = parseProjectName(group.sourceProjectName || '未設定プロジェクト');
+      const project = DB.Projects.add({
+        clientName: parsed.clientName,
+        name: parsed.name,
+        deliveryDate: '',
+        budget: '',
+        templateId: 'tpl_blank',
+        projectType: parsed.recurringSeries ? 'recurring' : 'provisional',
+        recurringSeries: parsed.recurringSeries || '',
+        ownerMemberId: review.memberId || '',
+        isProvisional: true,
+        detailsDueAt: tomorrowDate(),
+      });
+      projectId = project.id;
+    }
+
+    (group.taskIds || []).forEach(taskId => {
+      DB.Tasks.update(taskId, {
+        projectId,
+        sourceProjectName: '',
+        needsProjectReview: false,
+      });
+    });
+  });
+
+  DB.ProjectReviews.update(reviewId, {
+    status: unresolved ? 'pending_admin' : 'resolved',
+    resolvedAt: unresolved ? '' : new Date().toISOString(),
+  });
+  showToast(unresolved ? '一部を佐久間確認に残しました' : 'プロジェクトを紐付けました', 'success');
+  navigate('tasks');
 }
 
 /* ============================================================
@@ -2845,12 +3104,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   updateSidebarDate();
   updateMorningBadge();
+  if (openUrlRequestedProjectReview()) return;
   navigate(_personalMemberId ? 'tasks' : 'dashboard');
   openUrlRequestedProject();
   if (carriedCount > 0) {
     showToast(`${carriedCount}件の未達成タスクを今日へ繰り越しました`, 'info');
   }
 });
+
+function openUrlRequestedProjectReview() {
+  const params = new URLSearchParams(window.location.search);
+  const reviewId = params.get('project_review');
+  if (!reviewId) return false;
+  _currentPage = 'projectReview';
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  renderProjectReviewPage(reviewId);
+  return true;
+}
 
 function openUrlRequestedProject() {
   const params = new URLSearchParams(window.location.search);
