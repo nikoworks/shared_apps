@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '案件確認版 2026-06-03-01';
+const APP_BUILD_LABEL = 'プロジェクト整理版 2026-06-04-01';
 
 /* ============================================================
    ルーター
@@ -1801,6 +1801,8 @@ function parseBulkTaskText(text) {
     const trimmed = raw.trim();
     if (!trimmed) return;
 
+    if (normalizeInputDate(trimmed)) return;
+
     const isProjectLine = /^[・★]/.test(trimmed);
     const cleaned = cleanBulkLine(trimmed);
     const task = taskFromBulkLine(cleaned);
@@ -2013,7 +2015,9 @@ function rowToTask(cells, fallbackDate = '') {
 }
 
 function normalizeInputDate(value) {
-  const raw = normalizeNumberText(String(value || '').trim());
+  const raw = normalizeNumberText(String(value || '').trim())
+    .replace(/\s+/g, '')
+    .replace(/[（(][月火水木金土日][)）]$/, '');
   if (!raw) return '';
   if (raw === '今日') return DB.today();
   if (raw === '昨日') return DB.yesterday();
@@ -2405,11 +2409,22 @@ function saveProjectReview(reviewId) {
    プロジェクト
    ============================================================ */
 let _projectView = 'active'; // 'active' | 'archived'
+let _projectOwnerFilter = '';
 
 function renderProjects() {
   const main     = document.getElementById('main-content');
-  const projects = sortProjectsByDelivery(_projectView === 'active' ? DB.Projects.active() : DB.Projects.archived());
+  const members  = DB.Members.all();
+  const baseProjects = _projectView === 'active' ? DB.Projects.active() : DB.Projects.archived();
+  const filteredProjects = baseProjects.filter(project => {
+    if (_projectOwnerFilter === '__none__') return !project.ownerMemberId;
+    if (_projectOwnerFilter) return project.ownerMemberId === _projectOwnerFilter;
+    return true;
+  });
+  const projects = sortProjectsByDelivery(filteredProjects);
   const missingDelivery = projects.filter(p => !p.deliveryDate);
+  const ownerOptions = members.map(m =>
+    `<option value="${m.id}" ${_projectOwnerFilter === m.id ? 'selected' : ''}>${escHtml(m.name)}</option>`
+  ).join('');
 
   main.innerHTML = `
     <div class="page-header"><div class="page-header-left">
@@ -2424,11 +2439,18 @@ function renderProjects() {
       ` : ''}
 
       <div class="action-row">
-        <div class="tab-bar" style="margin-bottom:0">
-          <button class="btn ${_projectView==='active'   ? 'btn-primary' : 'btn-ghost'}"
-                  onclick="_projectView='active';renderProjects()">進行中</button>
-          <button class="btn ${_projectView==='archived' ? 'btn-primary' : 'btn-ghost'}"
-                  onclick="_projectView='archived';renderProjects()">アーカイブ</button>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <div class="tab-bar" style="margin-bottom:0">
+            <button class="btn ${_projectView==='active'   ? 'btn-primary' : 'btn-ghost'}"
+                    onclick="_projectView='active';renderProjects()">進行中</button>
+            <button class="btn ${_projectView==='archived' ? 'btn-primary' : 'btn-ghost'}"
+                    onclick="_projectView='archived';renderProjects()">アーカイブ</button>
+          </div>
+          <select class="form-select" style="width:170px" onchange="_projectOwnerFilter=this.value;renderProjects()">
+            <option value="" ${!_projectOwnerFilter ? 'selected' : ''}>全窓口</option>
+            ${ownerOptions}
+            <option value="__none__" ${_projectOwnerFilter === '__none__' ? 'selected' : ''}>窓口未設定</option>
+          </select>
         </div>
         <button class="btn btn-primary" id="add-project-btn" onclick="openProjectModal(null)">
           ${icon('<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>')}
@@ -2462,6 +2484,8 @@ function projectCard(project) {
   const statusBadges = [
     project.projectType === 'recurring' ? '<span class="status-badge recurring">定期案件</span>' : '',
     project.isProvisional ? '<span class="status-badge provisional">仮登録</span>' : '',
+    project.projectStatus === 'paused' ? '<span class="status-badge personal">保留</span>' : '',
+    project.projectStatus === 'completed' ? '<span class="status-badge personal">完了</span>' : '',
     !project.deliveryDate ? '<span class="status-badge missing">納期未設定</span>' : '',
   ].filter(Boolean).join('');
 
@@ -2521,6 +2545,7 @@ function projectCard(project) {
               <button class="btn btn-ghost btn-sm" onclick="copyDeliveryDateRequest('${project.id}')">Chatwork文をコピー</button>
             </div>
           ` : ''}
+          ${project.note ? `<div class="form-help" style="margin-top:8px">${escHtml(project.note)}</div>` : ''}
         </div>
         <div style="display:flex;gap:5px;flex-shrink:0;flex-wrap:wrap">
           <button class="btn btn-ghost btn-sm" onclick="openProjectModal('${project.id}')">編集</button>
@@ -2638,8 +2663,12 @@ function openProjectModal(editId) {
   const memberOpts = members.map(m =>
     `<option value="${m.id}" ${ownerDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
   const type = project?.projectType || 'standard';
+  const status = project?.projectStatus || 'active';
 
   openModal(`
+    <div class="form-help" style="margin-bottom:14px">
+      納品日を基準に管理します。定期案件名は親シリーズ、プロジェクト名は今回分です。
+    </div>
     <div class="form-group">
       <label class="form-label">プロジェクト種別</label>
       <select class="form-select" id="pj-type">
@@ -2649,24 +2678,17 @@ function openProjectModal(editId) {
       </select>
     </div>
     <div class="form-group">
-      <label class="form-label">クライアント名 *</label>
-      <input class="form-input" id="pj-client" placeholder="例：〇〇株式会社" value="${escHtml(project?.clientName||'')}">
+      <label class="form-label">定期案件名</label>
+      <input class="form-input" id="pj-recurring" placeholder="例：明治安田 月号 / プレゼントキャンペーン更新" value="${escHtml(project?.recurringSeries||'')}">
+      <div class="form-help">定期案件だけ入力します。空欄でも保存できます。</div>
     </div>
     <div class="form-group">
       <label class="form-label">プロジェクト名 *</label>
-      <input class="form-input" id="pj-name" placeholder="例：会社案内パンフレット" value="${escHtml(project?.name||'')}">
+      <input class="form-input" id="pj-name" placeholder="例：7月号 / 2026年7月切り替え / LP制作" value="${escHtml(project?.name||'')}">
     </div>
     <div class="form-group">
-      <label class="form-label">納品日 *</label>
-      <input type="date" class="form-input" id="pj-delivery" value="${project?.deliveryDate||''}">
-    </div>
-    <div class="form-group">
-      <label class="form-label">予算（円）</label>
-      <input type="number" class="form-input" id="pj-budget" placeholder="例：500000" value="${project?.budget||''}">
-    </div>
-    <div class="form-group">
-      <label class="form-label">定期案件名</label>
-      <input class="form-input" id="pj-recurring" placeholder="例：明治安田 月号" value="${escHtml(project?.recurringSeries||'')}">
+      <label class="form-label">クライアント名 *</label>
+      <input class="form-input" id="pj-client" placeholder="例：〇〇株式会社" value="${escHtml(project?.clientName||'')}">
     </div>
     <div class="form-group">
       <label class="form-label">窓口担当</label>
@@ -2675,8 +2697,29 @@ function openProjectModal(editId) {
       </select>
     </div>
     <div class="form-group">
+      <label class="form-label">納品日 *</label>
+      <input type="date" class="form-input" id="pj-delivery" value="${project?.deliveryDate||''}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">進行状態</label>
+      <select class="form-select" id="pj-status">
+        <option value="active" ${status === 'active' ? 'selected' : ''}>進行中</option>
+        <option value="paused" ${status === 'paused' ? 'selected' : ''}>保留</option>
+        <option value="completed" ${status === 'completed' ? 'selected' : ''}>完了</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">予算（円）</label>
+      <input type="number" class="form-input" id="pj-budget" placeholder="例：500000" value="${project?.budget||''}">
+    </div>
+    <div class="form-group">
       <label class="form-label">詳細登録期限</label>
       <input type="date" class="form-input" id="pj-details-due" value="${project?.detailsDueAt||''}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">プロジェクト備考</label>
+      <textarea class="form-input" id="pj-note" rows="3" placeholder="案件全体の注意点、前提、引き継ぎなど">${escHtml(project?.note||'')}</textarea>
+      <div class="form-help">個別タスクの作業メモではなく、プロジェクト全体に関わる注意点だけを書きます。</div>
     </div>
     ${!editId ? `
       <div class="form-group">
@@ -2711,6 +2754,8 @@ function saveProjectNew() {
     ownerMemberId:   document.getElementById('pj-owner')?.value || getDefaultOwnerMemberId(),
     isProvisional:   projectType === 'provisional',
     detailsDueAt:    document.getElementById('pj-details-due')?.value || '',
+    projectStatus:   document.getElementById('pj-status')?.value || 'active',
+    note:            document.getElementById('pj-note')?.value?.trim() || '',
   });
   closeModal();
   showToast('プロジェクトを作成しました', 'success');
@@ -2733,6 +2778,8 @@ function saveProjectEdit(projectId) {
     ownerMemberId:   document.getElementById('pj-owner')?.value || '',
     isProvisional:   projectType === 'provisional',
     detailsDueAt:    document.getElementById('pj-details-due')?.value || '',
+    projectStatus:   document.getElementById('pj-status')?.value || 'active',
+    note:            document.getElementById('pj-note')?.value?.trim() || '',
   });
   closeModal();
   showToast('プロジェクトを更新しました', 'success');

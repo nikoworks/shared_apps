@@ -300,13 +300,14 @@ const Projects = {
   add({
     clientName, name, deliveryDate = '', budget = '', templateId = '',
     projectType = 'standard', recurringSeries = '', ownerMemberId = '',
-    isProvisional = false, detailsDueAt = '',
+    isProvisional = false, detailsDueAt = '', projectStatus = 'active', note = '',
   }) {
     const list = this.all();
     const phases = buildPhasesFromTemplate(templateId);
     const project = {
       id: genId(), clientName, name, deliveryDate, budget,
       projectType, recurringSeries, ownerMemberId, isProvisional, detailsDueAt,
+      projectStatus, note,
       archived: false, createdAt: today(), phases,
     };
     list.push(project);
@@ -372,7 +373,35 @@ const Tasks = {
     save(KEYS.TASKS, this.all().filter(t => t.id !== id));
   },
   setCompletion(id, completed, reason = '') {
-    this.update(id, { completed, incompleteReason: reason });
+    const list = this.all();
+    const target = list.find(t => t.id === id);
+    if (!target) return;
+
+    const targetIds = new Set([id]);
+    if (completed === true) {
+      let current = target;
+      const seen = new Set();
+      while (current?.carriedFromTaskId && !seen.has(current.id)) {
+        seen.add(current.id);
+        targetIds.add(current.carriedFromTaskId);
+        current = list.find(t => t.id === current.carriedFromTaskId);
+      }
+
+      const addDescendants = (parentId) => {
+        list
+          .filter(t => t.carriedFromTaskId === parentId)
+          .forEach(child => {
+            if (targetIds.has(child.id)) return;
+            targetIds.add(child.id);
+            addDescendants(child.id);
+          });
+      };
+      addDescendants(id);
+    }
+
+    save(KEYS.TASKS, list.map(t =>
+      targetIds.has(t.id) ? { ...t, completed, incompleteReason: reason } : t
+    ));
   },
   get(id) { return this.all().find(t => t.id === id) ?? null; },
 
