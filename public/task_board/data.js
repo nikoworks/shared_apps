@@ -139,6 +139,24 @@ async function syncCloudStore() {
   }
 }
 
+async function reloadCloudStore() {
+  if (!cloudReady || !cloudClient) return false;
+
+  const { data, error } = await cloudClient
+    .from('taskboard_data')
+    .select('data')
+    .eq('id', CLOUD_ROW_ID)
+    .single();
+
+  if (error) {
+    console.warn('Supabase reload failed:', error.message);
+    return false;
+  }
+
+  applyStoreSnapshot(data?.data);
+  return true;
+}
+
 // 日付フォーマット（表示用）
 function fmtDate(dateStr) {
   if (!dateStr) return '—';
@@ -622,5 +640,5 @@ function buildPhasesFromTemplate(templateId) {
 window.DB = {
   Members, Projects, Tasks, Asks, ChatworkImports, ProjectReviews, Templates,
   today, yesterday, prevDay, fmtDate, daysLeft, genId,
-  initStore, seedDemoData,
+  initStore, seedDemoData, syncCloudStore, reloadCloudStore,
 };

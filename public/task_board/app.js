@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'プロジェクト整理版 2026-06-04-01';
+const APP_BUILD_LABEL = '完了同期修正版 2026-06-04-01';
 
 /* ============================================================
    ルーター
@@ -800,6 +800,20 @@ function setTaskFilterToday() {
   renderTodayTasks();
 }
 
+async function refreshTaskData(options = {}) {
+  const ok = await DB.reloadCloudStore?.();
+  if (!options.silent) {
+    showToast(ok ? '最新のタスクを読み込みました' : '最新データを確認できませんでした', ok ? 'success' : 'error');
+  }
+  renderTodayTasks();
+  updateMorningBadge();
+}
+
+async function toggleCompletedVisibility() {
+  _taskFilter.showCompleted = !_taskFilter.showCompleted;
+  await refreshTaskData({ silent: true });
+}
+
 function taskRangeLabel(range) {
   if (range.start === range.end) return `${DB.fmtDate(range.start)} の作業予定`;
   return `${DB.fmtDate(range.start)}〜${DB.fmtDate(range.end)} のタスク`;
@@ -862,7 +876,10 @@ function renderTodayTasks() {
           <input type="date" class="form-input" style="width:150px" id="filter-end-date"
                  value="${range.end}" onchange="setTaskFilterEndDate(this.value)" title="終了日">
           <button class="btn btn-ghost btn-sm" onclick="setTaskFilterToday()">今日</button>
-          <button class="btn btn-ghost btn-sm" onclick="_taskFilter.showCompleted=!_taskFilter.showCompleted;renderTodayTasks()">
+          <button class="btn btn-ghost btn-sm" onclick="refreshTaskData()">
+            最新に更新
+          </button>
+          <button class="btn btn-ghost btn-sm" onclick="toggleCompletedVisibility()">
             ${_taskFilter.showCompleted ? '未完了のみ' : '完了済みも表示'}
           </button>
         </div>
@@ -952,10 +969,11 @@ function taskProjectDisplayHTML(task) {
   return '<span style="color:var(--text-3)">プロジェクト未選択</span>';
 }
 
-function toggleTodayTaskComplete(taskId) {
+async function toggleTodayTaskComplete(taskId) {
   const task = DB.Tasks.get(taskId);
   if (!task) return;
   DB.Tasks.setCompletion(taskId, task.completed === true ? null : true, '');
+  await DB.syncCloudStore?.();
   renderTodayTasks();
   updateMorningBadge();
 }
@@ -2518,6 +2536,9 @@ function projectCard(project) {
   const archiveBtn = project.archived
     ? `<button class="btn btn-success btn-sm" onclick="restoreProject('${project.id}')">復元</button>`
     : `<button class="btn btn-ghost  btn-sm" onclick="archiveProject('${project.id}')">アーカイブ</button>`;
+  const completeBtn = project.projectStatus === 'completed'
+    ? `<button class="btn btn-ghost btn-sm" onclick="reopenProject('${project.id}')">進行中に戻す</button>`
+    : `<button class="btn btn-success btn-sm" onclick="completeProject('${project.id}')">完了</button>`;
 
   return `
     <div class="card" style="margin-bottom:14px" id="project-card-${project.id}">
@@ -2548,7 +2569,9 @@ function projectCard(project) {
           ${project.note ? `<div class="form-help" style="margin-top:8px">${escHtml(project.note)}</div>` : ''}
         </div>
         <div style="display:flex;gap:5px;flex-shrink:0;flex-wrap:wrap">
+          <button class="btn btn-ghost btn-sm" onclick="openProjectTasksModal('${project.id}')">タスク一覧</button>
           <button class="btn btn-ghost btn-sm" onclick="openProjectModal('${project.id}')">編集</button>
+          ${completeBtn}
           ${archiveBtn}
           <button class="btn btn-danger btn-sm" onclick="deleteProject('${project.id}')">削除</button>
         </div>
@@ -2568,6 +2591,77 @@ function projectCard(project) {
       <!-- フェーズ進捗バー -->
       ${progressBars ? `<div style="border-top:1px solid var(--border);padding-top:12px">${progressBars}</div>` : ''}
     </div>`;
+}
+
+function openProjectTasksModal(projectId) {
+  const project = DB.Projects.get(projectId);
+  if (!project) return;
+  const tasks = DB.Tasks.all()
+    .filter(t => t.projectId === projectId)
+    .sort((a, b) => {
+      if ((a.completed === true) !== (b.completed === true)) return a.completed === true ? 1 : -1;
+      return String(b.date || '').localeCompare(String(a.date || ''));
+    });
+  const totalH = tasks.reduce((sum, task) => sum + (Number(task.estimatedHours) || 0), 0);
+  const doneCount = tasks.filter(t => t.completed === true).length;
+  const title = `${project.clientName} / ${project.name} のタスク`;
+
+  openModal(`
+    <div class="form-help" style="margin-bottom:12px">
+      ${tasks.length}件 / ${totalH}h　完了 ${doneCount}件・未完了 ${tasks.length - doneCount}件
+    </div>
+    <div style="max-height:60vh;overflow:auto;padding-right:4px">
+      ${tasks.length
+        ? tasks.map(t => projectTaskListRow(t)).join('')
+        : `<div class="empty-state" style="padding:28px">
+            <div class="icon">📝</div>
+            <div class="title">このプロジェクトのタスクはありません</div>
+          </div>`}
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">閉じる</button>
+      <button class="btn btn-primary" onclick="openTaskModal(null)">タスクを追加</button>
+    </div>
+  `, title);
+}
+
+function projectTaskListRow(task) {
+  const member = DB.Members.get(task.memberId);
+  const phaseName = getPhaseName(task);
+  const isDone = task.completed === true;
+  const originDate = sourceDateForTask(task);
+  return `
+    <div class="task-row ${task.carriedFromTaskId ? 'task-row-carry' : ''} ${isDone ? 'task-row-done' : ''}" style="margin-bottom:8px">
+      <button class="check-btn ${isDone ? 'done' : ''}"
+              onclick="toggleProjectTaskComplete('${task.id}')"
+              title="${isDone ? '未完了に戻す' : '完了にする'}"
+              aria-label="${isDone ? '未完了に戻す' : '完了にする'}">✓</button>
+      <div class="task-accent-bar"></div>
+      <div class="flex-1">
+        <div class="task-title">${escHtml(task.content)}</div>
+        ${task.note ? `<div class="task-note">備考：${escHtml(task.note)}</div>` : ''}
+        <div class="task-meta">
+          ${taskDateTagHTML(originDate, { carried: Boolean(task.carriedFromTaskId) })}
+          <span>担当：${member ? escHtml(member.name) : '未設定'}</span>
+          ${phaseName ? `<span class="tag tag-phase">${escHtml(phaseName)}</span>` : '<span style="color:var(--text-3)">フェーズなし</span>'}
+          ${task.carriedFromTaskId ? '<span class="tag tag-carry tag-carry-strong">繰り越し</span>' : ''}
+          ${isDone ? '<span class="tag tag-done">完了</span>' : ''}
+          <span class="tag-hours">${task.estimatedHours}h</span>
+        </div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="openTaskModal('${task.id}')">編集</button>
+    </div>`;
+}
+
+async function toggleProjectTaskComplete(taskId) {
+  const task = DB.Tasks.get(taskId);
+  if (!task) return;
+  DB.Tasks.setCompletion(taskId, task.completed === true ? null : true, '');
+  await DB.syncCloudStore?.();
+  const refreshed = DB.Tasks.get(taskId);
+  if (refreshed?.projectId) openProjectTasksModal(refreshed.projectId);
+  updateMorningBadge();
+  if (_currentPage === 'projects') renderProjects();
 }
 
 /* ─ フェーズステータス循環 ─ */
@@ -2668,7 +2762,7 @@ function openProjectModal(editId) {
   const memberOpts = members.map(m =>
     `<option value="${m.id}" ${ownerDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
   const type = project?.projectType || 'standard';
-  const status = project?.projectStatus || 'active';
+  const status = project?.projectStatus === 'completed' ? 'active' : (project?.projectStatus || 'active');
 
   openModal(`
     <div class="form-help" style="margin-bottom:14px">
@@ -2710,8 +2804,8 @@ function openProjectModal(editId) {
       <select class="form-select" id="pj-status">
         <option value="active" ${status === 'active' ? 'selected' : ''}>進行中</option>
         <option value="paused" ${status === 'paused' ? 'selected' : ''}>保留</option>
-        <option value="completed" ${status === 'completed' ? 'selected' : ''}>完了</option>
       </select>
+      <div class="form-help">プロジェクト完了は、一覧の「完了」ボタンで確定します。</div>
     </div>
     <div class="form-group">
       <label class="form-label">予算（円）</label>
@@ -2828,6 +2922,19 @@ function archiveProject(id) {
 function restoreProject(id) {
   DB.Projects.restore(id);
   showToast('復元しました', 'success');
+  renderProjects();
+}
+
+function completeProject(id) {
+  if (!confirm('このプロジェクトを完了にしますか？')) return;
+  DB.Projects.update(id, { projectStatus: 'completed' });
+  showToast('プロジェクトを完了にしました', 'success');
+  renderProjects();
+}
+
+function reopenProject(id) {
+  DB.Projects.update(id, { projectStatus: 'active' });
+  showToast('プロジェクトを進行中に戻しました', 'success');
   renderProjects();
 }
 
