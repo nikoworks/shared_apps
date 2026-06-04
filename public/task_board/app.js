@@ -2556,7 +2556,7 @@ function projectCard(project) {
               <strong>納品日</strong>${project.deliveryDate ? DB.fmtDate(project.deliveryDate) : '未設定'}
             </span>
             ${project.budget ? `<span class="project-meta-item"><strong>予算</strong>¥${Number(project.budget).toLocaleString()}</span>` : ''}
-            ${project.recurringSeries ? `<span class="project-meta-item"><strong>定期案件</strong>${escHtml(project.recurringSeries)}</span>` : ''}
+            ${project.projectType === 'recurring' && project.recurringSeries ? `<span class="project-meta-item"><strong>定期案件</strong>${escHtml(project.recurringSeries)}</span>` : ''}
             <span class="project-meta-item"><strong>窓口</strong>${owner ? escHtml(owner.name) : '未設定'}</span>
             ${project.detailsDueAt ? `<span class="project-meta-item"><strong>詳細登録期限</strong>${DB.fmtDate(project.detailsDueAt)}</span>` : ''}
           </div>
@@ -2762,7 +2762,7 @@ function openProjectModal(editId) {
   const members   = DB.Members.all();
   const memberOpts = members.map(m =>
     `<option value="${m.id}" ${ownerDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
-  const type = project?.projectType || 'standard';
+  const type = project?.projectType === 'recurring' ? 'recurring' : 'standard';
   const status = project?.projectStatus === 'completed' ? 'active' : (project?.projectStatus || 'active');
 
   openModal(`
@@ -2771,16 +2771,15 @@ function openProjectModal(editId) {
     </div>
     <div class="form-group">
       <label class="form-label">プロジェクト種別</label>
-      <select class="form-select" id="pj-type">
+      <select class="form-select" id="pj-type" onchange="toggleRecurringProjectFields()">
         <option value="standard" ${type === 'standard' ? 'selected' : ''}>通常プロジェクト</option>
         <option value="recurring" ${type === 'recurring' ? 'selected' : ''}>定期プロジェクト</option>
-        <option value="provisional" ${type === 'provisional' ? 'selected' : ''}>仮プロジェクト</option>
       </select>
     </div>
-    <div class="form-group">
+    <div class="form-group" id="pj-recurring-group" style="${type === 'recurring' ? '' : 'display:none'}">
       <label class="form-label">定期案件名</label>
       <input class="form-input" id="pj-recurring" placeholder="例：明治安田 月号 / プレゼントキャンペーン更新" value="${escHtml(project?.recurringSeries||'')}">
-      <div class="form-help">定期案件だけ入力します。空欄でも保存できます。</div>
+      <div class="form-help">定期プロジェクトだけ入力します。通常プロジェクトでは表示・保存しません。</div>
     </div>
     <div class="form-group">
       <label class="form-label">プロジェクト名 *</label>
@@ -2835,6 +2834,13 @@ function openProjectModal(editId) {
       </button>
     </div>
   `, editId ? 'プロジェクトを編集' : 'プロジェクトを追加');
+  toggleRecurringProjectFields();
+}
+
+function toggleRecurringProjectFields() {
+  const type = document.getElementById('pj-type')?.value || 'standard';
+  const recurringGroup = document.getElementById('pj-recurring-group');
+  if (recurringGroup) recurringGroup.style.display = type === 'recurring' ? '' : 'none';
 }
 
 function saveProjectNew() {
@@ -2844,15 +2850,22 @@ function saveProjectNew() {
   const deliveryDate = document.getElementById('pj-delivery')?.value || '';
   if (!confirmProjectDeliveryDate(deliveryDate)) return;
   const projectType = document.getElementById('pj-type')?.value || 'standard';
+  const recurringSeries = projectType === 'recurring'
+    ? (document.getElementById('pj-recurring')?.value?.trim() || '')
+    : '';
+  if (projectType === 'recurring' && !recurringSeries) {
+    showToast('定期プロジェクトは定期案件名を入力してください', 'error');
+    return;
+  }
   DB.Projects.add({
     clientName, name,
     deliveryDate,
     budget:       document.getElementById('pj-budget')?.value   || '',
     templateId:   document.getElementById('pj-template')?.value || '',
     projectType,
-    recurringSeries: document.getElementById('pj-recurring')?.value?.trim() || '',
+    recurringSeries,
     ownerMemberId:   document.getElementById('pj-owner')?.value || getDefaultOwnerMemberId(),
-    isProvisional:   projectType === 'provisional',
+    isProvisional:   false,
     detailsDueAt:    document.getElementById('pj-details-due')?.value || '',
     projectStatus:   document.getElementById('pj-status')?.value || 'active',
     note:            document.getElementById('pj-note')?.value?.trim() || '',
@@ -2869,14 +2882,21 @@ function saveProjectEdit(projectId) {
   const deliveryDate = document.getElementById('pj-delivery')?.value || '';
   if (!confirmProjectDeliveryDate(deliveryDate)) return;
   const projectType = document.getElementById('pj-type')?.value || 'standard';
+  const recurringSeries = projectType === 'recurring'
+    ? (document.getElementById('pj-recurring')?.value?.trim() || '')
+    : '';
+  if (projectType === 'recurring' && !recurringSeries) {
+    showToast('定期プロジェクトは定期案件名を入力してください', 'error');
+    return;
+  }
   DB.Projects.update(projectId, {
     clientName, name,
     deliveryDate,
     budget:       document.getElementById('pj-budget')?.value   || '',
     projectType,
-    recurringSeries: document.getElementById('pj-recurring')?.value?.trim() || '',
+    recurringSeries,
     ownerMemberId:   document.getElementById('pj-owner')?.value || '',
-    isProvisional:   projectType === 'provisional',
+    isProvisional:   false,
     detailsDueAt:    document.getElementById('pj-details-due')?.value || '',
     projectStatus:   document.getElementById('pj-status')?.value || 'active',
     note:            document.getElementById('pj-note')?.value?.trim() || '',
