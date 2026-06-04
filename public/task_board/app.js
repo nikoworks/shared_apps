@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'Chatwork納品日送信版 2026-06-04-01';
+const APP_BUILD_LABEL = 'プロジェクト登録整理版 2026-06-05-01';
 
 /* ============================================================
    ルーター
@@ -2428,14 +2428,16 @@ function saveProjectReview(reviewId) {
    ============================================================ */
 let _projectView = 'active'; // 'active' | 'archived'
 let _projectOwnerFilter = '';
+let _projectDealFilter = '';
 
 function renderProjects() {
   const main     = document.getElementById('main-content');
   const members  = DB.Members.all();
   const baseProjects = _projectView === 'active' ? DB.Projects.active() : DB.Projects.archived();
   const filteredProjects = baseProjects.filter(project => {
-    if (_projectOwnerFilter === '__none__') return !project.ownerMemberId;
-    if (_projectOwnerFilter) return project.ownerMemberId === _projectOwnerFilter;
+    if (_projectOwnerFilter === '__none__' && project.ownerMemberId) return false;
+    if (_projectOwnerFilter && _projectOwnerFilter !== '__none__' && project.ownerMemberId !== _projectOwnerFilter) return false;
+    if (_projectDealFilter && (project.dealCategory || 'existing') !== _projectDealFilter) return false;
     return true;
   });
   const projects = sortProjectsByDelivery(filteredProjects);
@@ -2469,6 +2471,11 @@ function renderProjects() {
             ${ownerOptions}
             <option value="__none__" ${_projectOwnerFilter === '__none__' ? 'selected' : ''}>窓口未設定</option>
           </select>
+          <select class="form-select" style="width:170px" onchange="_projectDealFilter=this.value;renderProjects()">
+            <option value="" ${!_projectDealFilter ? 'selected' : ''}>全案件区分</option>
+            <option value="existing" ${_projectDealFilter === 'existing' ? 'selected' : ''}>既存クライアント</option>
+            <option value="proposal" ${_projectDealFilter === 'proposal' ? 'selected' : ''}>提案ベース</option>
+          </select>
         </div>
         <button class="btn btn-primary" id="add-project-btn" onclick="openProjectModal(null)">
           ${icon('<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>')}
@@ -2500,6 +2507,7 @@ function projectCard(project) {
   const allTasks  = DB.Tasks.all();
   const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
   const statusBadges = [
+    `<span class="status-badge ${(project.dealCategory || 'existing') === 'proposal' ? 'provisional' : 'personal'}">${dealCategoryLabel(project.dealCategory)}</span>`,
     project.projectType === 'recurring' ? '<span class="status-badge recurring">定期案件</span>' : '',
     project.isProvisional ? '<span class="status-badge provisional">仮登録</span>' : '',
     project.projectStatus === 'paused' ? '<span class="status-badge personal">保留</span>' : '',
@@ -2558,6 +2566,7 @@ function projectCard(project) {
             ${project.budget ? `<span class="project-meta-item"><strong>予算</strong>¥${Number(project.budget).toLocaleString()}</span>` : ''}
             ${project.projectType === 'recurring' && project.recurringSeries ? `<span class="project-meta-item"><strong>定期案件</strong>${escHtml(project.recurringSeries)}</span>` : ''}
             <span class="project-meta-item"><strong>窓口</strong>${owner ? escHtml(owner.name) : '未設定'}</span>
+            ${project.startDate ? `<span class="project-meta-item"><strong>開始日</strong>${DB.fmtDate(project.startDate)}</span>` : ''}
             ${project.detailsDueAt ? `<span class="project-meta-item"><strong>詳細登録期限</strong>${DB.fmtDate(project.detailsDueAt)}</span>` : ''}
           </div>
           ${!project.deliveryDate ? `
@@ -2592,6 +2601,10 @@ function projectCard(project) {
       <!-- フェーズ進捗バー -->
       ${progressBars ? `<div style="border-top:1px solid var(--border);padding-top:12px">${progressBars}</div>` : ''}
     </div>`;
+}
+
+function dealCategoryLabel(value) {
+  return value === 'proposal' ? '提案ベース' : '既存クライアント';
 }
 
 function openProjectTasksModal(projectId) {
@@ -2764,6 +2777,7 @@ function openProjectModal(editId) {
     `<option value="${m.id}" ${ownerDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
   const type = project?.projectType === 'recurring' ? 'recurring' : 'standard';
   const status = project?.projectStatus === 'completed' ? 'active' : (project?.projectStatus || 'active');
+  const dealCategory = project?.dealCategory || 'existing';
   const recurringSeries = project?.recurringSeries || '';
   const recurringOptions = recurringSeriesSelectOptions(recurringSeries);
   const recurringSelectValue = recurringSeries && recurringOptions.includes(recurringSeries)
@@ -2778,7 +2792,15 @@ function openProjectModal(editId) {
 
   openModal(`
     <div class="form-help" style="margin-bottom:14px">
-      納品日を基準に管理します。定期案件名は親シリーズ、プロジェクト名は今回分です。
+      まずは基本情報だけで登録できます。開始日・予算・備考などはあとから足せます。
+    </div>
+    <div style="font-weight:800;margin-bottom:10px">基本情報</div>
+    <div class="form-group">
+      <label class="form-label">案件区分</label>
+      <select class="form-select" id="pj-deal-category">
+        <option value="existing" ${dealCategory === 'existing' ? 'selected' : ''}>既存クライアント</option>
+        <option value="proposal" ${dealCategory === 'proposal' ? 'selected' : ''}>提案ベース</option>
+      </select>
     </div>
     <div class="form-group">
       <label class="form-label">プロジェクト種別</label>
@@ -2797,12 +2819,12 @@ function openProjectModal(editId) {
       <div class="form-help">定期プロジェクトだけ入力します。既存から選ぶと表記ゆれを防げます。</div>
     </div>
     <div class="form-group">
-      <label class="form-label">プロジェクト名 *</label>
-      <input class="form-input" id="pj-name" placeholder="例：7月号 / 2026年7月切り替え / LP制作" value="${escHtml(project?.name||'')}">
-    </div>
-    <div class="form-group">
       <label class="form-label">クライアント名 *</label>
       <input class="form-input" id="pj-client" placeholder="例：〇〇株式会社" value="${escHtml(project?.clientName||'')}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">プロジェクト名 *</label>
+      <input class="form-input" id="pj-name" placeholder="例：7月号 / 2026年7月切り替え / LP制作" value="${escHtml(project?.name||'')}">
     </div>
     <div class="form-group">
       <label class="form-label">窓口担当</label>
@@ -2814,27 +2836,37 @@ function openProjectModal(editId) {
       <label class="form-label">納品日 *</label>
       <input type="date" class="form-input" id="pj-delivery" value="${project?.deliveryDate||''}">
     </div>
-    <div class="form-group">
-      <label class="form-label">進行状態</label>
-      <select class="form-select" id="pj-status">
-        <option value="active" ${status === 'active' ? 'selected' : ''}>進行中</option>
-        <option value="paused" ${status === 'paused' ? 'selected' : ''}>保留</option>
-      </select>
-      <div class="form-help">プロジェクト完了は、一覧の「完了」ボタンで確定します。</div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">予算（円）</label>
-      <input type="number" class="form-input" id="pj-budget" placeholder="例：500000" value="${project?.budget||''}">
-    </div>
-    <div class="form-group">
-      <label class="form-label">詳細登録期限</label>
-      <input type="date" class="form-input" id="pj-details-due" value="${project?.detailsDueAt||''}">
-    </div>
-    <div class="form-group">
-      <label class="form-label">プロジェクト備考</label>
-      <textarea class="form-input" id="pj-note" rows="3" placeholder="案件全体の注意点、前提、引き継ぎなど">${escHtml(project?.note||'')}</textarea>
-      <div class="form-help">個別タスクの作業メモではなく、プロジェクト全体に関わる注意点だけを書きます。</div>
-    </div>
+    <details style="margin:14px 0;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-glass)" ${project ? 'open' : ''}>
+      <summary style="cursor:pointer;font-weight:800;color:var(--text-1)">詳細情報を追加</summary>
+      <div style="margin-top:14px">
+        <div class="form-group">
+          <label class="form-label">開始日</label>
+          <input type="date" class="form-input" id="pj-start" value="${project?.startDate||''}">
+          <div class="form-help">ガントチャートや進行表の開始位置に使います。未定なら空欄で大丈夫です。</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">進行状態</label>
+          <select class="form-select" id="pj-status">
+            <option value="active" ${status === 'active' ? 'selected' : ''}>進行中</option>
+            <option value="paused" ${status === 'paused' ? 'selected' : ''}>保留</option>
+          </select>
+          <div class="form-help">プロジェクト完了は、一覧の「完了」ボタンで確定します。</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">予算（円）</label>
+          <input type="number" class="form-input" id="pj-budget" placeholder="例：500000" value="${project?.budget||''}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">詳細登録期限</label>
+          <input type="date" class="form-input" id="pj-details-due" value="${project?.detailsDueAt||''}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">プロジェクト備考</label>
+          <textarea class="form-input" id="pj-note" rows="3" placeholder="案件全体の注意点、前提、引き継ぎなど">${escHtml(project?.note||'')}</textarea>
+          <div class="form-help">個別タスクの作業メモではなく、プロジェクト全体に関わる注意点だけを書きます。</div>
+        </div>
+      </div>
+    </details>
     ${!editId ? `
       <div class="form-group">
         <label class="form-label">フェーズテンプレート</label>
@@ -2897,6 +2929,8 @@ function saveProjectNew() {
     templateId:   document.getElementById('pj-template')?.value || '',
     projectType,
     recurringSeries,
+    dealCategory:    document.getElementById('pj-deal-category')?.value || 'existing',
+    startDate:       document.getElementById('pj-start')?.value || '',
     ownerMemberId:   document.getElementById('pj-owner')?.value || getDefaultOwnerMemberId(),
     isProvisional:   false,
     detailsDueAt:    document.getElementById('pj-details-due')?.value || '',
@@ -2926,6 +2960,8 @@ function saveProjectEdit(projectId) {
     budget:       document.getElementById('pj-budget')?.value   || '',
     projectType,
     recurringSeries,
+    dealCategory:    document.getElementById('pj-deal-category')?.value || 'existing',
+    startDate:       document.getElementById('pj-start')?.value || '',
     ownerMemberId:   document.getElementById('pj-owner')?.value || '',
     isProvisional:   false,
     detailsDueAt:    document.getElementById('pj-details-due')?.value || '',

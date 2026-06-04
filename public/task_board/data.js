@@ -318,13 +318,15 @@ const Projects = {
   add({
     clientName, name, deliveryDate = '', budget = '', templateId = '',
     projectType = 'standard', recurringSeries = '', ownerMemberId = '',
+    dealCategory = 'existing', startDate = '',
     isProvisional = false, detailsDueAt = '', projectStatus = 'active', note = '',
   }) {
     const list = this.all();
     const phases = buildPhasesFromTemplate(templateId);
     const project = {
       id: genId(), clientName, name, deliveryDate, budget,
-      projectType, recurringSeries, ownerMemberId, isProvisional, detailsDueAt,
+      projectType, recurringSeries, ownerMemberId, dealCategory, startDate,
+      isProvisional, detailsDueAt,
       projectStatus, note,
       archived: false, createdAt: today(), phases,
     };
