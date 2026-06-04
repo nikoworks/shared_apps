@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '完了同期修正版 2026-06-04-01';
+const APP_BUILD_LABEL = 'Chatwork納品日送信版 2026-06-04-01';
 
 /* ============================================================
    ルーター
@@ -2564,6 +2564,7 @@ function projectCard(project) {
             <div class="project-warning">
               納品日が未設定です。
               <button class="btn btn-ghost btn-sm" onclick="copyDeliveryDateRequest('${project.id}')">Chatwork文をコピー</button>
+              <button class="btn btn-ghost btn-sm" onclick="sendDeliveryDateRequest('${project.id}')">窓口へ送信</button>
             </div>
           ` : ''}
           ${project.note ? `<div class="form-help" style="margin-top:8px">${escHtml(project.note)}</div>` : ''}
@@ -2890,26 +2891,82 @@ function confirmProjectDeliveryDate(deliveryDate) {
   return confirm('納品日が未入力です。納品日は必須項目です。\n未入力のまま保存すると、プロジェクト画面に警告が出ます。\nこのまま保存しますか？');
 }
 
-async function copyDeliveryDateRequest(projectId) {
-  const project = DB.Projects.get(projectId);
-  if (!project) return;
-  const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
+function buildDeliveryDateRequestMessage(project, owner, withMention = false) {
   const url = getMemberProjectEditUrl(owner?.id || '', project.id);
   const projectName = `${project.clientName} / ${project.name}`;
-  const message = [
-    '[info][title]納品日の確認をお願いします[/title]',
+  const mention = withMention && owner?.chatworkAccountId
+    ? `[To:${owner.chatworkAccountId}] ${owner.name}さん\n`
+    : '';
+  return [
+    mention + '[info][title]納品日の確認をお願いします[/title]',
     `${projectName} の納品日が未設定です。`,
     '下のURLから開いて、プロジェクト編集画面で納品日を入力してください。',
     '',
     `入力URL：${url}`,
     '[/info]',
   ].join('\n');
+}
+
+async function copyDeliveryDateRequest(projectId) {
+  const project = DB.Projects.get(projectId);
+  if (!project) return;
+  const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
+  const message = buildDeliveryDateRequestMessage(project, owner, false);
 
   try {
     await navigator.clipboard.writeText(message);
     showToast('Chatwork用の納期確認文をコピーしました', 'success');
   } catch {
     window.prompt('この文章をコピーしてください', message);
+  }
+}
+
+async function sendDeliveryDateRequest(projectId) {
+  const project = DB.Projects.get(projectId);
+  if (!project) return;
+  const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
+  if (!owner) {
+    showToast('窓口担当が未設定です。プロジェクト編集で窓口担当を選んでください', 'error');
+    return;
+  }
+  if (!owner.chatworkAccountId) {
+    showToast('窓口担当のChatworkアカウントIDが未設定です。設定 > メンバーから登録してください', 'error');
+    return;
+  }
+
+  const body = buildDeliveryDateRequestMessage(project, owner, true);
+  let importKey = getSavedChatworkImportKey();
+  try {
+    let res = await fetch('/api/chatwork/reply', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(importKey ? { 'x-taskboard-key': importKey } : {}),
+      },
+      body: JSON.stringify({ body }),
+    });
+
+    let data = await res.json().catch(() => ({}));
+    if (res.status === 401 && String(data.error || '').includes('取り込みキー')) {
+      const inputKey = window.prompt('TASKBOARD_IMPORT_KEYを入力してください');
+      if (!inputKey) throw new Error('TASKBOARD_IMPORT_KEYが未入力です');
+      importKey = inputKey.trim();
+      localStorage.setItem(CHATWORK_IMPORT_KEY, importKey);
+      res = await fetch('/api/chatwork/reply', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-taskboard-key': importKey,
+        },
+        body: JSON.stringify({ body }),
+      });
+      data = await res.json().catch(() => ({}));
+    }
+
+    if (!res.ok) throw new Error(data.error || 'Chatwork送信に失敗しました');
+    showToast(`${owner.name}さん宛にChatworkへ送信しました`, 'success');
+  } catch (error) {
+    showToast(error.message || 'Chatwork送信に失敗しました', 'error');
   }
 }
 
@@ -3027,6 +3084,11 @@ function openMemberModal(editId) {
       <input class="form-input" id="mem-name" placeholder="例：田中 健太" value="${escHtml(member?.name||'')}">
     </div>
     <div class="form-group">
+      <label class="form-label">ChatworkアカウントID</label>
+      <input class="form-input" id="mem-chatwork-id" inputmode="numeric" placeholder="例：2994017" value="${escHtml(member?.chatworkAccountId||'')}">
+      <div class="form-help">納品日確認などを窓口担当へメンション送信するために使います。</div>
+    </div>
+    <div class="form-group">
       <label class="form-label">アバターカラー</label>
       <div class="color-grid" id="color-grid">${swatches}</div>
     </div>
@@ -3048,7 +3110,8 @@ function selectMemberColor(color) {
 function saveMemberNew() {
   const name = document.getElementById('mem-name')?.value?.trim();
   if (!name) { showToast('名前を入力してください', 'error'); return; }
-  DB.Members.add({ name, color: _selectedColor });
+  const chatworkAccountId = document.getElementById('mem-chatwork-id')?.value?.trim() || '';
+  DB.Members.add({ name, color: _selectedColor, chatworkAccountId });
   closeModal();
   showToast('メンバーを追加しました', 'success');
   renderSettings();
@@ -3057,7 +3120,8 @@ function saveMemberNew() {
 function saveMemberEdit(memberId) {
   const name = document.getElementById('mem-name')?.value?.trim();
   if (!name) { showToast('名前を入力してください', 'error'); return; }
-  DB.Members.update(memberId, { name, color: _selectedColor });
+  const chatworkAccountId = document.getElementById('mem-chatwork-id')?.value?.trim() || '';
+  DB.Members.update(memberId, { name, color: _selectedColor, chatworkAccountId });
   closeModal();
   showToast('メンバーを更新しました', 'success');
   renderSettings();

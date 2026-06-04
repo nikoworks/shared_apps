@@ -291,9 +291,9 @@ function seedDemoData() {
 // ============================================================
 const Members = {
   all()  { return load(KEYS.MEMBERS) ?? []; },
-  add({ name, color }) {
+  add({ name, color, chatworkAccountId = '' }) {
     const list = this.all();
-    const member = { id: genId(), name, color: color ?? '#6366f1', createdAt: today() };
+    const member = { id: genId(), name, color: color ?? '#6366f1', chatworkAccountId, createdAt: today() };
     list.push(member);
     save(KEYS.MEMBERS, list);
     return member;
