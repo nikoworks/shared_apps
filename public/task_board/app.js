@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'プロジェクト登録整理版 2026-06-05-01';
+const APP_BUILD_LABEL = 'ガント表示追加版 2026-06-05-04';
 
 /* ============================================================
    ルーター
@@ -28,6 +28,7 @@ function renderPage(page) {
     case 'tasks':     renderTodayTasks(); break;
     case 'projectReview': renderProjectReviewFromUrl(); break;
     case 'projects':  renderProjects(); break;
+    case 'gantt':     renderGantt(); break;
     case 'settings':  renderSettings(); break;
     default:          renderDashboard();
   }
@@ -2150,6 +2151,7 @@ function findOrCreateBulkProject(projectName, ownerMemberId) {
     projectType: isRecurring ? 'recurring' : 'provisional',
     recurringSeries: parsed.recurringSeries,
     ownerMemberId,
+    createdByMemberId: ownerMemberId,
     isProvisional: true,
     detailsDueAt: tomorrowDate(),
   });
@@ -2400,6 +2402,7 @@ function saveProjectReview(reviewId) {
         projectType: parsed.recurringSeries ? 'recurring' : 'provisional',
         recurringSeries: parsed.recurringSeries || '',
         ownerMemberId: review.memberId || '',
+        createdByMemberId: review.memberId || '',
         isProvisional: true,
         detailsDueAt: tomorrowDate(),
       });
@@ -2424,6 +2427,322 @@ function saveProjectReview(reviewId) {
 }
 
 /* ============================================================
+   ガント
+   ============================================================ */
+let _ganttFilter = {
+  clientName: '',
+  recurringSeries: '',
+  ownerMemberId: '',
+  memberId: '',
+  projectType: '',
+  startDate: '',
+  endDate: '',
+};
+
+function renderGantt() {
+  const main = document.getElementById('main-content');
+  const members = DB.Members.all();
+  const activeProjects = DB.Projects.active();
+  const tasks = DB.Tasks.all();
+  const range = ganttVisibleRange(activeProjects, tasks);
+  const projects = sortProjectsByDelivery(activeProjects).filter(project => {
+    if (_ganttFilter.clientName && project.clientName !== _ganttFilter.clientName) return false;
+    if (_ganttFilter.recurringSeries && (project.recurringSeries || '') !== _ganttFilter.recurringSeries) return false;
+    if (_ganttFilter.ownerMemberId && (project.ownerMemberId || '') !== _ganttFilter.ownerMemberId) return false;
+    if (_ganttFilter.projectType && (project.projectType || 'standard') !== _ganttFilter.projectType) return false;
+    if (_ganttFilter.memberId && !tasks.some(t => t.projectId === project.id && t.memberId === _ganttFilter.memberId)) return false;
+    return ganttProjectIntersectsRange(project, range.start, range.end, tasks);
+  });
+
+  const clientOptions = uniqueSorted(activeProjects.map(p => p.clientName).filter(Boolean))
+    .map(name => `<option value="${escHtml(name)}" ${_ganttFilter.clientName === name ? 'selected' : ''}>${escHtml(name)}</option>`)
+    .join('');
+  const recurringOptions = uniqueSorted(activeProjects.map(p => p.recurringSeries).filter(Boolean))
+    .map(name => `<option value="${escHtml(name)}" ${_ganttFilter.recurringSeries === name ? 'selected' : ''}>${escHtml(name)}</option>`)
+    .join('');
+  const ownerOptions = members
+    .map(m => `<option value="${m.id}" ${_ganttFilter.ownerMemberId === m.id ? 'selected' : ''}>${escHtml(m.name)}</option>`)
+    .join('');
+  const memberOptions = members
+    .map(m => `<option value="${m.id}" ${_ganttFilter.memberId === m.id ? 'selected' : ''}>${escHtml(m.name)}</option>`)
+    .join('');
+  const days = dateList(range.start, range.end);
+  const timelineWidth = days.length * 36;
+
+  main.innerHTML = `
+    <div class="page-header">
+      <div class="page-header-left">
+        <h2>ガント</h2>
+        <p>クライアント別・定期案件別にプロジェクトとフェーズの流れを確認します</p>
+      </div>
+    </div>
+    <div class="page-body fade-in">
+      <div class="gantt-filters">
+        <select class="form-select" onchange="_ganttFilter.clientName=this.value;renderGantt()">
+          <option value="">全クライアント</option>${clientOptions}
+        </select>
+        <select class="form-select" onchange="_ganttFilter.recurringSeries=this.value;renderGantt()">
+          <option value="">全定期案件</option>${recurringOptions}
+        </select>
+        <select class="form-select" onchange="_ganttFilter.ownerMemberId=this.value;renderGantt()">
+          <option value="">全窓口</option>${ownerOptions}
+        </select>
+        <select class="form-select" onchange="_ganttFilter.memberId=this.value;renderGantt()">
+          <option value="">全担当者</option>${memberOptions}
+        </select>
+        <select class="form-select" onchange="_ganttFilter.projectType=this.value;renderGantt()">
+          <option value="">全プロジェクト種別</option>
+          <option value="standard" ${_ganttFilter.projectType === 'standard' ? 'selected' : ''}>通常</option>
+          <option value="recurring" ${_ganttFilter.projectType === 'recurring' ? 'selected' : ''}>定期</option>
+        </select>
+        <input type="date" class="form-input" value="${range.start}" onchange="_ganttFilter.startDate=this.value;renderGantt()">
+        <input type="date" class="form-input" value="${range.end}" onchange="_ganttFilter.endDate=this.value;renderGantt()">
+        <button class="btn btn-ghost" onclick="resetGanttFilter()">リセット</button>
+      </div>
+
+      <div class="gantt-summary">
+        <div class="stat-card">
+          <div class="stat-value">${projects.length}</div>
+          <div class="stat-label">表示中プロジェクト</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">${projects.reduce((sum, p) => sum + (p.phases || []).length, 0)}</div>
+          <div class="stat-label">表示中フェーズ</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">${range.start.slice(5).replace('-', '/')}</div>
+          <div class="stat-label">表示開始</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">${range.end.slice(5).replace('-', '/')}</div>
+          <div class="stat-label">表示終了</div>
+        </div>
+      </div>
+
+      ${projects.length
+        ? ganttChartHTML(projects, tasks, members, days, timelineWidth)
+        : `<div class="empty-state">
+            <div class="icon">📊</div>
+            <div class="title">表示できるプロジェクトがありません</div>
+            <div class="sub">絞り込み条件を変えるか、プロジェクトに開始日・納品日・フェーズを登録してください</div>
+          </div>`}
+    </div>
+  `;
+}
+
+function resetGanttFilter() {
+  _ganttFilter = {
+    clientName: '',
+    recurringSeries: '',
+    ownerMemberId: '',
+    memberId: '',
+    projectType: '',
+    startDate: '',
+    endDate: '',
+  };
+  renderGantt();
+}
+
+function ganttChartHTML(projects, tasks, members, days, timelineWidth) {
+  return `
+    <div class="gantt-shell">
+      <div class="gantt-left gantt-left-head">
+        <div>プロジェクト / フェーズ</div>
+      </div>
+      <div class="gantt-scroll">
+        <div class="gantt-days" style="width:${timelineWidth}px">
+          ${days.map(day => ganttDayHeaderHTML(day)).join('')}
+        </div>
+      </div>
+      ${projects.map(project => ganttProjectBlockHTML(project, tasks, members, days, timelineWidth)).join('')}
+    </div>
+  `;
+}
+
+function ganttProjectBlockHTML(project, tasks, members, days, timelineWidth) {
+  const projectTasks = tasks.filter(t => t.projectId === project.id);
+  const bounds = ganttProjectBounds(project, projectTasks);
+  const projectBar = ganttBarStyle(bounds.start, bounds.end, days);
+  const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
+  const phaseRows = (project.phases || []).length
+    ? project.phases.map((phase, index) => ganttPhaseRowHTML(project, phase, index, projectTasks, members, days)).join('')
+    : `
+      <div class="gantt-left gantt-phase-left">
+        <span class="gantt-phase-name">フェーズ未設定</span>
+      </div>
+      <div class="gantt-scroll">
+        <div class="gantt-row-line" style="width:${timelineWidth}px"></div>
+      </div>
+    `;
+
+  return `
+    <div class="gantt-left gantt-project-left">
+      <div class="gantt-project-title">${escHtml(project.clientName)} / ${escHtml(project.name)}</div>
+      <div class="gantt-project-meta">
+        ${project.projectType === 'recurring' && project.recurringSeries ? `<span>定期：${escHtml(project.recurringSeries)}</span>` : ''}
+        ${owner ? `<span>窓口：${escHtml(owner.name)}</span>` : '<span class="missing">窓口未設定</span>'}
+        ${project.deliveryDate ? `<span>納品：${DB.fmtDate(project.deliveryDate)}</span>` : '<span class="missing">納品日未設定</span>'}
+      </div>
+    </div>
+    <div class="gantt-scroll">
+      <div class="gantt-row-line gantt-project-line" style="width:${timelineWidth}px">
+        ${projectBar ? `<div class="gantt-bar gantt-bar-project" style="${projectBar}" title="${escHtml(project.clientName)} / ${escHtml(project.name)}"></div>` : ''}
+        ${ganttTodayMarkerHTML(days)}
+      </div>
+    </div>
+    ${phaseRows}
+  `;
+}
+
+function ganttPhaseRowHTML(project, phase, index, projectTasks, members, days) {
+  const phaseTasks = projectTasks.filter(t => t.phaseId === phase.id);
+  const bounds = ganttPhaseBounds(project, phase, index, project.phases || [], projectTasks);
+  const barStyle = ganttBarStyle(bounds.start, bounds.end, days);
+  const memberNames = uniqueSorted(phaseTasks.map(t => DB.Members.get(t.memberId)?.name).filter(Boolean));
+  const done = phaseTasks.filter(t => t.completed === true).length;
+  const total = phaseTasks.length;
+  const statusClass = phase.status === 'done' ? 'done' : phase.status === 'active' ? 'active' : 'pending';
+  const label = phaseStatusLabel(phase.status);
+
+  return `
+    <div class="gantt-left gantt-phase-left">
+      <div class="gantt-phase-name">${escHtml(phase.name)}</div>
+      <div class="gantt-phase-meta">
+        <span class="gantt-status ${statusClass}">${label}</span>
+        ${memberNames.length ? `<span>${escHtml(memberNames.join('、'))}</span>` : ''}
+        ${total ? `<span>${done}/${total}件</span>` : '<span>タスクなし</span>'}
+      </div>
+    </div>
+    <div class="gantt-scroll">
+      <div class="gantt-row-line" style="width:${days.length * 36}px">
+        ${barStyle ? `<div class="gantt-bar gantt-bar-phase ${statusClass}" style="${barStyle}" title="${escHtml(project.name)}：${escHtml(phase.name)}"></div>` : ''}
+        ${ganttTodayMarkerHTML(days)}
+      </div>
+    </div>
+  `;
+}
+
+function ganttDayHeaderHTML(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  const isToday = dateStr === DB.today();
+  const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+  return `
+    <div class="gantt-day ${isToday ? 'today' : ''} ${isWeekend ? 'weekend' : ''}">
+      <strong>${d.getDate()}</strong>
+      <span>${['日','月','火','水','木','金','土'][d.getDay()]}</span>
+    </div>
+  `;
+}
+
+function ganttTodayMarkerHTML(days) {
+  const index = days.indexOf(DB.today());
+  if (index < 0) return '';
+  return `<div class="gantt-today-marker" style="left:${index * 36}px"></div>`;
+}
+
+function ganttBarStyle(start, end, days) {
+  if (!start || !end || !days.length) return '';
+  const first = days[0];
+  const last = days[days.length - 1];
+  const visibleStart = start < first ? first : start;
+  const visibleEnd = end > last ? last : end;
+  if (visibleEnd < first || visibleStart > last || visibleEnd < visibleStart) return '';
+  const left = diffDays(first, visibleStart) * 36 + 4;
+  const width = (diffDays(visibleStart, visibleEnd) + 1) * 36 - 8;
+  return `left:${left}px;width:${Math.max(width, 20)}px`;
+}
+
+function ganttVisibleRange(projects, tasks) {
+  if (_ganttFilter.startDate && _ganttFilter.endDate) {
+    return normalizeDateRange(_ganttFilter.startDate, _ganttFilter.endDate);
+  }
+
+  const dates = [];
+  projects.forEach(project => {
+    const projectTasks = tasks.filter(t => t.projectId === project.id);
+    const bounds = ganttProjectBounds(project, projectTasks);
+    if (bounds.start) dates.push(bounds.start);
+    if (bounds.end) dates.push(bounds.end);
+  });
+  if (!dates.length) {
+    return { start: addDays(DB.today(), -7), end: addDays(DB.today(), 45) };
+  }
+  const min = dates.sort()[0];
+  const max = dates.sort()[dates.length - 1];
+  return normalizeDateRange(addDays(min, -7), addDays(max, 10), 120);
+}
+
+function ganttProjectIntersectsRange(project, start, end, tasks) {
+  const bounds = ganttProjectBounds(project, tasks.filter(t => t.projectId === project.id));
+  return Boolean(bounds.start && bounds.end && bounds.start <= end && bounds.end >= start);
+}
+
+function ganttProjectBounds(project, projectTasks = []) {
+  const taskDates = projectTasks.map(t => t.date).filter(Boolean).sort();
+  const phaseStartDates = (project.phases || []).map(ph => ph.startDate).filter(Boolean);
+  const phaseDueDates = (project.phases || []).map(ph => ph.dueDate).filter(Boolean);
+  const start = project.startDate || phaseStartDates.sort()[0] || taskDates[0] || (project.deliveryDate ? addDays(project.deliveryDate, -30) : project.createdAt || DB.today());
+  const end = project.deliveryDate || phaseDueDates.sort().slice(-1)[0] || taskDates.slice(-1)[0] || addDays(start, 14);
+  return normalizeDateRange(start, end);
+}
+
+function ganttPhaseBounds(project, phase, index, phases, projectTasks = []) {
+  const phaseTasks = projectTasks.filter(t => t.phaseId === phase.id);
+  const taskDates = phaseTasks.map(t => t.date).filter(Boolean).sort();
+  if (phase.startDate || phase.dueDate || taskDates.length) {
+    const start = phase.startDate || taskDates[0] || phase.dueDate || '';
+    const end = phase.dueDate || taskDates.slice(-1)[0] || start;
+    return normalizeDateRange(start, end);
+  }
+
+  const projectBounds = ganttProjectBounds(project, projectTasks);
+  const count = Math.max(phases.length, 1);
+  const totalDays = Math.max(diffDays(projectBounds.start, projectBounds.end) + 1, count);
+  const phaseDays = Math.max(Math.ceil(totalDays / count), 1);
+  const start = addDays(projectBounds.start, index * phaseDays);
+  const end = index === count - 1 ? projectBounds.end : addDays(start, phaseDays - 1);
+  return normalizeDateRange(start, end);
+}
+
+function phaseStatusLabel(status) {
+  if (status === 'done') return '完了';
+  if (status === 'active') return '進行中';
+  return '未着手';
+}
+
+function uniqueSorted(values) {
+  return Array.from(new Set(values.filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b), 'ja'));
+}
+
+function addDays(dateStr, days) {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function diffDays(start, end) {
+  const a = new Date(start + 'T00:00:00');
+  const b = new Date(end + 'T00:00:00');
+  return Math.round((b - a) / 86400000);
+}
+
+function normalizeDateRange(start, end, maxDays = 140) {
+  let s = start || DB.today();
+  let e = end || s;
+  if (e < s) [s, e] = [e, s];
+  if (diffDays(s, e) > maxDays) e = addDays(s, maxDays);
+  return { start: s, end: e };
+}
+
+function dateList(start, end) {
+  const days = [];
+  for (let date = start; date <= end; date = addDays(date, 1)) {
+    days.push(date);
+  }
+  return days;
+}
+
+/* ============================================================
    プロジェクト
    ============================================================ */
 let _projectView = 'active'; // 'active' | 'archived'
@@ -2441,7 +2760,7 @@ function renderProjects() {
     return true;
   });
   const projects = sortProjectsByDelivery(filteredProjects);
-  const missingDelivery = projects.filter(p => !p.deliveryDate);
+  const projectsWithMissingInfo = projects.filter(p => projectMissingInfo(p).length > 0);
   const ownerOptions = members.map(m =>
     `<option value="${m.id}" ${_projectOwnerFilter === m.id ? 'selected' : ''}>${escHtml(m.name)}</option>`
   ).join('');
@@ -2452,9 +2771,9 @@ function renderProjects() {
       <p>プロジェクトとフェーズの管理</p>
     </div></div>
     <div class="page-body fade-in">
-      ${missingDelivery.length ? `
+      ${projectsWithMissingInfo.length ? `
         <div class="banner banner-warning">
-          <span>納品日未設定のプロジェクトが ${missingDelivery.length}件あります。プロジェクト編集から納品日を入力してください。</span>
+          <span>必要情報が未入力のプロジェクトが ${projectsWithMissingInfo.length}件あります。各プロジェクトの警告から入力依頼を送れます。</span>
         </div>
       ` : ''}
 
@@ -2506,13 +2825,15 @@ function projectCard(project) {
   const phases    = project.phases || [];
   const allTasks  = DB.Tasks.all();
   const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
+  const createdBy = project.createdByMemberId ? DB.Members.get(project.createdByMemberId) : null;
+  const missingInfo = projectMissingInfo(project);
   const statusBadges = [
     `<span class="status-badge ${(project.dealCategory || 'existing') === 'proposal' ? 'provisional' : 'personal'}">${dealCategoryLabel(project.dealCategory)}</span>`,
     project.projectType === 'recurring' ? '<span class="status-badge recurring">定期案件</span>' : '',
     project.isProvisional ? '<span class="status-badge provisional">仮登録</span>' : '',
     project.projectStatus === 'paused' ? '<span class="status-badge personal">保留</span>' : '',
     project.projectStatus === 'completed' ? '<span class="status-badge personal">完了</span>' : '',
-    !project.deliveryDate ? '<span class="status-badge missing">納期未設定</span>' : '',
+    missingInfo.length ? '<span class="status-badge missing">情報不足</span>' : '',
   ].filter(Boolean).join('');
 
   const stepsHTML = phases.map((ph, i) => {
@@ -2565,15 +2886,16 @@ function projectCard(project) {
             </span>
             ${project.budget ? `<span class="project-meta-item"><strong>予算</strong>¥${Number(project.budget).toLocaleString()}</span>` : ''}
             ${project.projectType === 'recurring' && project.recurringSeries ? `<span class="project-meta-item"><strong>定期案件</strong>${escHtml(project.recurringSeries)}</span>` : ''}
-            <span class="project-meta-item"><strong>窓口</strong>${owner ? escHtml(owner.name) : '未設定'}</span>
+            <span class="project-meta-item ${createdBy ? '' : 'missing'}"><strong>登録者</strong>${createdBy ? escHtml(createdBy.name) : '未設定'}</span>
+            <span class="project-meta-item ${owner ? '' : 'missing'}"><strong>窓口</strong>${owner ? escHtml(owner.name) : '未設定'}</span>
             ${project.startDate ? `<span class="project-meta-item"><strong>開始日</strong>${DB.fmtDate(project.startDate)}</span>` : ''}
             ${project.detailsDueAt ? `<span class="project-meta-item"><strong>詳細登録期限</strong>${DB.fmtDate(project.detailsDueAt)}</span>` : ''}
           </div>
-          ${!project.deliveryDate ? `
+          ${missingInfo.length ? `
             <div class="project-warning">
-              納品日が未設定です。
-              <button class="btn btn-ghost btn-sm" onclick="copyDeliveryDateRequest('${project.id}')">Chatwork文をコピー</button>
-              <button class="btn btn-ghost btn-sm" onclick="sendDeliveryDateRequest('${project.id}')">窓口へ送信</button>
+              不足情報：${missingInfo.map(item => item.label).join('、')}
+              <button class="btn btn-ghost btn-sm" onclick="copyProjectInfoRequest('${project.id}')">Chatwork文をコピー</button>
+              <button class="btn btn-ghost btn-sm" onclick="sendProjectInfoRequest('${project.id}')">Chatworkへ送信</button>
             </div>
           ` : ''}
           ${project.note ? `<div class="form-help" style="margin-top:8px">${escHtml(project.note)}</div>` : ''}
@@ -2605,6 +2927,18 @@ function projectCard(project) {
 
 function dealCategoryLabel(value) {
   return value === 'proposal' ? '提案ベース' : '既存クライアント';
+}
+
+function projectMissingInfo(project) {
+  const missing = [];
+  if (!project.createdByMemberId) missing.push({ key: 'createdByMemberId', label: '登録者' });
+  if (!project.ownerMemberId) missing.push({ key: 'ownerMemberId', label: '窓口担当' });
+  if (!project.deliveryDate) missing.push({ key: 'deliveryDate', label: '納品日' });
+  if (!project.startDate) missing.push({ key: 'startDate', label: '開始日' });
+  if (project.projectType === 'recurring' && !project.recurringSeries) {
+    missing.push({ key: 'recurringSeries', label: '定期案件名' });
+  }
+  return missing;
 }
 
 function openProjectTasksModal(projectId) {
@@ -2718,7 +3052,12 @@ function phaseEditorRow(projectId, ph, i) {
         <option value="active"  ${ph.status==='active'  ? 'selected' : ''}>進行中</option>
         <option value="done"    ${ph.status==='done'    ? 'selected' : ''}>完了</option>
       </select>
+      <input type="date" id="ph-start-${ph.id}" value="${ph.startDate || ''}"
+             title="フェーズ開始日"
+             style="background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:6px;
+                    padding:5px 8px;color:var(--text-1);font-size:12px;font-family:inherit;outline:none;width:140px;color-scheme:dark">
       <input type="date" id="ph-due-${ph.id}" value="${ph.dueDate || ''}"
+             title="フェーズ締切日"
              style="background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:6px;
                     padding:5px 8px;color:var(--text-1);font-size:12px;font-family:inherit;outline:none;width:140px;color-scheme:dark">
       <button class="btn btn-danger btn-sm btn-icon"
@@ -2730,7 +3069,7 @@ function addPhaseToProject(projectId) {
   const p = DB.Projects.get(projectId);
   if (!p) return;
   const currentPhases = readPhaseEditorValues(p);
-  const newPh = { id: DB.genId(), name: '新フェーズ', status: 'pending', dueDate: '', order: currentPhases.length };
+  const newPh = { id: DB.genId(), name: '新フェーズ', status: 'pending', startDate: '', dueDate: '', order: currentPhases.length };
   DB.Projects.updatePhases(projectId, [...currentPhases, newPh]);
   openPhaseEditor(projectId);
 }
@@ -2746,11 +3085,13 @@ function readPhaseEditorValues(project) {
   return (project.phases||[]).map(ph => {
     const nameEl   = document.getElementById(`ph-name-${ph.id}`);
     const statusEl = document.getElementById(`ph-status-${ph.id}`);
+    const startEl  = document.getElementById(`ph-start-${ph.id}`);
     const dueEl    = document.getElementById(`ph-due-${ph.id}`);
     return {
       ...ph,
       name:    nameEl   ? nameEl.value.trim() || ph.name : ph.name,
       status:  statusEl ? statusEl.value : ph.status,
+      startDate: startEl ? startEl.value : ph.startDate,
       dueDate: dueEl    ? dueEl.value : ph.dueDate,
     };
   });
@@ -2772,12 +3113,26 @@ function openProjectModal(editId) {
   const templates = DB.Templates.all();
   const tplOpts   = templates.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
   const ownerDefault = project?.ownerMemberId || (!editId ? getDefaultOwnerMemberId() : '');
+  const createdByDefault = project?.createdByMemberId || (!editId ? getDefaultOwnerMemberId() : '');
   const members   = DB.Members.all();
   const memberOpts = members.map(m =>
     `<option value="${m.id}" ${ownerDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
+  const createdByOpts = members.map(m =>
+    `<option value="${m.id}" ${createdByDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
   const type = project?.projectType === 'recurring' ? 'recurring' : 'standard';
   const status = project?.projectStatus === 'completed' ? 'active' : (project?.projectStatus || 'active');
   const dealCategory = project?.dealCategory || 'existing';
+  const clientName = project?.clientName || '';
+  const clientOptions = clientNameSelectOptions(clientName);
+  const clientSelectValue = clientName && clientOptions.includes(clientName)
+    ? clientName
+    : (clientName || clientOptions.length === 0 ? '__new__' : '');
+  const clientSelectOpts = [
+    clientOptions.length ? '<option value="">既存クライアントを選択...</option>' : '',
+    ...clientOptions.map(name =>
+      `<option value="${escHtml(name)}" ${clientSelectValue === name ? 'selected' : ''}>${escHtml(name)}</option>`),
+    `<option value="__new__" ${clientSelectValue === '__new__' ? 'selected' : ''}>＋ 新規クライアント名を入力</option>`,
+  ].join('');
   const recurringSeries = project?.recurringSeries || '';
   const recurringOptions = recurringSeriesSelectOptions(recurringSeries);
   const recurringSelectValue = recurringSeries && recurringOptions.includes(recurringSeries)
@@ -2820,11 +3175,23 @@ function openProjectModal(editId) {
     </div>
     <div class="form-group">
       <label class="form-label">クライアント名 *</label>
-      <input class="form-input" id="pj-client" placeholder="例：〇〇株式会社" value="${escHtml(project?.clientName||'')}">
+      <select class="form-select" id="pj-client-select" onchange="toggleProjectClientFields()">
+        ${clientSelectOpts}
+      </select>
+      <input class="form-input" id="pj-client" style="margin-top:8px;${clientSelectValue === '__new__' ? '' : 'display:none'}"
+             placeholder="例：〇〇株式会社" value="${clientSelectValue === '__new__' ? escHtml(clientName) : ''}">
+      <div class="form-help">既存から選ぶと、クライアント名の表記ゆれを防げます。</div>
     </div>
     <div class="form-group">
       <label class="form-label">プロジェクト名 *</label>
       <input class="form-input" id="pj-name" placeholder="例：7月号 / 2026年7月切り替え / LP制作" value="${escHtml(project?.name||'')}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">登録者 *</label>
+      <select class="form-select" id="pj-created-by">
+        <option value="">未設定</option>${createdByOpts}
+      </select>
+      <div class="form-help">情報が足りない時に、まず誰へ確認を戻すかを決める項目です。</div>
     </div>
     <div class="form-group">
       <label class="form-label">窓口担当</label>
@@ -2882,6 +3249,7 @@ function openProjectModal(editId) {
     </div>
   `, editId ? 'プロジェクトを編集' : 'プロジェクトを追加');
   toggleRecurringProjectFields();
+  toggleProjectClientFields();
 }
 
 function toggleRecurringProjectFields() {
@@ -2910,10 +3278,34 @@ function getRecurringSeriesFromProjectForm(projectType) {
   return document.getElementById('pj-recurring')?.value?.trim() || '';
 }
 
+function clientNameSelectOptions(current = '') {
+  const names = DB.Projects.all()
+    .map(p => p.clientName)
+    .filter(Boolean)
+    .map(name => String(name).trim())
+    .filter(Boolean);
+  if (current) names.push(current);
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b, 'ja'));
+}
+
+function toggleProjectClientFields() {
+  const clientSelect = document.getElementById('pj-client-select');
+  const clientInput = document.getElementById('pj-client');
+  if (clientInput) clientInput.style.display = clientSelect?.value === '__new__' ? '' : 'none';
+}
+
+function getClientNameFromProjectForm() {
+  const selected = document.getElementById('pj-client-select')?.value || '';
+  if (selected && selected !== '__new__') return selected.trim();
+  return document.getElementById('pj-client')?.value?.trim() || '';
+}
+
 function saveProjectNew() {
-  const clientName = document.getElementById('pj-client')?.value?.trim();
+  const clientName = getClientNameFromProjectForm();
   const name       = document.getElementById('pj-name')?.value?.trim();
   if (!clientName || !name) { showToast('クライアント名とプロジェクト名は必須です', 'error'); return; }
+  const createdByMemberId = document.getElementById('pj-created-by')?.value || '';
+  if (!createdByMemberId) { showToast('登録者は必須です', 'error'); return; }
   const deliveryDate = document.getElementById('pj-delivery')?.value || '';
   if (!confirmProjectDeliveryDate(deliveryDate)) return;
   const projectType = document.getElementById('pj-type')?.value || 'standard';
@@ -2931,6 +3323,7 @@ function saveProjectNew() {
     recurringSeries,
     dealCategory:    document.getElementById('pj-deal-category')?.value || 'existing',
     startDate:       document.getElementById('pj-start')?.value || '',
+    createdByMemberId,
     ownerMemberId:   document.getElementById('pj-owner')?.value || getDefaultOwnerMemberId(),
     isProvisional:   false,
     detailsDueAt:    document.getElementById('pj-details-due')?.value || '',
@@ -2943,9 +3336,11 @@ function saveProjectNew() {
 }
 
 function saveProjectEdit(projectId) {
-  const clientName = document.getElementById('pj-client')?.value?.trim();
+  const clientName = getClientNameFromProjectForm();
   const name       = document.getElementById('pj-name')?.value?.trim();
   if (!clientName || !name) { showToast('クライアント名とプロジェクト名は必須です', 'error'); return; }
+  const createdByMemberId = document.getElementById('pj-created-by')?.value || '';
+  if (!createdByMemberId) { showToast('登録者は必須です', 'error'); return; }
   const deliveryDate = document.getElementById('pj-delivery')?.value || '';
   if (!confirmProjectDeliveryDate(deliveryDate)) return;
   const projectType = document.getElementById('pj-type')?.value || 'standard';
@@ -2962,6 +3357,7 @@ function saveProjectEdit(projectId) {
     recurringSeries,
     dealCategory:    document.getElementById('pj-deal-category')?.value || 'existing',
     startDate:       document.getElementById('pj-start')?.value || '',
+    createdByMemberId,
     ownerMemberId:   document.getElementById('pj-owner')?.value || '',
     isProvisional:   false,
     detailsDueAt:    document.getElementById('pj-details-due')?.value || '',
@@ -2978,50 +3374,60 @@ function confirmProjectDeliveryDate(deliveryDate) {
   return confirm('納品日が未入力です。納品日は必須項目です。\n未入力のまま保存すると、プロジェクト画面に警告が出ます。\nこのまま保存しますか？');
 }
 
-function buildDeliveryDateRequestMessage(project, owner, withMention = false) {
-  const url = getMemberProjectEditUrl(owner?.id || '', project.id);
+function projectInfoRequestRecipient(project) {
+  const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
+  const createdBy = project.createdByMemberId ? DB.Members.get(project.createdByMemberId) : null;
+  return owner || createdBy || null;
+}
+
+function buildProjectInfoRequestMessage(project, recipient, withMention = false) {
+  const missing = projectMissingInfo(project);
+  const url = getMemberProjectEditUrl(recipient?.id || '', project.id);
   const projectName = `${project.clientName} / ${project.name}`;
-  const mention = withMention && owner?.chatworkAccountId
-    ? `[To:${owner.chatworkAccountId}] ${owner.name}さん\n`
+  const mention = withMention && recipient?.chatworkAccountId
+    ? `[To:${recipient.chatworkAccountId}] ${recipient.name}さん\n`
     : '';
   return [
-    mention + '[info][title]納品日の確認をお願いします[/title]',
-    `${projectName} の納品日が未設定です。`,
-    '下のURLから開いて、プロジェクト編集画面で納品日を入力してください。',
+    mention + '[info][title]プロジェクト情報の入力をお願いします[/title]',
+    `${projectName} に不足している情報があります。`,
+    '',
+    `不足情報：${missing.map(item => item.label).join('、')}`,
+    '',
+    '下のURLから開いて、プロジェクト編集画面で入力してください。',
     '',
     `入力URL：${url}`,
     '[/info]',
   ].join('\n');
 }
 
-async function copyDeliveryDateRequest(projectId) {
+async function copyProjectInfoRequest(projectId) {
   const project = DB.Projects.get(projectId);
   if (!project) return;
-  const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
-  const message = buildDeliveryDateRequestMessage(project, owner, false);
+  const recipient = projectInfoRequestRecipient(project);
+  const message = buildProjectInfoRequestMessage(project, recipient, false);
 
   try {
     await navigator.clipboard.writeText(message);
-    showToast('Chatwork用の納期確認文をコピーしました', 'success');
+    showToast('Chatwork用の入力依頼文をコピーしました', 'success');
   } catch {
     window.prompt('この文章をコピーしてください', message);
   }
 }
 
-async function sendDeliveryDateRequest(projectId) {
+async function sendProjectInfoRequest(projectId) {
   const project = DB.Projects.get(projectId);
   if (!project) return;
-  const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
-  if (!owner) {
-    showToast('窓口担当が未設定です。プロジェクト編集で窓口担当を選んでください', 'error');
+  const recipient = projectInfoRequestRecipient(project);
+  if (!recipient) {
+    showToast('登録者と窓口担当が未設定です。先にどちらかを選んでください', 'error');
     return;
   }
-  if (!owner.chatworkAccountId) {
-    showToast('窓口担当のChatworkアカウントIDが未設定です。設定 > メンバーから登録してください', 'error');
+  if (!recipient.chatworkAccountId) {
+    showToast(`${recipient.name}さんのChatworkアカウントIDが未設定です。設定 > メンバーから登録してください`, 'error');
     return;
   }
 
-  const body = buildDeliveryDateRequestMessage(project, owner, true);
+  const body = buildProjectInfoRequestMessage(project, recipient, true);
   let importKey = getSavedChatworkImportKey();
   try {
     let res = await fetch('/api/chatwork/reply', {
@@ -3051,10 +3457,22 @@ async function sendDeliveryDateRequest(projectId) {
     }
 
     if (!res.ok) throw new Error(data.error || 'Chatwork送信に失敗しました');
-    showToast(`${owner.name}さん宛にChatworkへ送信しました`, 'success');
+    showToast(`${recipient.name}さん宛にChatworkへ送信しました`, 'success');
   } catch (error) {
     showToast(error.message || 'Chatwork送信に失敗しました', 'error');
   }
+}
+
+function buildDeliveryDateRequestMessage(project, owner, withMention = false) {
+  return buildProjectInfoRequestMessage(project, owner, withMention);
+}
+
+function copyDeliveryDateRequest(projectId) {
+  return copyProjectInfoRequest(projectId);
+}
+
+function sendDeliveryDateRequest(projectId) {
+  return sendProjectInfoRequest(projectId);
 }
 
 function archiveProject(id) {

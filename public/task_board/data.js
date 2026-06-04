@@ -318,6 +318,7 @@ const Projects = {
   add({
     clientName, name, deliveryDate = '', budget = '', templateId = '',
     projectType = 'standard', recurringSeries = '', ownerMemberId = '',
+    createdByMemberId = '',
     dealCategory = 'existing', startDate = '',
     isProvisional = false, detailsDueAt = '', projectStatus = 'active', note = '',
   }) {
@@ -325,7 +326,7 @@ const Projects = {
     const phases = buildPhasesFromTemplate(templateId);
     const project = {
       id: genId(), clientName, name, deliveryDate, budget,
-      projectType, recurringSeries, ownerMemberId, dealCategory, startDate,
+      projectType, recurringSeries, ownerMemberId, createdByMemberId, dealCategory, startDate,
       isProvisional, detailsDueAt,
       projectStatus, note,
       archived: false, createdAt: today(), phases,
@@ -631,6 +632,7 @@ function buildPhasesFromTemplate(templateId) {
     id: genId(),
     name,
     status: i === 0 ? 'active' : 'pending',
+    startDate: '',
     dueDate: '',
     order: i,
   }));
