@@ -2764,6 +2764,17 @@ function openProjectModal(editId) {
     `<option value="${m.id}" ${ownerDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
   const type = project?.projectType === 'recurring' ? 'recurring' : 'standard';
   const status = project?.projectStatus === 'completed' ? 'active' : (project?.projectStatus || 'active');
+  const recurringSeries = project?.recurringSeries || '';
+  const recurringOptions = recurringSeriesSelectOptions(recurringSeries);
+  const recurringSelectValue = recurringSeries && recurringOptions.includes(recurringSeries)
+    ? recurringSeries
+    : (recurringSeries || recurringOptions.length === 0 ? '__new__' : '');
+  const recurringSelectOpts = [
+    recurringOptions.length ? '<option value="">既存の定期案件を選択...</option>' : '',
+    ...recurringOptions.map(name =>
+      `<option value="${escHtml(name)}" ${recurringSelectValue === name ? 'selected' : ''}>${escHtml(name)}</option>`),
+    `<option value="__new__" ${recurringSelectValue === '__new__' ? 'selected' : ''}>＋ 新規定期案件名を入力</option>`,
+  ].join('');
 
   openModal(`
     <div class="form-help" style="margin-bottom:14px">
@@ -2778,8 +2789,12 @@ function openProjectModal(editId) {
     </div>
     <div class="form-group" id="pj-recurring-group" style="${type === 'recurring' ? '' : 'display:none'}">
       <label class="form-label">定期案件名</label>
-      <input class="form-input" id="pj-recurring" placeholder="例：明治安田 月号 / プレゼントキャンペーン更新" value="${escHtml(project?.recurringSeries||'')}">
-      <div class="form-help">定期プロジェクトだけ入力します。通常プロジェクトでは表示・保存しません。</div>
+      <select class="form-select" id="pj-recurring-select" onchange="toggleRecurringProjectFields()">
+        ${recurringSelectOpts}
+      </select>
+      <input class="form-input" id="pj-recurring" style="margin-top:8px;${recurringSelectValue === '__new__' ? '' : 'display:none'}"
+             placeholder="例：明治安田 月号 / プレゼントキャンペーン更新" value="${recurringSelectValue === '__new__' ? escHtml(recurringSeries) : ''}">
+      <div class="form-help">定期プロジェクトだけ入力します。既存から選ぶと表記ゆれを防げます。</div>
     </div>
     <div class="form-group">
       <label class="form-label">プロジェクト名 *</label>
@@ -2841,6 +2856,26 @@ function toggleRecurringProjectFields() {
   const type = document.getElementById('pj-type')?.value || 'standard';
   const recurringGroup = document.getElementById('pj-recurring-group');
   if (recurringGroup) recurringGroup.style.display = type === 'recurring' ? '' : 'none';
+  const recurringSelect = document.getElementById('pj-recurring-select');
+  const recurringInput = document.getElementById('pj-recurring');
+  if (recurringInput) recurringInput.style.display = recurringSelect?.value === '__new__' ? '' : 'none';
+}
+
+function recurringSeriesSelectOptions(current = '') {
+  const names = DB.Projects.all()
+    .map(p => p.recurringSeries)
+    .filter(Boolean)
+    .map(name => String(name).trim())
+    .filter(Boolean);
+  if (current) names.push(current);
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b, 'ja'));
+}
+
+function getRecurringSeriesFromProjectForm(projectType) {
+  if (projectType !== 'recurring') return '';
+  const selected = document.getElementById('pj-recurring-select')?.value || '';
+  if (selected && selected !== '__new__') return selected.trim();
+  return document.getElementById('pj-recurring')?.value?.trim() || '';
 }
 
 function saveProjectNew() {
@@ -2850,11 +2885,9 @@ function saveProjectNew() {
   const deliveryDate = document.getElementById('pj-delivery')?.value || '';
   if (!confirmProjectDeliveryDate(deliveryDate)) return;
   const projectType = document.getElementById('pj-type')?.value || 'standard';
-  const recurringSeries = projectType === 'recurring'
-    ? (document.getElementById('pj-recurring')?.value?.trim() || '')
-    : '';
+  const recurringSeries = getRecurringSeriesFromProjectForm(projectType);
   if (projectType === 'recurring' && !recurringSeries) {
-    showToast('定期プロジェクトは定期案件名を入力してください', 'error');
+    showToast('定期プロジェクトは既存の定期案件を選ぶか、新規名を入力してください', 'error');
     return;
   }
   DB.Projects.add({
@@ -2882,11 +2915,9 @@ function saveProjectEdit(projectId) {
   const deliveryDate = document.getElementById('pj-delivery')?.value || '';
   if (!confirmProjectDeliveryDate(deliveryDate)) return;
   const projectType = document.getElementById('pj-type')?.value || 'standard';
-  const recurringSeries = projectType === 'recurring'
-    ? (document.getElementById('pj-recurring')?.value?.trim() || '')
-    : '';
+  const recurringSeries = getRecurringSeriesFromProjectForm(projectType);
   if (projectType === 'recurring' && !recurringSeries) {
-    showToast('定期プロジェクトは定期案件名を入力してください', 'error');
+    showToast('定期プロジェクトは既存の定期案件を選ぶか、新規名を入力してください', 'error');
     return;
   }
   DB.Projects.update(projectId, {
