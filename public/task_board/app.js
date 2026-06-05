@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'ガント表示追加版 2026-06-05-04';
+const APP_BUILD_LABEL = 'ガント修正版 2026-06-05-05';
 
 /* ============================================================
    ルーター
@@ -2623,8 +2623,9 @@ function ganttPhaseRowHTML(project, phase, index, projectTasks, members, days) {
 }
 
 function ganttDayHeaderHTML(dateStr) {
-  const d = new Date(dateStr + 'T00:00:00');
-  const isToday = dateStr === DB.today();
+  const safeDate = toISODate(dateStr) || DB.today();
+  const d = new Date(safeDate + 'T00:00:00');
+  const isToday = safeDate === DB.today();
   const isWeekend = d.getDay() === 0 || d.getDay() === 6;
   return `
     <div class="gantt-day ${isToday ? 'today' : ''} ${isWeekend ? 'weekend' : ''}">
@@ -2641,6 +2642,8 @@ function ganttTodayMarkerHTML(days) {
 }
 
 function ganttBarStyle(start, end, days) {
+  start = toISODate(start);
+  end = toISODate(end);
   if (!start || !end || !days.length) return '';
   const first = days[0];
   const last = days[days.length - 1];
@@ -2653,8 +2656,8 @@ function ganttBarStyle(start, end, days) {
 }
 
 function ganttVisibleRange(projects, tasks) {
-  if (_ganttFilter.startDate && _ganttFilter.endDate) {
-    return normalizeDateRange(_ganttFilter.startDate, _ganttFilter.endDate);
+  if (_ganttFilter.startDate || _ganttFilter.endDate) {
+    return normalizeDateRange(_ganttFilter.startDate || _ganttFilter.endDate, _ganttFilter.endDate || _ganttFilter.startDate);
   }
 
   const dates = [];
@@ -2678,20 +2681,25 @@ function ganttProjectIntersectsRange(project, start, end, tasks) {
 }
 
 function ganttProjectBounds(project, projectTasks = []) {
-  const taskDates = projectTasks.map(t => t.date).filter(Boolean).sort();
-  const phaseStartDates = (project.phases || []).map(ph => ph.startDate).filter(Boolean);
-  const phaseDueDates = (project.phases || []).map(ph => ph.dueDate).filter(Boolean);
-  const start = project.startDate || phaseStartDates.sort()[0] || taskDates[0] || (project.deliveryDate ? addDays(project.deliveryDate, -30) : project.createdAt || DB.today());
-  const end = project.deliveryDate || phaseDueDates.sort().slice(-1)[0] || taskDates.slice(-1)[0] || addDays(start, 14);
+  const taskDates = projectTasks.map(t => toISODate(t.date)).filter(Boolean).sort();
+  const phaseStartDates = (project.phases || []).map(ph => toISODate(ph.startDate)).filter(Boolean).sort();
+  const phaseDueDates = (project.phases || []).map(ph => toISODate(ph.dueDate)).filter(Boolean).sort();
+  const projectStart = toISODate(project.startDate);
+  const deliveryDate = toISODate(project.deliveryDate);
+  const createdAt = toISODate(project.createdAt);
+  const start = projectStart || phaseStartDates[0] || taskDates[0] || (deliveryDate ? addDays(deliveryDate, -30) : createdAt || DB.today());
+  const end = deliveryDate || phaseDueDates.slice(-1)[0] || taskDates.slice(-1)[0] || addDays(start, 14);
   return normalizeDateRange(start, end);
 }
 
 function ganttPhaseBounds(project, phase, index, phases, projectTasks = []) {
   const phaseTasks = projectTasks.filter(t => t.phaseId === phase.id);
-  const taskDates = phaseTasks.map(t => t.date).filter(Boolean).sort();
-  if (phase.startDate || phase.dueDate || taskDates.length) {
-    const start = phase.startDate || taskDates[0] || phase.dueDate || '';
-    const end = phase.dueDate || taskDates.slice(-1)[0] || start;
+  const taskDates = phaseTasks.map(t => toISODate(t.date)).filter(Boolean).sort();
+  const phaseStart = toISODate(phase.startDate);
+  const phaseDue = toISODate(phase.dueDate);
+  if (phaseStart || phaseDue || taskDates.length) {
+    const start = phaseStart || taskDates[0] || phaseDue || '';
+    const end = phaseDue || taskDates.slice(-1)[0] || start;
     return normalizeDateRange(start, end);
   }
 
@@ -2715,20 +2723,29 @@ function uniqueSorted(values) {
 }
 
 function addDays(dateStr, days) {
-  const d = new Date(dateStr + 'T00:00:00');
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  const safeDate = toISODate(dateStr) || DB.today();
+  const [year, month, day] = safeDate.split('-').map(Number);
+  const d = new Date(Date.UTC(year, month - 1, day + Number(days || 0)));
+  return [
+    d.getUTCFullYear(),
+    String(d.getUTCMonth() + 1).padStart(2, '0'),
+    String(d.getUTCDate()).padStart(2, '0'),
+  ].join('-');
 }
 
 function diffDays(start, end) {
-  const a = new Date(start + 'T00:00:00');
-  const b = new Date(end + 'T00:00:00');
+  const safeStart = toISODate(start) || DB.today();
+  const safeEnd = toISODate(end) || safeStart;
+  const [sy, sm, sd] = safeStart.split('-').map(Number);
+  const [ey, em, ed] = safeEnd.split('-').map(Number);
+  const a = Date.UTC(sy, sm - 1, sd);
+  const b = Date.UTC(ey, em - 1, ed);
   return Math.round((b - a) / 86400000);
 }
 
 function normalizeDateRange(start, end, maxDays = 140) {
-  let s = start || DB.today();
-  let e = end || s;
+  let s = toISODate(start) || DB.today();
+  let e = toISODate(end) || s;
   if (e < s) [s, e] = [e, s];
   if (diffDays(s, e) > maxDays) e = addDays(s, maxDays);
   return { start: s, end: e };
@@ -2736,10 +2753,29 @@ function normalizeDateRange(start, end, maxDays = 140) {
 
 function dateList(start, end) {
   const days = [];
-  for (let date = start; date <= end; date = addDays(date, 1)) {
+  const safeRange = normalizeDateRange(start, end);
+  for (let date = safeRange.start, guard = 0; date <= safeRange.end && guard <= 150; date = addDays(date, 1), guard++) {
     days.push(date);
   }
   return days;
+}
+
+function toISODate(value) {
+  if (!value) return '';
+  const raw = String(value).trim();
+  const numeric = raw.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
+  if (numeric) {
+    const [, y, m, d] = numeric;
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  }
+  const jp = raw.match(/^(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日/);
+  if (jp) {
+    const [, y, m, d] = jp;
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  }
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
+  return '';
 }
 
 /* ============================================================
