@@ -2,7 +2,14 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'ガント修正版 2026-06-05-05';
+const APP_BUILD_LABEL = 'CW取得修正版 2026-06-05-07';
+const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
+
+function apiUrl(path) {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  if (window.location.protocol === 'file:') return `${PUBLIC_APP_ORIGIN}${normalizedPath}`;
+  return normalizedPath;
+}
 
 /* ============================================================
    ルーター
@@ -127,6 +134,12 @@ function findMemberByName(name) {
     const memberName = normalizeNameText(m.name);
     return memberName.length >= 3 && target.includes(memberName);
   }) || null;
+}
+
+function findMemberByChatworkAccountId(accountId) {
+  const target = String(accountId || '').trim();
+  if (!target) return null;
+  return DB.Members.all().find(m => String(m.chatworkAccountId || '').trim() === target) || null;
 }
 
 function findProjectByName(name) {
@@ -1470,7 +1483,7 @@ async function importChatworkMessages() {
 
   try {
     showToast('Chatworkから取得しています', 'info');
-    const res = await fetch(`/api/chatwork/messages?roomId=${encodeURIComponent(roomId)}&force=1`, {
+    const res = await fetch(apiUrl(`/api/chatwork/messages?roomId=${encodeURIComponent(roomId)}&force=1`), {
       headers: importKey ? { 'x-taskboard-key': importKey } : {},
     });
     const data = await res.json().catch(() => ({}));
@@ -1504,7 +1517,7 @@ async function importChatworkTasksDirect() {
   try {
     showToast('ChatworkからTASK部屋を確認しています', 'info');
     const roomQuery = /^\d+$/.test(roomId) ? `roomId=${encodeURIComponent(roomId)}&` : '';
-    const res = await fetch(`/api/chatwork/messages?${roomQuery}force=1`, {
+    const res = await fetch(apiUrl(`/api/chatwork/messages?${roomQuery}force=1`), {
       headers: importKey ? { 'x-taskboard-key': importKey } : {},
     });
     const data = await res.json().catch(() => ({}));
@@ -1568,7 +1581,8 @@ function importChatworkMessageList({ roomId, messages, targetDate, ownerMemberId
     }
 
     const accountName = message.account?.name || '';
-    const member = findMemberByName(accountName);
+    const accountId = message.account?.account_id || '';
+    const member = findMemberByChatworkAccountId(accountId) || findMemberByName(accountName);
     if (!member) {
       if (accountName && !result.unknownMembers.includes(accountName)) result.unknownMembers.push(accountName);
       return;
@@ -1611,7 +1625,7 @@ async function notifyProjectReviewsToChatwork(roomId, reviews, importKey = '') {
   for (const review of reviews) {
     const body = projectReviewChatworkMessage(review);
     try {
-      const res = await fetch('/api/chatwork/reply', {
+      const res = await fetch(apiUrl('/api/chatwork/reply'), {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -3466,7 +3480,7 @@ async function sendProjectInfoRequest(projectId) {
   const body = buildProjectInfoRequestMessage(project, recipient, true);
   let importKey = getSavedChatworkImportKey();
   try {
-    let res = await fetch('/api/chatwork/reply', {
+    let res = await fetch(apiUrl('/api/chatwork/reply'), {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -3481,7 +3495,7 @@ async function sendProjectInfoRequest(projectId) {
       if (!inputKey) throw new Error('TASKBOARD_IMPORT_KEYが未入力です');
       importKey = inputKey.trim();
       localStorage.setItem(CHATWORK_IMPORT_KEY, importKey);
-      res = await fetch('/api/chatwork/reply', {
+      res = await fetch(apiUrl('/api/chatwork/reply'), {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
