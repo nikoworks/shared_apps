@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'CW取得修正版 2026-06-05-07';
+const APP_BUILD_LABEL = 'プロジェクト編集修正版 2026-06-05-08';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 
 function apiUrl(path) {
@@ -2188,6 +2188,9 @@ function parseProjectName(projectName) {
   if (parts.length >= 2) {
     return { clientName: parts[0], name: parts.slice(1).join(' / '), recurringSeries: '' };
   }
+  if (isSuspiciousClientName(normalized)) {
+    return { clientName: '未分類', name: normalized, recurringSeries: '' };
+  }
   return { clientName: normalized, name: '仮プロジェクト', recurringSeries: '' };
 }
 
@@ -3174,13 +3177,16 @@ function openProjectModal(editId) {
   const dealCategory = project?.dealCategory || 'existing';
   const clientName = project?.clientName || '';
   const clientOptions = clientNameSelectOptions(clientName);
-  const clientSelectValue = clientName && clientOptions.includes(clientName)
+  const clientSelectValue = clientName && isSuspiciousClientName(clientName)
+    ? '__edit__'
+    : clientName && clientOptions.includes(clientName)
     ? clientName
     : (clientName || clientOptions.length === 0 ? '__new__' : '');
   const clientSelectOpts = [
     clientOptions.length ? '<option value="">既存クライアントを選択...</option>' : '',
     ...clientOptions.map(name =>
       `<option value="${escHtml(name)}" ${clientSelectValue === name ? 'selected' : ''}>${escHtml(name)}</option>`),
+    clientName ? `<option value="__edit__" ${clientSelectValue === '__edit__' ? 'selected' : ''}>現在のクライアント名を直接修正</option>` : '',
     `<option value="__new__" ${clientSelectValue === '__new__' ? 'selected' : ''}>＋ 新規クライアント名を入力</option>`,
   ].join('');
   const recurringSeries = project?.recurringSeries || '';
@@ -3228,8 +3234,8 @@ function openProjectModal(editId) {
       <select class="form-select" id="pj-client-select" onchange="toggleProjectClientFields()">
         ${clientSelectOpts}
       </select>
-      <input class="form-input" id="pj-client" style="margin-top:8px;${clientSelectValue === '__new__' ? '' : 'display:none'}"
-             placeholder="例：〇〇株式会社" value="${clientSelectValue === '__new__' ? escHtml(clientName) : ''}">
+      <input class="form-input" id="pj-client" style="margin-top:8px;${clientSelectValue === '__new__' || clientSelectValue === '__edit__' ? '' : 'display:none'}"
+             placeholder="例：〇〇株式会社" value="${clientSelectValue === '__new__' || clientSelectValue === '__edit__' ? escHtml(clientName) : ''}">
       <div class="form-help">既存から選ぶと、クライアント名の表記ゆれを防げます。</div>
     </div>
     <div class="form-group">
@@ -3333,20 +3339,28 @@ function clientNameSelectOptions(current = '') {
     .map(p => p.clientName)
     .filter(Boolean)
     .map(name => String(name).trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter(name => name === current || !isSuspiciousClientName(name));
   if (current) names.push(current);
   return [...new Set(names)].sort((a, b) => a.localeCompare(b, 'ja'));
+}
+
+function isSuspiciousClientName(name) {
+  const value = String(name || '').trim();
+  if (!value) return false;
+  if (value.length >= 16 && !/(株式会社|有限会社|合同会社|Co\.?|Inc\.?|NikoWorks|ニコワークス)/i.test(value)) return true;
+  return /(確認|チェック|依頼|作成|制作|投稿|差し替え|赤字|吸収|アポ|提出|共有|修正|原稿|バナー|リール|ストーリーズ|企画)/.test(value);
 }
 
 function toggleProjectClientFields() {
   const clientSelect = document.getElementById('pj-client-select');
   const clientInput = document.getElementById('pj-client');
-  if (clientInput) clientInput.style.display = clientSelect?.value === '__new__' ? '' : 'none';
+  if (clientInput) clientInput.style.display = clientSelect?.value === '__new__' || clientSelect?.value === '__edit__' ? '' : 'none';
 }
 
 function getClientNameFromProjectForm() {
   const selected = document.getElementById('pj-client-select')?.value || '';
-  if (selected && selected !== '__new__') return selected.trim();
+  if (selected && selected !== '__new__' && selected !== '__edit__') return selected.trim();
   return document.getElementById('pj-client')?.value?.trim() || '';
 }
 
