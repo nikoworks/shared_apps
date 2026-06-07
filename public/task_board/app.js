@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '開始日不足判定修正版 2026-06-07-03';
+const APP_BUILD_LABEL = 'ガント表示修正版 2026-06-07-04';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 
 function apiUrl(path) {
