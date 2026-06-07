@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'プロジェクト表示修正版 2026-06-07-01';
+const APP_BUILD_LABEL = '開始日不足判定修正版 2026-06-07-03';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 
 function apiUrl(path) {
@@ -2810,6 +2810,10 @@ function renderProjects() {
     _projectView === 'active' ? DB.Projects.active() :
     _projectView === 'completed' ? (DB.Projects.completed ? DB.Projects.completed() : DB.Projects.all().filter(p => !p.archived && p.projectStatus === 'completed')) :
     DB.Projects.archived();
+  const availableClientNames = uniqueSorted(baseProjects.map(p => p.clientName).filter(Boolean));
+  if (_projectClientFilter && !availableClientNames.includes(_projectClientFilter)) {
+    _projectClientFilter = '';
+  }
   const filteredProjects = baseProjects.filter(project => {
     if (_projectOwnerFilter === '__none__' && project.ownerMemberId) return false;
     if (_projectOwnerFilter && _projectOwnerFilter !== '__none__' && project.ownerMemberId !== _projectOwnerFilter) return false;
@@ -2822,7 +2826,7 @@ function renderProjects() {
   const ownerOptions = members.map(m =>
     `<option value="${m.id}" ${_projectOwnerFilter === m.id ? 'selected' : ''}>${escHtml(m.name)}</option>`
   ).join('');
-  const clientOptions = uniqueSorted(baseProjects.map(p => p.clientName).filter(Boolean))
+  const clientOptions = availableClientNames
     .map(name => `<option value="${escHtml(name)}" ${_projectClientFilter === name ? 'selected' : ''}>${escHtml(name)}</option>`)
     .join('');
   const emptyTitle = _projectView === 'active'
@@ -2899,6 +2903,7 @@ function projectCard(project) {
   const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
   const createdBy = project.createdByMemberId ? DB.Members.get(project.createdByMemberId) : null;
   const missingInfo = projectMissingInfo(project);
+  const effectiveStart = projectEffectiveStartDate(project);
   const statusBadges = [
     `<span class="status-badge ${(project.dealCategory || 'existing') === 'proposal' ? 'provisional' : 'personal'}">${dealCategoryLabel(project.dealCategory)}</span>`,
     project.projectType === 'recurring' ? '<span class="status-badge recurring">定期案件</span>' : '',
@@ -2960,7 +2965,7 @@ function projectCard(project) {
             ${project.projectType === 'recurring' && project.recurringSeries ? `<span class="project-meta-item"><strong>定期案件</strong>${escHtml(project.recurringSeries)}</span>` : ''}
             <span class="project-meta-item ${createdBy ? '' : 'missing'}"><strong>登録者</strong>${createdBy ? escHtml(createdBy.name) : '未設定'}</span>
             <span class="project-meta-item ${owner ? '' : 'missing'}"><strong>窓口</strong>${owner ? escHtml(owner.name) : '未設定'}</span>
-            ${project.startDate ? `<span class="project-meta-item"><strong>開始日</strong>${DB.fmtDate(project.startDate)}</span>` : ''}
+            ${effectiveStart ? `<span class="project-meta-item"><strong>${project.startDate ? '開始日' : '開始目安'}</strong>${DB.fmtDate(effectiveStart)}</span>` : ''}
             ${project.detailsDueAt ? `<span class="project-meta-item"><strong>詳細登録期限</strong>${DB.fmtDate(project.detailsDueAt)}</span>` : ''}
           </div>
           ${missingInfo.length ? `
@@ -3006,11 +3011,21 @@ function projectMissingInfo(project) {
   if (!project.createdByMemberId) missing.push({ key: 'createdByMemberId', label: '登録者' });
   if (!project.ownerMemberId) missing.push({ key: 'ownerMemberId', label: '窓口担当' });
   if (!project.deliveryDate) missing.push({ key: 'deliveryDate', label: '納品日' });
-  if (!project.startDate) missing.push({ key: 'startDate', label: '開始日' });
   if (project.projectType === 'recurring' && !project.recurringSeries) {
     missing.push({ key: 'recurringSeries', label: '定期案件名' });
   }
   return missing;
+}
+
+function projectEffectiveStartDate(project) {
+  const explicitStart = toISODate(project?.startDate);
+  if (explicitStart) return explicitStart;
+  const taskDates = DB.Tasks.all()
+    .filter(task => task.projectId === project?.id)
+    .map(task => toISODate(task.date))
+    .filter(Boolean)
+    .sort();
+  return taskDates[0] || toISODate(project?.createdAt) || '';
 }
 
 function openProjectTasksModal(projectId) {
