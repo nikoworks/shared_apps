@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'ガント表示修正版 2026-06-07-04';
+const APP_BUILD_LABEL = 'ガント親子表示修正版 2026-06-07-05';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 
 function apiUrl(path) {
@@ -2581,19 +2581,20 @@ function ganttProjectBlockHTML(project, tasks, members, days, timelineWidth) {
   const bounds = ganttProjectBounds(project, projectTasks);
   const projectBar = ganttBarStyle(bounds.start, bounds.end, days);
   const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
+  const phaseCount = (project.phases || []).length;
   const phaseRows = (project.phases || []).length
-    ? project.phases.map((phase, index) => ganttPhaseRowHTML(project, phase, index, projectTasks, members, days)).join('')
+    ? project.phases.map((phase, index) => ganttPhaseRowHTML(project, phase, index, projectTasks, members, days, phaseCount)).join('')
     : `
-      <div class="gantt-left gantt-phase-left">
+      <div class="gantt-left gantt-phase-left gantt-group-end">
         <span class="gantt-phase-name">フェーズ未設定</span>
       </div>
-      <div class="gantt-scroll">
+      <div class="gantt-scroll gantt-group-end">
         <div class="gantt-row-line" style="width:${timelineWidth}px"></div>
       </div>
     `;
 
   return `
-    <div class="gantt-left gantt-project-left">
+    <div class="gantt-left gantt-project-left gantt-group-start">
       <div class="gantt-project-title">${escHtml(project.clientName)} / ${escHtml(project.name)}</div>
       <div class="gantt-project-meta">
         ${project.projectType === 'recurring' && project.recurringSeries ? `<span>定期：${escHtml(project.recurringSeries)}</span>` : ''}
@@ -2601,7 +2602,7 @@ function ganttProjectBlockHTML(project, tasks, members, days, timelineWidth) {
         ${project.deliveryDate ? `<span>納品：${DB.fmtDate(project.deliveryDate)}</span>` : '<span class="missing">納品日未設定</span>'}
       </div>
     </div>
-    <div class="gantt-scroll">
+    <div class="gantt-scroll gantt-group-start">
       <div class="gantt-row-line gantt-project-line" style="width:${timelineWidth}px">
         ${projectBar ? `<div class="gantt-bar gantt-bar-project" style="${projectBar}" title="${escHtml(project.clientName)} / ${escHtml(project.name)}"></div>` : ''}
         ${ganttTodayMarkerHTML(days)}
@@ -2611,7 +2612,7 @@ function ganttProjectBlockHTML(project, tasks, members, days, timelineWidth) {
   `;
 }
 
-function ganttPhaseRowHTML(project, phase, index, projectTasks, members, days) {
+function ganttPhaseRowHTML(project, phase, index, projectTasks, members, days, phaseCount = 0) {
   const phaseTasks = projectTasks.filter(t => t.phaseId === phase.id);
   const bounds = ganttPhaseBounds(project, phase, index, project.phases || [], projectTasks);
   const barStyle = ganttBarStyle(bounds.start, bounds.end, days);
@@ -2620,9 +2621,10 @@ function ganttPhaseRowHTML(project, phase, index, projectTasks, members, days) {
   const total = phaseTasks.length;
   const statusClass = phase.status === 'done' ? 'done' : phase.status === 'active' ? 'active' : 'pending';
   const label = phaseStatusLabel(phase.status);
+  const groupEndClass = index === phaseCount - 1 ? 'gantt-group-end' : '';
 
   return `
-    <div class="gantt-left gantt-phase-left">
+    <div class="gantt-left gantt-phase-left ${groupEndClass}">
       <div class="gantt-phase-name">${escHtml(phase.name)}</div>
       <div class="gantt-phase-meta">
         <span class="gantt-status ${statusClass}">${label}</span>
@@ -2630,7 +2632,7 @@ function ganttPhaseRowHTML(project, phase, index, projectTasks, members, days) {
         ${total ? `<span>${done}/${total}件</span>` : '<span>タスクなし</span>'}
       </div>
     </div>
-    <div class="gantt-scroll">
+    <div class="gantt-scroll ${groupEndClass}">
       <div class="gantt-row-line" style="width:${days.length * 36}px">
         ${barStyle ? `<div class="gantt-bar gantt-bar-phase ${statusClass}" style="${barStyle}" title="${escHtml(project.name)}：${escHtml(phase.name)}"></div>` : ''}
         ${ganttTodayMarkerHTML(days)}
