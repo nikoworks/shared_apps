@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'ガント親子表示修正版 2026-06-07-05';
+const APP_BUILD_LABEL = 'ガント警告表示修正版 2026-06-07-06';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 
 function apiUrl(path) {
@@ -2562,49 +2562,54 @@ function resetGanttFilter() {
 
 function ganttChartHTML(projects, tasks, members, days, timelineWidth) {
   return `
-    <div class="gantt-shell">
+    <div class="gantt-shell" style="--gantt-width:${timelineWidth}px">
       <div class="gantt-left gantt-left-head">
         <div>プロジェクト / フェーズ</div>
       </div>
-      <div class="gantt-scroll">
+      <div class="gantt-scroll gantt-scroll-head">
         <div class="gantt-days" style="width:${timelineWidth}px">
           ${days.map(day => ganttDayHeaderHTML(day)).join('')}
         </div>
       </div>
-      ${projects.map(project => ganttProjectBlockHTML(project, tasks, members, days, timelineWidth)).join('')}
+      ${projects.map((project, index) => ganttProjectBlockHTML(project, tasks, members, days, timelineWidth, index)).join('')}
     </div>
   `;
 }
 
-function ganttProjectBlockHTML(project, tasks, members, days, timelineWidth) {
+function ganttProjectBlockHTML(project, tasks, members, days, timelineWidth, groupIndex = 0) {
   const projectTasks = tasks.filter(t => t.projectId === project.id);
   const bounds = ganttProjectBounds(project, projectTasks);
   const projectBar = ganttBarStyle(bounds.start, bounds.end, days);
   const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
   const phaseCount = (project.phases || []).length;
+  const groupClass = groupIndex % 2 ? 'gantt-group-alt' : 'gantt-group-base';
+  const projectTimingClass = project.deliveryDate ? ganttTimingClass(project.deliveryDate, false) : 'is-missing-date';
+  const deliveryHTML = project.deliveryDate
+    ? `<span>納品：${DB.fmtDate(project.deliveryDate)}</span>${ganttTimingBadgeHTML(projectTimingClass)}`
+    : `<span class="gantt-status missing-date">納品日未設定</span><button class="btn btn-ghost btn-sm" onclick="openProjectModal('${project.id}')">入力</button>`;
   const phaseRows = (project.phases || []).length
-    ? project.phases.map((phase, index) => ganttPhaseRowHTML(project, phase, index, projectTasks, members, days, phaseCount)).join('')
+    ? project.phases.map((phase, index) => ganttPhaseRowHTML(project, phase, index, projectTasks, members, days, phaseCount, groupClass)).join('')
     : `
-      <div class="gantt-left gantt-phase-left gantt-group-end">
+      <div class="gantt-left gantt-phase-left gantt-group-end ${groupClass}">
         <span class="gantt-phase-name">フェーズ未設定</span>
       </div>
-      <div class="gantt-scroll gantt-group-end">
+      <div class="gantt-scroll gantt-group-end ${groupClass}">
         <div class="gantt-row-line" style="width:${timelineWidth}px"></div>
       </div>
     `;
 
   return `
-    <div class="gantt-left gantt-project-left gantt-group-start">
+    <div class="gantt-left gantt-project-left gantt-group-start ${groupClass} ${projectTimingClass}">
       <div class="gantt-project-title">${escHtml(project.clientName)} / ${escHtml(project.name)}</div>
       <div class="gantt-project-meta">
         ${project.projectType === 'recurring' && project.recurringSeries ? `<span>定期：${escHtml(project.recurringSeries)}</span>` : ''}
         ${owner ? `<span>窓口：${escHtml(owner.name)}</span>` : '<span class="missing">窓口未設定</span>'}
-        ${project.deliveryDate ? `<span>納品：${DB.fmtDate(project.deliveryDate)}</span>` : '<span class="missing">納品日未設定</span>'}
+        ${deliveryHTML}
       </div>
     </div>
-    <div class="gantt-scroll gantt-group-start">
+    <div class="gantt-scroll gantt-group-start ${groupClass} ${projectTimingClass}">
       <div class="gantt-row-line gantt-project-line" style="width:${timelineWidth}px">
-        ${projectBar ? `<div class="gantt-bar gantt-bar-project" style="${projectBar}" title="${escHtml(project.clientName)} / ${escHtml(project.name)}"></div>` : ''}
+        ${projectBar ? `<div class="gantt-bar gantt-bar-project ${projectTimingClass}" style="${projectBar}" title="${escHtml(project.clientName)} / ${escHtml(project.name)}"></div>` : ''}
         ${ganttTodayMarkerHTML(days)}
       </div>
     </div>
@@ -2612,7 +2617,7 @@ function ganttProjectBlockHTML(project, tasks, members, days, timelineWidth) {
   `;
 }
 
-function ganttPhaseRowHTML(project, phase, index, projectTasks, members, days, phaseCount = 0) {
+function ganttPhaseRowHTML(project, phase, index, projectTasks, members, days, phaseCount = 0, groupClass = '') {
   const phaseTasks = projectTasks.filter(t => t.phaseId === phase.id);
   const bounds = ganttPhaseBounds(project, phase, index, project.phases || [], projectTasks);
   const barStyle = ganttBarStyle(bounds.start, bounds.end, days);
@@ -2622,19 +2627,21 @@ function ganttPhaseRowHTML(project, phase, index, projectTasks, members, days, p
   const statusClass = phase.status === 'done' ? 'done' : phase.status === 'active' ? 'active' : 'pending';
   const label = phaseStatusLabel(phase.status);
   const groupEndClass = index === phaseCount - 1 ? 'gantt-group-end' : '';
+  const timingClass = ganttTimingClass(phase.dueDate || bounds.end, phase.status === 'done');
 
   return `
-    <div class="gantt-left gantt-phase-left ${groupEndClass}">
+    <div class="gantt-left gantt-phase-left ${groupEndClass} ${groupClass} ${timingClass}">
       <div class="gantt-phase-name">${escHtml(phase.name)}</div>
       <div class="gantt-phase-meta">
         <span class="gantt-status ${statusClass}">${label}</span>
+        ${ganttTimingBadgeHTML(timingClass)}
         ${memberNames.length ? `<span>${escHtml(memberNames.join('、'))}</span>` : ''}
         ${total ? `<span>${done}/${total}件</span>` : '<span>タスクなし</span>'}
       </div>
     </div>
-    <div class="gantt-scroll ${groupEndClass}">
+    <div class="gantt-scroll ${groupEndClass} ${groupClass} ${timingClass}">
       <div class="gantt-row-line" style="width:${days.length * 36}px">
-        ${barStyle ? `<div class="gantt-bar gantt-bar-phase ${statusClass}" style="${barStyle}" title="${escHtml(project.name)}：${escHtml(phase.name)}"></div>` : ''}
+        ${barStyle ? `<div class="gantt-bar gantt-bar-phase ${statusClass} ${timingClass}" style="${barStyle}" title="${escHtml(project.name)}：${escHtml(phase.name)}"></div>` : ''}
         ${ganttTodayMarkerHTML(days)}
       </div>
     </div>
@@ -2672,6 +2679,21 @@ function ganttBarStyle(start, end, days) {
   const left = diffDays(first, visibleStart) * 36 + 4;
   const width = (diffDays(visibleStart, visibleEnd) + 1) * 36 - 8;
   return `left:${left}px;width:${Math.max(width, 20)}px`;
+}
+
+function ganttTimingClass(endDate, isDone = false) {
+  const end = toISODate(endDate);
+  if (!end || isDone) return '';
+  const remaining = diffDays(DB.today(), end);
+  if (remaining < 0) return 'is-late';
+  if (remaining <= 3) return 'is-due-soon';
+  return '';
+}
+
+function ganttTimingBadgeHTML(timingClass) {
+  if (timingClass === 'is-late') return '<span class="gantt-status late">遅れ</span>';
+  if (timingClass === 'is-due-soon') return '<span class="gantt-status due-soon">期限近い</span>';
+  return '';
 }
 
 function ganttVisibleRange(projects, tasks) {

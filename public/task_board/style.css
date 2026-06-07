@@ -675,14 +675,18 @@ body {
 }
 .gantt-shell {
   display: grid;
-  grid-template-columns: 320px minmax(720px, 1fr);
+  grid-template-columns: 320px var(--gantt-width, 720px);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: auto;
+  max-height: calc(100vh - 270px);
   background: rgba(255,255,255,.025);
+  scrollbar-gutter: stable;
 }
 .gantt-left {
+  position: sticky;
+  left: 0;
+  z-index: 3;
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   background: rgba(255,255,255,.035);
@@ -696,7 +700,7 @@ body {
 }
 .gantt-project-left.gantt-group-start,
 .gantt-scroll.gantt-group-start {
-  background: linear-gradient(90deg, rgba(99,102,241,.14), rgba(99,102,241,.055));
+  background: rgba(99,102,241,.09);
 }
 .gantt-phase-left,
 .gantt-phase-left + .gantt-scroll {
@@ -704,12 +708,21 @@ body {
 }
 .gantt-phase-left.gantt-group-end,
 .gantt-phase-left.gantt-group-end + .gantt-scroll {
-  background: linear-gradient(90deg, rgba(255,255,255,.018), rgba(99,102,241,.035));
+  background: rgba(99,102,241,.035);
+}
+.gantt-left.gantt-group-base,
+.gantt-scroll.gantt-group-base {
+  background-color: rgba(255,255,255,.018);
+}
+.gantt-left.gantt-group-alt,
+.gantt-scroll.gantt-group-alt {
+  background-color: rgba(99,102,241,.035);
 }
 .gantt-left-head {
   position: sticky;
   top: 0;
-  z-index: 2;
+  left: 0;
+  z-index: 8;
   display: flex;
   align-items: center;
   padding: 12px 14px;
@@ -720,9 +733,15 @@ body {
 }
 .gantt-scroll {
   overflow: visible;
-  min-width: 0;
+  min-width: var(--gantt-width, 720px);
   border-bottom: 1px solid var(--border);
   background: rgba(255,255,255,.018);
+}
+.gantt-scroll-head {
+  position: sticky;
+  top: 0;
+  z-index: 7;
+  background: rgba(18,18,31,.98);
 }
 .gantt-days {
   display: flex;
@@ -761,6 +780,7 @@ body {
   padding: 12px 14px;
   min-height: 62px;
   background: rgba(99,102,241,.08);
+  box-shadow: inset 4px 0 0 rgba(99,102,241,.7);
 }
 .gantt-project-title {
   color: var(--text-1);
@@ -779,6 +799,15 @@ body {
 }
 .gantt-project-meta .missing {
   color: var(--warning);
+}
+.gantt-left.is-late {
+  box-shadow: inset 4px 0 0 rgba(239,68,68,.95);
+}
+.gantt-left.is-due-soon {
+  box-shadow: inset 4px 0 0 rgba(245,158,11,.95);
+}
+.gantt-left.is-missing-date {
+  box-shadow: inset 4px 0 0 rgba(245,158,11,.65);
 }
 .gantt-phase-left {
   padding: 9px 14px 9px 26px;
@@ -826,6 +855,9 @@ body {
 .gantt-status.pending { color: var(--text-3); background: rgba(255,255,255,.06); }
 .gantt-status.active { color: #c7d2fe; background: rgba(99,102,241,.22); }
 .gantt-status.done { color: var(--success); background: var(--success-lite); }
+.gantt-status.late { color: #fecaca; background: rgba(239,68,68,.22); border: 1px solid rgba(239,68,68,.38); }
+.gantt-status.due-soon { color: #fde68a; background: rgba(245,158,11,.18); border: 1px solid rgba(245,158,11,.34); }
+.gantt-status.missing-date { color: #fde68a; background: rgba(245,158,11,.16); border: 1px solid rgba(245,158,11,.32); }
 .gantt-row-line {
   min-height: 48px;
   position: relative;
@@ -847,7 +879,7 @@ body {
 }
 .gantt-bar-project {
   height: 24px;
-  background: linear-gradient(135deg, var(--primary), var(--accent));
+  background: var(--primary);
   opacity: .92;
 }
 .gantt-bar-phase {
@@ -857,10 +889,24 @@ body {
   background: rgba(148,163,184,.28);
 }
 .gantt-bar-phase.active {
-  background: linear-gradient(135deg, #6366f1, #06b6d4);
+  background: #38bdf8;
 }
 .gantt-bar-phase.done {
-  background: linear-gradient(135deg, #10b981, #22c55e);
+  background: #10b981;
+}
+.gantt-bar.is-late {
+  background: #ef4444;
+  border-color: rgba(254,202,202,.55);
+  box-shadow: 0 6px 18px rgba(239,68,68,.24);
+}
+.gantt-bar.is-due-soon {
+  background: #f59e0b;
+  border-color: rgba(253,230,138,.55);
+  box-shadow: 0 6px 18px rgba(245,158,11,.2);
+}
+.gantt-bar.is-missing-date {
+  background: #64748b;
+  border-color: rgba(203,213,225,.35);
 }
 .gantt-today-marker {
   position: absolute;
@@ -880,7 +926,7 @@ body {
     grid-template-columns: repeat(2, minmax(120px, 1fr));
   }
   .gantt-shell {
-    grid-template-columns: 250px minmax(720px, 1fr);
+    grid-template-columns: 250px var(--gantt-width, 720px);
   }
 }
 
