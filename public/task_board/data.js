@@ -312,7 +312,8 @@ const Members = {
 // ============================================================
 const Projects = {
   all()      { return load(KEYS.PROJECTS) ?? []; },
-  active()   { return this.all().filter(p => !p.archived); },
+  active()   { return this.all().filter(p => !p.archived && p.projectStatus !== 'completed'); },
+  completed(){ return this.all().filter(p => !p.archived && p.projectStatus === 'completed'); },
   archived() { return this.all().filter(p =>  p.archived); },
 
   add({

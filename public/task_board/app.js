@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'プロジェクト編集修正版 2026-06-05-08';
+const APP_BUILD_LABEL = 'プロジェクト表示修正版 2026-06-07-01';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 
 function apiUrl(path) {
@@ -2798,18 +2798,23 @@ function toISODate(value) {
 /* ============================================================
    プロジェクト
    ============================================================ */
-let _projectView = 'active'; // 'active' | 'archived'
+let _projectView = 'active'; // 'active' | 'completed' | 'archived'
 let _projectOwnerFilter = '';
 let _projectDealFilter = '';
+let _projectClientFilter = '';
 
 function renderProjects() {
   const main     = document.getElementById('main-content');
   const members  = DB.Members.all();
-  const baseProjects = _projectView === 'active' ? DB.Projects.active() : DB.Projects.archived();
+  const baseProjects =
+    _projectView === 'active' ? DB.Projects.active() :
+    _projectView === 'completed' ? (DB.Projects.completed ? DB.Projects.completed() : DB.Projects.all().filter(p => !p.archived && p.projectStatus === 'completed')) :
+    DB.Projects.archived();
   const filteredProjects = baseProjects.filter(project => {
     if (_projectOwnerFilter === '__none__' && project.ownerMemberId) return false;
     if (_projectOwnerFilter && _projectOwnerFilter !== '__none__' && project.ownerMemberId !== _projectOwnerFilter) return false;
     if (_projectDealFilter && (project.dealCategory || 'existing') !== _projectDealFilter) return false;
+    if (_projectClientFilter && project.clientName !== _projectClientFilter) return false;
     return true;
   });
   const projects = sortProjectsByDelivery(filteredProjects);
@@ -2817,6 +2822,14 @@ function renderProjects() {
   const ownerOptions = members.map(m =>
     `<option value="${m.id}" ${_projectOwnerFilter === m.id ? 'selected' : ''}>${escHtml(m.name)}</option>`
   ).join('');
+  const clientOptions = uniqueSorted(baseProjects.map(p => p.clientName).filter(Boolean))
+    .map(name => `<option value="${escHtml(name)}" ${_projectClientFilter === name ? 'selected' : ''}>${escHtml(name)}</option>`)
+    .join('');
+  const emptyTitle = _projectView === 'active'
+    ? '進行中のプロジェクトがありません'
+    : _projectView === 'completed'
+    ? '完了済みのプロジェクトはありません'
+    : 'アーカイブはありません';
 
   main.innerHTML = `
     <div class="page-header"><div class="page-header-left">
@@ -2835,9 +2848,15 @@ function renderProjects() {
           <div class="tab-bar" style="margin-bottom:0">
             <button class="btn ${_projectView==='active'   ? 'btn-primary' : 'btn-ghost'}"
                     onclick="_projectView='active';renderProjects()">進行中</button>
+            <button class="btn ${_projectView==='completed' ? 'btn-primary' : 'btn-ghost'}"
+                    onclick="_projectView='completed';renderProjects()">完了</button>
             <button class="btn ${_projectView==='archived' ? 'btn-primary' : 'btn-ghost'}"
                     onclick="_projectView='archived';renderProjects()">アーカイブ</button>
           </div>
+          <select class="form-select" style="width:190px" onchange="_projectClientFilter=this.value;renderProjects()">
+            <option value="" ${!_projectClientFilter ? 'selected' : ''}>全クライアント</option>
+            ${clientOptions}
+          </select>
           <select class="form-select" style="width:170px" onchange="_projectOwnerFilter=this.value;renderProjects()">
             <option value="" ${!_projectOwnerFilter ? 'selected' : ''}>全窓口</option>
             ${ownerOptions}
@@ -2858,7 +2877,7 @@ function renderProjects() {
       ${projects.length === 0
         ? `<div class="empty-state">
             <div class="icon">📂</div>
-            <div class="title">${_projectView==='active' ? '進行中のプロジェクトがありません' : 'アーカイブはありません'}</div>
+            <div class="title">${emptyTitle}</div>
             ${_projectView==='active' ? '<div class="sub" style="margin-top:10px"><button class="btn btn-primary btn-sm" onclick="openProjectModal(null)">プロジェクトを追加</button></div>' : ''}
           </div>`
         : projects.map(p => projectCard(p)).join('')}
