@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'ガント警告表示修正版 2026-06-07-06';
+const APP_BUILD_LABEL = '新規PJ抑制版 2026-06-09-01';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 
 function apiUrl(path) {
@@ -738,13 +738,14 @@ function morningTaskRow(task) {
     </div>`;
 }
 
-function markTaskComplete(taskId) {
+async function markTaskComplete(taskId) {
   DB.Tasks.setCompletion(taskId, true, '');
+  const ok = await DB.syncCloudStore?.();
   renderMorningCheck();
-  showToast('完了としてマークしました', 'success');
+  showToast(ok === false ? '保存に失敗しました。最新に更新してから再度チェックしてください' : '完了としてマークしました', ok === false ? 'error' : 'success');
 }
 
-function markTaskFail(taskId) {
+async function markTaskFail(taskId) {
   const task = DB.Tasks.get(taskId);
   if (!task) return;
   // トグル動作：既に失敗ならリセット
@@ -754,11 +755,15 @@ function markTaskFail(taskId) {
     DB.Tasks.setCompletion(taskId, false, '');
     if (task.date < DB.today()) DB.Tasks.carryOverTask(taskId);
   }
+  const ok = await DB.syncCloudStore?.();
+  if (ok === false) showToast('保存に失敗しました。最新に更新してから再度チェックしてください', 'error');
   renderMorningCheck();
 }
 
-function saveIncompleteReason(taskId, reason) {
+async function saveIncompleteReason(taskId, reason) {
   DB.Tasks.update(taskId, { incompleteReason: reason });
+  const ok = await DB.syncCloudStore?.();
+  if (ok === false) showToast('保存に失敗しました。最新に更新してから再度入力してください', 'error');
 }
 
 function updateMorningBadge() {
@@ -777,6 +782,7 @@ function updateMorningBadge() {
    今日のタスク
    ============================================================ */
 let _taskFilter = { memberId: '', projectId: '', date: '', startDate: '', endDate: '', showCompleted: false };
+const _recentlyCompletedTaskIds = new Set();
 let _taskFormData = { memberId: '', projectId: '', phaseId: '', content: '', estimatedHours: 1, note: '', date: '' };
 let _bulkTaskData = { memberId: '', ownerMemberId: '', date: '', text: '', preview: null };
 const CHATWORK_ROOM_KEY = 'tb_chatwork_room_id';
@@ -845,7 +851,7 @@ function renderTodayTasks() {
   const filtered = dateTasks.filter(t => {
     if (_taskFilter.memberId  && t.memberId  !== _taskFilter.memberId)  return false;
     if (_taskFilter.projectId && t.projectId !== _taskFilter.projectId) return false;
-    if (!_taskFilter.showCompleted && t.completed === true) return false;
+    if (!_taskFilter.showCompleted && t.completed === true && !_recentlyCompletedTaskIds.has(t.id)) return false;
     return true;
   });
 
@@ -986,8 +992,12 @@ function taskProjectDisplayHTML(task) {
 async function toggleTodayTaskComplete(taskId) {
   const task = DB.Tasks.get(taskId);
   if (!task) return;
-  DB.Tasks.setCompletion(taskId, task.completed === true ? null : true, '');
-  await DB.syncCloudStore?.();
+  const nextCompleted = task.completed === true ? null : true;
+  DB.Tasks.setCompletion(taskId, nextCompleted, '');
+  if (nextCompleted === true) _recentlyCompletedTaskIds.add(taskId);
+  else _recentlyCompletedTaskIds.delete(taskId);
+  const ok = await DB.syncCloudStore?.();
+  if (ok === false) showToast('保存に失敗しました。最新に更新してから再度チェックしてください', 'error');
   renderTodayTasks();
   updateMorningBadge();
 }
@@ -1201,6 +1211,7 @@ function openTaskModal(editId) {
               onchange="_taskFormData.projectId=this.value;_taskFormData.phaseId='';refreshModalPhases()">
         ${projectOpts}
       </select>
+      <div class="form-help">新規プロジェクトは佐久間さん・窓口担当・発起人が作成します。通常は既存プロジェクトを選んでください。</div>
     </div>
     <div class="form-group">
       <label class="form-label">フェーズ</label>
@@ -1541,7 +1552,7 @@ async function importChatworkTasksDirect() {
     } else if (result.importedMessages === 0) {
       showToast('#task / #ask の新規投稿が見つかりませんでした', 'info');
     } else {
-      showToast(`${result.taskCount}件のタスク、${result.askCount}件の確認を取り込みました`, 'success');
+      showToast(`${result.taskCount}件のタスク、${result.askCount}件の確認を取り込みました。全員「最新に更新」を押してください`, 'success');
     }
 
     if (result.unknownMembers.length) {
@@ -1660,6 +1671,7 @@ function projectReviewChatworkMessage(review) {
     ...lines,
     '',
     '下記URLから、正しいプロジェクトを選んでください。',
+    '新規プロジェクト作成は、佐久間さん・窓口担当・発起人だけが使います。',
     reviewUrl,
     '[/info]',
   ].filter(Boolean).join('\n');
@@ -1755,6 +1767,22 @@ function saveBulkTasks() {
   const totalTasks = parsed.tasks.groups.reduce((sum, group) => sum + group.tasks.length, 0);
   const totalAsks = parsed.asks.length;
   if (!totalTasks && !totalAsks) { showToast('登録できる内容が見つかりません', 'error'); return; }
+
+  const unresolvedGroups = getUnresolvedProjectGroups(parsed.tasks);
+  if (unresolvedGroups.length) {
+    const names = unresolvedGroups.map(group => `・${group.projectName}`).join('\n');
+    const ok = window.confirm([
+      '既存プロジェクトに一致しない名前があります。',
+      '',
+      names,
+      '',
+      '新規プロジェクトは佐久間さん・窓口担当・発起人だけが作成します。',
+      '通常メンバー分なら、既存プロジェクト名へ直すか、先頭を「?」にして備考へ「新規案件かも」と書いてください。',
+      '',
+      'このまま登録すると「プロジェクト確認待ち」として残ります。登録しますか？',
+    ].join('\n'));
+    if (!ok) return;
+  }
 
   parsed.tasks.groups.forEach(group => {
     const project = resolveInputProject(group.projectName);
@@ -2107,8 +2135,9 @@ async function copyBulkTaskTemplate() {
     '※ 区切りは「,」でも「/」でもOKです。',
     '※ 先頭に日付だけを書くと、その下のタスク全部に同じ日付が入ります。',
     '※ 先頭が「+」なら、直前と同じプロジェクトです。',
-    '※ 先頭が「?」なら、プロジェクト未設定として登録されます。',
-    '※ プロジェクトはアプリに登録済みのものだけ紐づきます。未登録名は確認待ちとして残ります。',
+    '※ プロジェクト名は、なるべくアプリに登録済みの名前を使ってください。',
+    '※ 新規案件かもしれない場合は、先頭を「?」にして備考へ「新規案件かも」と書いてください。',
+    '※ 未登録のプロジェクト名は勝手に新規作成されず、確認待ちとして残ります。',
     '※ 備考には、作業メモ・補足・引き継ぎを書いてください。',
     '',
     '#ask',
@@ -2211,16 +2240,26 @@ function bulkPreviewHTML(parsed) {
     return `<div class="bulk-preview empty">登録候補がありません</div>`;
   }
 
+  const unresolvedGroups = getUnresolvedProjectGroups(taskParsed);
+  const noProjectTasks = getNoProjectTasks(taskParsed);
   const missingTasks = getMissingProjectTasks(taskParsed);
 
   return `
     <div class="bulk-preview">
       <div class="bulk-preview-title">登録前の確認</div>
+      ${unresolvedGroups.length ? `
+        <div class="bulk-alert danger">
+          <div>
+            <strong>既存プロジェクトに一致しない名前が ${unresolvedGroups.length}件あります。</strong>
+            <p>新規プロジェクトは佐久間さん・窓口担当・発起人だけが作成します。通常メンバー分なら既存名に直すか、「?」で新規案件かもとして登録してください。</p>
+          </div>
+        </div>
+      ` : ''}
       ${missingTasks.length ? `
         <div class="bulk-alert">
           <div>
-            <strong>プロジェクト未設定が ${missingTasks.length}件あります。</strong>
-            <p>登録はできます。あとで本人が個人URLから開いて、タスク編集でプロジェクトを直してください。</p>
+            <strong>プロジェクト確認が必要なタスクが ${missingTasks.length}件あります。</strong>
+            <p>${noProjectTasks.length ? `「?」または空欄のタスクが ${noProjectTasks.length}件あります。` : ''} 登録後、個人URLまたは確認URLから正しいプロジェクトに紐付けます。</p>
           </div>
           <button class="btn btn-ghost btn-sm" onclick="copyMissingProjectMessage()">Chatwork文をコピー</button>
         </div>
@@ -2232,9 +2271,10 @@ function bulkPreviewHTML(parsed) {
           <div class="bulk-preview-group">
             <div class="bulk-project-name">
               ${group.projectName
-                ? `${projectMissing ? '<span class="status-badge provisional">確認待ち</span>' : '<span class="status-badge recurring">登録済み</span>'} ${escHtml(project ? `${project.clientName} / ${project.name}` : group.projectName)}`
-                : '<span class="status-badge personal">個人タスク</span>'}
+                ? `${projectMissing ? '<span class="status-badge provisional">確認待ち（新規作成しない）</span>' : '<span class="status-badge recurring">登録済み</span>'} ${escHtml(project ? `${project.clientName} / ${project.name}` : group.projectName)}`
+                : '<span class="status-badge personal">? / プロジェクト未設定</span>'}
             </div>
+            ${projectMissing ? projectCandidateHintHTML(group.projectName) : ''}
             <ul>
               ${group.tasks.map(task => `
                 <li>
@@ -2275,6 +2315,28 @@ function getMissingProjectTasks(parsed) {
   return (parsed.groups || [])
     .filter(group => !group.projectName || !resolveInputProject(group.projectName))
     .flatMap(group => group.tasks || []);
+}
+
+function getUnresolvedProjectGroups(parsed) {
+  return (parsed.groups || [])
+    .filter(group => group.projectName && !resolveInputProject(group.projectName));
+}
+
+function getNoProjectTasks(parsed) {
+  return (parsed.groups || [])
+    .filter(group => !group.projectName)
+    .flatMap(group => group.tasks || []);
+}
+
+function projectCandidateHintHTML(projectName) {
+  const candidates = findSimilarProjects(projectName).slice(0, 3);
+  if (!candidates.length) {
+    return '<div class="bulk-project-candidates">類似プロジェクトは見つかりません。発起人・窓口でなければ「?」にして確認待ちにしてください。</div>';
+  }
+  return `
+    <div class="bulk-project-candidates">
+      類似候補：${candidates.map(project => `<span>${escHtml(project.clientName)} / ${escHtml(project.name)}</span>`).join('、')}
+    </div>`;
 }
 
 async function copyMissingProjectMessage() {
@@ -2388,9 +2450,10 @@ function projectReviewGroupHTML(group, index) {
         <label class="form-label">紐付け先</label>
         <select class="form-select" id="project-review-select-${index}">
           ${suggestionOptions}
-          <option value="__new__">新規プロジェクトとして作成</option>
+          <option value="__new__">発起人・窓口として新規作成</option>
           <option value="__admin__">佐久間確認に回す</option>
         </select>
+        <div class="form-help">通常は類似プロジェクトを選んでください。新規作成は、佐久間さん・窓口担当・発起人だけが使います。</div>
       </div>
     </div>`;
 }
@@ -2409,6 +2472,11 @@ function saveProjectReview(reviewId) {
 
     let projectId = selected;
     if (selected === '__new__') {
+      const ok = window.confirm('新規プロジェクトを作成します。これは佐久間さん・窓口担当・発起人だけが使う操作です。続けますか？');
+      if (!ok) {
+        unresolved++;
+        return;
+      }
       const parsed = parseProjectName(group.sourceProjectName || '未設定プロジェクト');
       const project = DB.Projects.add({
         clientName: parsed.clientName,

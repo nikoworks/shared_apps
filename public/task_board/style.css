@@ -961,6 +961,10 @@ body {
   color: var(--text-1);
   font-size: 12.5px;
 }
+.bulk-alert.danger {
+  border-color: rgba(239,68,68,.35);
+  background: rgba(239,68,68,.12);
+}
 .bulk-alert p {
   margin-top: 3px;
   color: var(--text-2);
@@ -979,6 +983,16 @@ body {
   font-size: 13px;
   font-weight: 700;
   margin-bottom: 6px;
+}
+.bulk-project-candidates {
+  margin: -2px 0 7px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.bulk-project-candidates span {
+  color: var(--text-2);
+  font-weight: 700;
 }
 .bulk-preview ul {
   list-style: none;
