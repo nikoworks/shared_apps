@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '新規PJ抑制版 2026-06-09-01';
+const APP_BUILD_LABEL = 'タスク紐付け新規PJ版 2026-06-09-02';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 
 function apiUrl(path) {
@@ -1212,6 +1212,9 @@ function openTaskModal(editId) {
         ${projectOpts}
       </select>
       <div class="form-help">新規プロジェクトは佐久間さん・窓口担当・発起人が作成します。通常は既存プロジェクトを選んでください。</div>
+      <button class="btn btn-ghost" type="button" onclick="quickCreateProjectFromTask()">
+        発起人・窓口として新規作成
+      </button>
     </div>
     <div class="form-group">
       <label class="form-label">フェーズ</label>
@@ -1283,6 +1286,73 @@ function refreshModalPhases() {
   if (!sel) return;
   sel.innerHTML = `<option value="">フェーズなし</option>` +
     phases.map(ph => `<option value="${ph.id}">${ph.name}</option>`).join('');
+}
+
+function refreshTaskProjectOptions() {
+  const sel = document.getElementById('tf-project');
+  if (!sel) return;
+  const projects = DB.Projects.active();
+  sel.innerHTML = `<option value="">プロジェクトを選択...</option>` +
+    projects.map(p =>
+      `<option value="${p.id}" ${_taskFormData.projectId === p.id ? 'selected' : ''}>${escHtml(p.clientName)} / ${escHtml(p.name)}</option>`).join('');
+  sel.value = _taskFormData.projectId || '';
+  refreshModalPhases();
+}
+
+async function quickCreateProjectFromTask() {
+  if (!window.confirm('新規プロジェクトを作成します。これは佐久間さん・窓口担当・発起人だけが使う操作です。続けますか？')) {
+    return;
+  }
+
+  const clientName = window.prompt('クライアント名を入力してください');
+  if (!clientName?.trim()) {
+    showToast('クライアント名がないため作成を中止しました', 'error');
+    return;
+  }
+
+  const projectName = window.prompt('プロジェクト名を入力してください', _taskFormData.content || '');
+  if (!projectName?.trim()) {
+    showToast('プロジェクト名がないため作成を中止しました', 'error');
+    return;
+  }
+
+  const deliveryInput = window.prompt('納品日を入力してください（例：2026/06/30）');
+  const deliveryDate = toISODate(deliveryInput);
+  if (!deliveryDate) {
+    showToast('納品日がないため作成を中止しました', 'error');
+    return;
+  }
+
+  const ownerMemberId = _personalMemberId || _taskFormData.memberId || getDefaultOwnerMemberId();
+  const project = DB.Projects.add({
+    clientName: clientName.trim(),
+    name: projectName.trim(),
+    deliveryDate,
+    budget: '',
+    templateId: 'tpl_blank',
+    projectType: 'standard',
+    recurringSeries: '',
+    dealCategory: 'existing',
+    startDate: _taskFormData.date || DB.today(),
+    createdByMemberId: ownerMemberId,
+    ownerMemberId,
+    isProvisional: false,
+    projectStatus: 'active',
+    note: '',
+  });
+
+  _taskFormData.projectId = project.id;
+  _taskFormData.phaseId = '';
+  _taskFormData.needsProjectReview = false;
+  _taskFormData.sourceProjectName = '';
+  refreshTaskProjectOptions();
+
+  const ok = await DB.syncCloudStore?.();
+  if (ok === false) {
+    showToast('プロジェクトを作成しました。保存状態は「最新に更新」で確認してください', 'info');
+    return;
+  }
+  showToast('プロジェクトを作成し、このタスクに紐付けました', 'success');
 }
 
 function stepHours(delta) {
