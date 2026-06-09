@@ -622,6 +622,19 @@ body {
 .tag-date-4 { background: rgba(236,72,153,.20); border-color: rgba(236,72,153,.38); color: #fbcfe8; }
 .tag-date-5 { background: rgba(6,182,212,.20); border-color: rgba(6,182,212,.38); color: #a5f3fc; }
 .tag-date-6 { background: rgba(168,85,247,.22); border-color: rgba(168,85,247,.42); color: #e9d5ff; }
+:root[data-theme="light"] .tag-date {
+  border-width: 2px;
+  box-shadow: 0 1px 0 rgba(255,255,255,.75) inset, 0 2px 6px rgba(15,23,42,.08);
+}
+:root[data-theme="light"] .tag-date-1 { background: #dbe4ff; border-color: #818cf8; color: #312e81; }
+:root[data-theme="light"] .tag-date-2 { background: #d1fae5; border-color: #34d399; color: #064e3b; }
+:root[data-theme="light"] .tag-date-3 { background: #fef3c7; border-color: #f59e0b; color: #78350f; }
+:root[data-theme="light"] .tag-date-4 { background: #fce7f3; border-color: #f472b6; color: #831843; }
+:root[data-theme="light"] .tag-date-5 { background: #cffafe; border-color: #22d3ee; color: #164e63; }
+:root[data-theme="light"] .tag-date-6 { background: #ede9fe; border-color: #a78bfa; color: #4c1d95; }
+:root[data-theme="light"] .tag-date-carry {
+  box-shadow: 0 0 0 1px rgba(217,119,6,.18), 0 3px 10px rgba(217,119,6,.14);
+}
 .tag-carry {
   background: var(--warning-lite);
   color: var(--warning);
@@ -1214,6 +1227,12 @@ body {
   color: var(--text-1);
   font-size: 12px;
   line-height: 1.45;
+}
+:root[data-theme="light"] .task-note {
+  background: #fff3df;
+  color: #1f2937;
+  border-left-color: #d97706;
+  box-shadow: 0 0 0 1px rgba(217,119,6,.16) inset;
 }
 
 .ask-panel {
