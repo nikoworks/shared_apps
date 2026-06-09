@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'クライアント整理版 2026-06-09-04';
+const APP_BUILD_LABEL = 'タスク日付順修正版 2026-06-10-05';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 
 function apiUrl(path) {
@@ -856,11 +856,12 @@ function renderTodayTasks() {
     return true;
   });
 
-  const totalH = filtered.reduce((s, t) => s + (t.estimatedHours || 0), 0);
+  const sortedFiltered = sortTasksForWorkday(filtered);
+  const totalH = sortedFiltered.reduce((s, t) => s + (t.estimatedHours || 0), 0);
 
   // メンバーグループ
   const byMember = {};
-  filtered.forEach(t => (byMember[t.memberId] = byMember[t.memberId] || []).push(t));
+  sortedFiltered.forEach(t => (byMember[t.memberId] = byMember[t.memberId] || []).push(t));
 
   const memberOpts  = members.map(m => `<option value="${m.id}" ${_taskFilter.memberId === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
   const projectOpts = projects.map(p => `<option value="${p.id}" ${_taskFilter.projectId === p.id ? 'selected' : ''}>${p.clientName} / ${p.name}</option>`).join('');
@@ -943,6 +944,23 @@ function renderTodayTasks() {
               </div>`;
           }).join('')}
     </div>`;
+}
+
+function sortTasksForWorkday(tasks) {
+  return [...tasks].sort((a, b) => {
+    const aDate = sourceDateForTask(a) || a.date || '9999-99-99';
+    const bDate = sourceDateForTask(b) || b.date || '9999-99-99';
+    const dateCompare = String(aDate).localeCompare(String(bDate));
+    if (dateCompare !== 0) return dateCompare;
+
+    const aCarry = a.carriedFromTaskId ? 0 : 1;
+    const bCarry = b.carriedFromTaskId ? 0 : 1;
+    if (aCarry !== bCarry) return aCarry - bCarry;
+
+    const aCreated = a.createdAt || '';
+    const bCreated = b.createdAt || '';
+    return String(aCreated).localeCompare(String(bCreated));
+  });
 }
 
 function todayTaskRow(task) {
