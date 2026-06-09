@@ -1,6 +1,6 @@
 /* ============================================================
    TaskBoard — Design System
-   Dark theme + Glassmorphism + Inter
+   Themeable Glass UI + Inter
    ============================================================ */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
@@ -38,6 +38,21 @@
   --text-2: #94a3b8;
   --text-3: #475569;
 
+  /* Theme helpers */
+  --field-bg: rgba(255,255,255,0.05);
+  --option-bg: #1e1e35;
+  --progress-bg: rgba(255,255,255,.06);
+  --gantt-shell-bg: rgba(255,255,255,.025);
+  --gantt-left-bg: rgba(255,255,255,.035);
+  --gantt-head-bg: rgba(18,18,31,.96);
+  --gantt-scroll-bg: rgba(255,255,255,.018);
+  --gantt-phase-bg: rgba(255,255,255,.012);
+  --gantt-group-base-bg: rgba(255,255,255,.018);
+  --gantt-grid: rgba(255,255,255,.06);
+  --gantt-grid-soft: rgba(255,255,255,.045);
+  --gantt-weekend-bg: rgba(255,255,255,.035);
+  --color-scheme: dark;
+
   /* Layout */
   --sidebar-w: 232px;
   --radius:    12px;
@@ -53,7 +68,67 @@
   --t: .18s ease;
   --t-slow: .32s ease;
 
-  color-scheme: dark;
+  color-scheme: var(--color-scheme);
+}
+
+:root[data-theme="light"] {
+  --bg-base: #f6f7fb;
+  --bg-surface: #ffffff;
+  --bg-elevated: #f8fafc;
+  --bg-glass: rgba(15,23,42,0.04);
+  --bg-glass-h: rgba(15,23,42,0.07);
+
+  --border: rgba(15,23,42,0.10);
+  --border-h: rgba(15,23,42,0.22);
+
+  --primary: #4f46e5;
+  --primary-h: #4338ca;
+  --primary-lite: rgba(79,70,229,0.12);
+  --accent: #7c3aed;
+  --accent-lite: rgba(124,58,237,0.12);
+
+  --success: #059669;
+  --success-lite: rgba(5,150,105,0.12);
+  --warning: #d97706;
+  --warning-lite: rgba(217,119,6,0.12);
+  --danger: #dc2626;
+  --danger-lite: rgba(220,38,38,0.12);
+
+  --text-1: #111827;
+  --text-2: #475569;
+  --text-3: #64748b;
+
+  --field-bg: rgba(255,255,255,0.86);
+  --option-bg: #ffffff;
+  --progress-bg: rgba(15,23,42,.08);
+  --gantt-shell-bg: rgba(255,255,255,.78);
+  --gantt-left-bg: rgba(255,255,255,.94);
+  --gantt-head-bg: rgba(255,255,255,.96);
+  --gantt-scroll-bg: rgba(255,255,255,.70);
+  --gantt-phase-bg: rgba(15,23,42,.025);
+  --gantt-group-base-bg: rgba(15,23,42,.025);
+  --gantt-grid: rgba(15,23,42,.08);
+  --gantt-grid-soft: rgba(15,23,42,.07);
+  --gantt-weekend-bg: rgba(15,23,42,.045);
+  --color-scheme: light;
+
+  --shadow-sm: 0 1px 4px rgba(15,23,42,.08);
+  --shadow: 0 8px 24px rgba(15,23,42,.10);
+  --shadow-lg: 0 18px 48px rgba(15,23,42,.14);
+}
+
+:root[data-theme="light"] .sidebar-logo h1 {
+  background: none;
+  color: var(--primary);
+  -webkit-text-fill-color: initial;
+}
+
+:root[data-theme="light"] .btn-primary,
+:root[data-theme="light"] .phase-step.active,
+:root[data-theme="light"] .cal-day.today,
+:root[data-theme="light"] .avatar,
+:root[data-theme="light"] .nav-badge {
+  color: #fff;
 }
 
 /* ─── Reset ─────────────────────────────────────────────── */
@@ -350,7 +425,7 @@ body {
 }
 .form-input, .form-select, .form-textarea {
   width: 100%;
-  background: rgba(255,255,255,0.05);
+  background: var(--field-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 8px 11px;
@@ -373,7 +448,7 @@ body {
   background-position: right 10px center;
   padding-right: 28px;
 }
-.form-select option { background: #1e1e35; color: var(--text-1); }
+.form-select option { background: var(--option-bg); color: var(--text-1); }
 .form-textarea { resize: vertical; min-height: 80px; }
 .form-help {
   margin-top: 6px;
@@ -385,7 +460,7 @@ body {
   min-height: 220px;
   line-height: 1.7;
 }
-.form-input[type="date"] { color-scheme: dark; }
+.form-input[type="date"] { color-scheme: var(--color-scheme); }
 
 /* ─── Hours Stepper ──────────────────────────────────────── */
 .hours-stepper {
@@ -481,7 +556,7 @@ body {
 /* ─── Progress Bar ───────────────────────────────────────── */
 .progress-bar {
   height: 5px;
-  background: rgba(255,255,255,.06);
+  background: var(--progress-bg);
   border-radius: 99px;
   overflow: hidden;
   margin-top: 5px;
@@ -680,7 +755,7 @@ body {
   border-radius: var(--radius);
   overflow: auto;
   max-height: calc(100vh - 270px);
-  background: rgba(255,255,255,.025);
+  background: var(--gantt-shell-bg);
   scrollbar-gutter: stable;
 }
 .gantt-left {
@@ -689,7 +764,7 @@ body {
   z-index: 3;
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
-  background: rgba(255,255,255,.035);
+  background: var(--gantt-left-bg);
   min-height: 52px;
 }
 .gantt-group-start {
@@ -704,7 +779,7 @@ body {
 }
 .gantt-phase-left,
 .gantt-phase-left + .gantt-scroll {
-  background: rgba(255,255,255,.012);
+  background: var(--gantt-phase-bg);
 }
 .gantt-phase-left.gantt-group-end,
 .gantt-phase-left.gantt-group-end + .gantt-scroll {
@@ -712,7 +787,7 @@ body {
 }
 .gantt-left.gantt-group-base,
 .gantt-scroll.gantt-group-base {
-  background-color: rgba(255,255,255,.018);
+  background-color: var(--gantt-group-base-bg);
 }
 .gantt-left.gantt-group-alt,
 .gantt-scroll.gantt-group-alt {
@@ -729,26 +804,26 @@ body {
   font-size: 12px;
   font-weight: 800;
   color: var(--text-2);
-  background: rgba(18,18,31,.96);
+  background: var(--gantt-head-bg);
 }
 .gantt-scroll {
   overflow: visible;
   min-width: var(--gantt-width, 720px);
   border-bottom: 1px solid var(--border);
-  background: rgba(255,255,255,.018);
+  background: var(--gantt-scroll-bg);
 }
 .gantt-scroll-head {
   position: sticky;
   top: 0;
   z-index: 7;
-  background: rgba(18,18,31,.98);
+  background: var(--gantt-head-bg);
 }
 .gantt-days {
   display: flex;
   flex-wrap: nowrap;
   min-height: 52px;
   background:
-    linear-gradient(to right, rgba(255,255,255,.06) 1px, transparent 1px) 0 0 / 36px 100%;
+    linear-gradient(to right, var(--gantt-grid) 1px, transparent 1px) 0 0 / 36px 100%;
 }
 .gantt-day {
   width: 36px;
@@ -758,7 +833,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 2px;
-  border-right: 1px solid rgba(255,255,255,.045);
+  border-right: 1px solid var(--gantt-grid-soft);
   color: var(--text-3);
   font-size: 10px;
 }
@@ -767,7 +842,7 @@ body {
   color: var(--text-2);
 }
 .gantt-day.weekend {
-  background: rgba(255,255,255,.035);
+  background: var(--gantt-weekend-bg);
 }
 .gantt-day.today {
   background: rgba(99,102,241,.16);
@@ -863,7 +938,7 @@ body {
   position: relative;
   display: block;
   background:
-    linear-gradient(to right, rgba(255,255,255,.05) 1px, transparent 1px) 0 0 / 36px 100%;
+    linear-gradient(to right, var(--gantt-grid) 1px, transparent 1px) 0 0 / 36px 100%;
 }
 .gantt-project-line {
   min-height: 62px;
@@ -1390,6 +1465,71 @@ body {
   padding-top: 16px;
   border-top: 1px solid var(--border);
 }
+
+/* ─── Appearance Settings ───────────────────────────────── */
+.theme-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 12px;
+}
+.theme-choice {
+  border: 1px solid var(--border);
+  background: var(--bg-glass);
+  color: var(--text-1);
+  border-radius: var(--radius);
+  padding: 14px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  transition: border-color var(--t), background var(--t), transform var(--t);
+}
+.theme-choice:hover {
+  border-color: var(--border-h);
+  background: var(--bg-glass-h);
+  transform: translateY(-1px);
+}
+.theme-choice.active {
+  border-color: var(--primary);
+  background: var(--primary-lite);
+  box-shadow: 0 0 0 3px rgba(99,102,241,.12);
+}
+.theme-choice strong {
+  display: block;
+  margin-top: 10px;
+  font-size: 14px;
+}
+.theme-choice small {
+  display: block;
+  color: var(--text-2);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+.theme-preview {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  height: 72px;
+  border-radius: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+}
+.theme-preview span {
+  display: block;
+  height: 10px;
+  border-radius: 999px;
+}
+.theme-preview.dark {
+  background: #111122;
+}
+.theme-preview.dark span:nth-child(1) { background: #6366f1; width: 72%; }
+.theme-preview.dark span:nth-child(2) { background: rgba(255,255,255,.18); width: 92%; }
+.theme-preview.dark span:nth-child(3) { background: rgba(255,255,255,.10); width: 58%; }
+.theme-preview.light {
+  background: #ffffff;
+}
+.theme-preview.light span:nth-child(1) { background: #4f46e5; width: 72%; }
+.theme-preview.light span:nth-child(2) { background: rgba(15,23,42,.18); width: 92%; }
+.theme-preview.light span:nth-child(3) { background: rgba(15,23,42,.10); width: 58%; }
 
 /* ─── Toast ──────────────────────────────────────────────── */
 .toast-container {

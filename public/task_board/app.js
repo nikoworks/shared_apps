@@ -2,14 +2,34 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'タスク日付順修正版 2026-06-10-05';
+const APP_BUILD_LABEL = 'ライトモード追加版 2026-06-10-06';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
+const THEME_STORAGE_KEY = 'taskboard-theme';
 
 function apiUrl(path) {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   if (window.location.protocol === 'file:') return `${PUBLIC_APP_ORIGIN}${normalizedPath}`;
   return normalizedPath;
 }
+
+function getSavedTheme() {
+  const saved = localStorage.getItem(THEME_STORAGE_KEY);
+  return saved === 'light' ? 'light' : 'dark';
+}
+
+function applyTheme(theme = getSavedTheme()) {
+  document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark';
+}
+
+function setTheme(theme) {
+  const normalized = theme === 'light' ? 'light' : 'dark';
+  localStorage.setItem(THEME_STORAGE_KEY, normalized);
+  applyTheme(normalized);
+  renderSettings();
+  showToast(normalized === 'light' ? 'ライトモードにしました' : 'ダークモードにしました', 'success');
+}
+
+applyTheme();
 
 /* ============================================================
    ルーター
@@ -3322,12 +3342,12 @@ function phaseEditorRow(projectId, ph, i) {
       </select>
       <input type="date" id="ph-start-${ph.id}" value="${ph.startDate || ''}"
              title="フェーズ開始日"
-             style="background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:6px;
-                    padding:5px 8px;color:var(--text-1);font-size:12px;font-family:inherit;outline:none;width:140px;color-scheme:dark">
+             style="background:var(--field-bg);border:1px solid var(--border);border-radius:6px;
+                    padding:5px 8px;color:var(--text-1);font-size:12px;font-family:inherit;outline:none;width:140px;color-scheme:var(--color-scheme)">
       <input type="date" id="ph-due-${ph.id}" value="${ph.dueDate || ''}"
              title="フェーズ締切日"
-             style="background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:6px;
-                    padding:5px 8px;color:var(--text-1);font-size:12px;font-family:inherit;outline:none;width:140px;color-scheme:dark">
+             style="background:var(--field-bg);border:1px solid var(--border);border-radius:6px;
+                    padding:5px 8px;color:var(--text-1);font-size:12px;font-family:inherit;outline:none;width:140px;color-scheme:var(--color-scheme)">
       <button class="btn btn-danger btn-sm btn-icon"
               onclick="removePhaseFromEditor('${projectId}','${ph.id}')">✕</button>
     </div>`;
@@ -4314,7 +4334,7 @@ const MEMBER_COLORS = [
   '#f59e0b','#10b981','#06b6d4','#3b82f6','#84cc16',
 ];
 let _selectedColor = MEMBER_COLORS[0];
-let _settingsTab   = 'members'; // 'members' | 'templates'
+let _settingsTab   = 'members'; // 'members' | 'templates' | 'appearance'
 
 function renderSettings() {
   const main      = document.getElementById('main-content');
@@ -4332,8 +4352,37 @@ function renderSettings() {
                 onclick="_settingsTab='members';renderSettings()">メンバー管理</button>
         <button class="btn ${_settingsTab==='templates' ? 'btn-primary' : 'btn-ghost'}"
                 onclick="_settingsTab='templates';renderSettings()">テンプレート管理</button>
+        <button class="btn ${_settingsTab==='appearance' ? 'btn-primary' : 'btn-ghost'}"
+                onclick="_settingsTab='appearance';renderSettings()">表示設定</button>
       </div>
-      ${_settingsTab === 'members' ? membersTabHTML(members) : templatesTabHTML(templates)}
+      ${_settingsTab === 'members'
+        ? membersTabHTML(members)
+        : _settingsTab === 'templates'
+          ? templatesTabHTML(templates)
+          : appearanceTabHTML()}
+    </div>`;
+}
+
+function appearanceTabHTML() {
+  const theme = getSavedTheme();
+  return `
+    <div class="card">
+      <div class="card-title">画面モード</div>
+      <p class="text-secondary" style="margin-bottom:14px">
+        使う場所に合わせて、明るい表示と暗い表示を切り替えられます。
+      </p>
+      <div class="theme-choice-grid">
+        <button class="theme-choice ${theme === 'dark' ? 'active' : ''}" onclick="setTheme('dark')">
+          <span class="theme-preview dark"><span></span><span></span><span></span></span>
+          <strong>ダークモード</strong>
+          <small>今までの落ち着いた表示です。</small>
+        </button>
+        <button class="theme-choice ${theme === 'light' ? 'active' : ''}" onclick="setTheme('light')">
+          <span class="theme-preview light"><span></span><span></span><span></span></span>
+          <strong>ライトモード</strong>
+          <small>明るい場所や画面共有で見やすい表示です。</small>
+        </button>
+      </div>
     </div>`;
 }
 
@@ -4620,6 +4669,7 @@ function updateSidebarDate() {
    アプリ初期化
    ============================================================ */
 document.addEventListener('DOMContentLoaded', async () => {
+  applyTheme();
   await DB.initStore();
   DB.seedDemoData();       // 初回のみデモデータを投入
   const carriedCount = DB.Tasks.carryOverOpenTasks();
