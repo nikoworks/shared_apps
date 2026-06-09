@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="style.css?v=20260609-02" />
+  <link rel="stylesheet" href="style.css?v=20260609-03" />
 </head>
 <body>
 
@@ -64,6 +64,16 @@
       ガント
     </div>
 
+    <div class="nav-item" id="nav-cleanup" role="button" tabindex="0"
+         onclick="navigate('cleanup')" onkeydown="if(event.key==='Enter')navigate('cleanup')">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <path d="M4 6h16"/>
+        <path d="M7 12h10"/>
+        <path d="M10 18h4"/>
+      </svg>
+      データ整理
+    </div>
+
     <div class="nav-item" id="nav-settings" role="button" tabindex="0"
          onclick="navigate('settings')" onkeydown="if(event.key==='Enter')navigate('settings')">
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -98,6 +108,6 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="supabase-config.js"></script>
 <script src="data.js"></script>
-<script src="app.js?v=20260609-02"></script>
+<script src="app.js?v=20260609-03"></script>
 </body>
 </html>

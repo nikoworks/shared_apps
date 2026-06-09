@@ -1545,6 +1545,100 @@ body {
 /* ─── Tab Switcher ───────────────────────────────────────── */
 .tab-bar { display: flex; gap: 4px; margin-bottom: 20px; }
 
+/* ─── Data Cleanup ───────────────────────────────────────── */
+.cleanup-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.cleanup-summary {
+  padding: 18px;
+}
+.cleanup-count {
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 900;
+  color: var(--primary);
+}
+.cleanup-label {
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-1);
+}
+.cleanup-sub {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.cleanup-section {
+  margin-bottom: 18px;
+  padding: 18px;
+}
+.cleanup-section-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.cleanup-section-head h3 {
+  margin: 0;
+  font-size: 17px;
+}
+.cleanup-section-head p {
+  margin: 5px 0 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.cleanup-pill {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 800;
+  background: rgba(255,255,255,.04);
+}
+.cleanup-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 46%);
+  gap: 14px;
+  align-items: center;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.cleanup-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.cleanup-title {
+  font-weight: 800;
+  color: var(--text-1);
+}
+.cleanup-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 7px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.cleanup-warning {
+  color: var(--danger);
+  font-weight: 800;
+}
+.cleanup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.cleanup-actions select {
+  min-width: 220px;
+  flex: 1 1 220px;
+}
+
 /* ─── Animations ─────────────────────────────────────────── */
 @keyframes fadeInUp {
   from { opacity: 0; transform: translateY(10px); }
@@ -1561,11 +1655,15 @@ body {
 @media (max-width: 900px) {
   .grid-3 { grid-template-columns: 1fr 1fr; }
   .grid-4 { grid-template-columns: 1fr 1fr; }
+  .cleanup-grid { grid-template-columns: 1fr 1fr; }
+  .cleanup-row { grid-template-columns: 1fr; }
+  .cleanup-actions { justify-content: flex-start; }
 }
 @media (max-width: 680px) {
   :root { --sidebar-w: 0px; }
   .sidebar { display: none; }
   .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+  .cleanup-grid { grid-template-columns: 1fr; }
   .task-ask-grid { grid-template-columns: 1fr; }
   .chatwork-import-grid { grid-template-columns: 1fr; }
   .page-header, .page-body { padding-inline: 16px; }

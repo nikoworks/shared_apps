@@ -124,7 +124,7 @@ function queueCloudSave() {
 }
 
 async function syncCloudStore() {
-  if (!cloudReady || !cloudClient) return;
+  if (!cloudReady || !cloudClient) return false;
 
   const { error } = await cloudClient
     .from('taskboard_data')
@@ -136,7 +136,9 @@ async function syncCloudStore() {
 
   if (error) {
     console.warn('Supabase save failed:', error.message);
+    return false;
   }
+  return true;
 }
 
 async function reloadCloudStore() {

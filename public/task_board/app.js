@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'タスク紐付け新規PJ版 2026-06-09-02';
+const APP_BUILD_LABEL = 'データ整理版 2026-06-09-03';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 
 function apiUrl(path) {
@@ -36,6 +36,7 @@ function renderPage(page) {
     case 'projectReview': renderProjectReviewFromUrl(); break;
     case 'projects':  renderProjects(); break;
     case 'gantt':     renderGantt(); break;
+    case 'cleanup':   renderDataCleanup(); break;
     case 'settings':  renderSettings(); break;
     default:          renderDashboard();
   }
@@ -3765,6 +3766,404 @@ function deleteProject(id) {
   DB.Projects.remove(id);
   showToast('プロジェクトを削除しました', 'info');
   renderProjects();
+}
+
+/* ============================================================
+   データ整理
+   ============================================================ */
+let _cleanupFilter = { memberId: '', issue: 'all' };
+
+function renderDataCleanup() {
+  const main = document.getElementById('main-content');
+  const issues = analyzeDataIssues();
+  const members = DB.Members.all();
+  const memberOpts = members
+    .map(m => `<option value="${m.id}" ${_cleanupFilter.memberId === m.id ? 'selected' : ''}>${escHtml(m.name)}</option>`)
+    .join('');
+  const memberName = _cleanupFilter.memberId ? (DB.Members.get(_cleanupFilter.memberId)?.name || '選択中') : '全員';
+
+  main.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h2>データ整理</h2>
+        <div class="sub">古い仮プロジェクト、未紐付けタスク、繰り越しの不整合を確認・修正します</div>
+      </div>
+      <div class="header-actions">
+        <button class="btn btn-ghost" onclick="downloadDataBackup()">バックアップ</button>
+        <button class="btn btn-secondary" onclick="refreshCleanupData()">最新に更新</button>
+      </div>
+    </div>
+
+    <div class="page-body">
+      <div class="banner banner-info">
+        <span>まずバックアップを取ってから整理してください。ここでは基本的に「統合」「紐付け」「アーカイブ」で整えます。</span>
+      </div>
+
+      <div class="filter-row">
+        <select onchange="_cleanupFilter.memberId=this.value;renderDataCleanup()">
+          <option value="">全メンバー</option>
+          ${memberOpts}
+        </select>
+        <select onchange="_cleanupFilter.issue=this.value;renderDataCleanup()">
+          <option value="all" ${_cleanupFilter.issue === 'all' ? 'selected' : ''}>すべての確認項目</option>
+          <option value="tasks" ${_cleanupFilter.issue === 'tasks' ? 'selected' : ''}>未紐付けタスク</option>
+          <option value="projects" ${_cleanupFilter.issue === 'projects' ? 'selected' : ''}>仮プロジェクト</option>
+          <option value="carry" ${_cleanupFilter.issue === 'carry' ? 'selected' : ''}>繰り越し不整合</option>
+        </select>
+      </div>
+
+      <div class="cleanup-grid">
+        ${cleanupSummaryCard('未紐付けタスク', issues.missingProjectTasks.length, `${escHtml(memberName)}の確認待ち`)}
+        ${cleanupSummaryCard('仮プロジェクト', issues.provisionalProjects.length, '古い取り込み仕様の名残')}
+        ${cleanupSummaryCard('繰り越し不整合', issues.carryoverIssues.length, '完了・持ち越しリンクの確認')}
+        ${cleanupSummaryCard('不足情報PJ', issues.missingInfoProjects.length, '登録者・窓口・納品日など')}
+      </div>
+
+      ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'tasks' ? cleanupTaskSection(issues.missingProjectTasks) : ''}
+      ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'projects' ? cleanupProjectSection(issues.provisionalProjects) : ''}
+      ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'carry' ? cleanupCarryoverSection(issues.carryoverIssues) : ''}
+      ${_cleanupFilter.issue === 'all' ? cleanupMissingInfoSection(issues.missingInfoProjects) : ''}
+    </div>
+  `;
+}
+
+function cleanupSummaryCard(label, count, sub) {
+  return `
+    <div class="cleanup-summary card">
+      <div class="cleanup-count">${count}</div>
+      <div class="cleanup-label">${label}</div>
+      <div class="cleanup-sub">${sub}</div>
+    </div>`;
+}
+
+function analyzeDataIssues() {
+  const members = DB.Members.all();
+  const memberIds = new Set(members.map(m => m.id));
+  const projects = DB.Projects.all();
+  const projectIds = new Set(projects.map(p => p.id));
+  const tasks = DB.Tasks.all().filter(task => !_cleanupFilter.memberId || task.memberId === _cleanupFilter.memberId);
+
+  const provisionalProjects = projects
+    .filter(p => isCleanupProvisionalProject(p))
+    .sort((a, b) => cleanupProjectName(a).localeCompare(cleanupProjectName(b), 'ja'));
+
+  const missingProjectTasks = tasks
+    .filter(t => !t.projectId || !projectIds.has(t.projectId) || t.needsProjectReview)
+    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+
+  const carryoverIssues = [];
+  tasks.forEach(task => {
+    const from = task.carriedFromTaskId ? DB.Tasks.get(task.carriedFromTaskId) : null;
+    const to = task.carriedOverToTaskId ? DB.Tasks.get(task.carriedOverToTaskId) : null;
+    if (task.carriedFromTaskId && !from) {
+      carryoverIssues.push({ task, type: 'missingFrom', label: '繰り越し元が見つかりません' });
+    }
+    if (task.carriedOverToTaskId && !to) {
+      carryoverIssues.push({ task, type: 'missingTo', label: '繰り越し先が見つかりません' });
+    }
+    if (task.completed === true && to && to.completed !== true) {
+      carryoverIssues.push({ task, related: to, type: 'completedParentOpenChild', label: '完了済みタスクに未完了の繰り越し先があります' });
+    }
+  });
+
+  const orphanPhaseTasks = tasks
+    .filter(task => {
+      if (!task.phaseId || !task.projectId) return false;
+      const project = DB.Projects.get(task.projectId);
+      return !project || !(project.phases || []).some(phase => phase.id === task.phaseId);
+    })
+    .map(task => ({ task, type: 'orphanPhase', label: 'フェーズが見つかりません' }));
+
+  const missingMemberTasks = tasks
+    .filter(task => !task.memberId || !memberIds.has(task.memberId))
+    .map(task => ({ task, type: 'missingMember', label: '担当者が見つかりません' }));
+
+  const missingInfoProjects = projects
+    .filter(p => !p.archived && p.projectStatus !== 'completed' && projectMissingInfo(p).length > 0)
+    .sort((a, b) => String(a.deliveryDate || '9999-99-99').localeCompare(String(b.deliveryDate || '9999-99-99')));
+
+  return {
+    provisionalProjects,
+    missingProjectTasks,
+    carryoverIssues: [...carryoverIssues, ...orphanPhaseTasks, ...missingMemberTasks],
+    missingInfoProjects,
+  };
+}
+
+function isCleanupProvisionalProject(project) {
+  return Boolean(
+    project?.isProvisional ||
+    project?.projectType === 'provisional' ||
+    project?.name === '仮プロジェクト' ||
+    String(project?.name || '').includes('仮プロジェクト')
+  );
+}
+
+function cleanupProjectName(project) {
+  if (!project) return 'プロジェクト未選択';
+  return `${project.clientName || 'クライアント未設定'} / ${project.name || '名称未設定'}`;
+}
+
+function cleanupProjectOptionsHTML(selectedId = '', includeProvisional = false) {
+  return DB.Projects.active()
+    .filter(project => includeProvisional || !isCleanupProvisionalProject(project))
+    .sort((a, b) => cleanupProjectName(a).localeCompare(cleanupProjectName(b), 'ja'))
+    .map(project => `
+      <option value="${project.id}" ${selectedId === project.id ? 'selected' : ''}>
+        ${escHtml(cleanupProjectName(project))}
+      </option>`)
+    .join('');
+}
+
+function cleanupTaskSection(tasks) {
+  return `
+    <section class="cleanup-section card">
+      <div class="cleanup-section-head">
+        <div>
+          <h3>未紐付け・確認待ちタスク</h3>
+          <p>Chatwork取り込みや古い入力で、正式プロジェクトに紐付いていないタスクです。</p>
+        </div>
+        <span class="cleanup-pill">${tasks.length}件</span>
+      </div>
+      ${tasks.length ? tasks.map(cleanupTaskRow).join('') : cleanupEmpty('未紐付けタスクはありません')}
+    </section>`;
+}
+
+function cleanupTaskRow(task) {
+  const member = DB.Members.get(task.memberId);
+  const currentProject = DB.Projects.get(task.projectId);
+  return `
+    <div class="cleanup-row">
+      <div class="cleanup-main">
+        <div class="cleanup-title">${escHtml(task.content || '未入力タスク')}</div>
+        <div class="cleanup-meta">
+          <span>${escHtml(task.date ? DB.fmtDate(task.date) : '日付未設定')}</span>
+          <span>担当：${member ? escHtml(member.name) : '未設定'}</span>
+          <span>元プロジェクト名：${escHtml(task.sourceProjectName || cleanupProjectName(currentProject))}</span>
+          <span>${Number(task.estimatedHours) || 0}h</span>
+        </div>
+      </div>
+      <div class="cleanup-actions">
+        <select id="cleanup-task-project-${task.id}">
+          <option value="">正式プロジェクトを選択...</option>
+          ${cleanupProjectOptionsHTML(task.projectId || '')}
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="assignCleanupTaskProject('${task.id}')">紐付け</button>
+        <button class="btn btn-ghost btn-sm" onclick="openTaskModal('${task.id}')">編集</button>
+      </div>
+    </div>`;
+}
+
+function cleanupProjectSection(projects) {
+  return `
+    <section class="cleanup-section card">
+      <div class="cleanup-section-head">
+        <div>
+          <h3>仮プロジェクト</h3>
+          <p>過去の取り込み処理で自動作成されたものです。正式プロジェクトへ統合するか、不要ならアーカイブします。</p>
+        </div>
+        <span class="cleanup-pill">${projects.length}件</span>
+      </div>
+      ${projects.length ? projects.map(cleanupProjectRow).join('') : cleanupEmpty('仮プロジェクトはありません')}
+    </section>`;
+}
+
+function cleanupProjectRow(project) {
+  const relatedTasks = DB.Tasks.all().filter(task => task.projectId === project.id);
+  const missing = projectMissingInfo(project).map(item => item.label).join('、') || 'なし';
+  return `
+    <div class="cleanup-row">
+      <div class="cleanup-main">
+        <div class="cleanup-title">${escHtml(cleanupProjectName(project))}</div>
+        <div class="cleanup-meta">
+          <span>関連タスク ${relatedTasks.length}件</span>
+          <span>不足：${escHtml(missing)}</span>
+          <span>${project.archived ? 'アーカイブ済み' : '進行中'}</span>
+        </div>
+      </div>
+      <div class="cleanup-actions">
+        <select id="cleanup-merge-${project.id}">
+          <option value="">統合先プロジェクトを選択...</option>
+          ${cleanupProjectOptionsHTML('', false)}
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="mergeCleanupProject('${project.id}')">統合</button>
+        <button class="btn btn-ghost btn-sm" onclick="openProjectModal('${project.id}')">編集</button>
+        <button class="btn btn-danger btn-sm" onclick="archiveCleanupProject('${project.id}')">アーカイブ</button>
+      </div>
+    </div>`;
+}
+
+function cleanupCarryoverSection(issues) {
+  return `
+    <section class="cleanup-section card">
+      <div class="cleanup-section-head">
+        <div>
+          <h3>繰り越し・完了状態の確認</h3>
+          <p>完了チェックが戻る、持ち越し表示が不安定になる原因になりやすいリンクを確認します。</p>
+        </div>
+        <span class="cleanup-pill">${issues.length}件</span>
+      </div>
+      ${issues.length ? issues.map(cleanupCarryoverRow).join('') : cleanupEmpty('繰り越し不整合はありません')}
+    </section>`;
+}
+
+function cleanupCarryoverRow(issue) {
+  const task = issue.task;
+  const member = DB.Members.get(task.memberId);
+  return `
+    <div class="cleanup-row">
+      <div class="cleanup-main">
+        <div class="cleanup-title">${escHtml(task.content || '未入力タスク')}</div>
+        <div class="cleanup-meta">
+          <span class="cleanup-warning">${escHtml(issue.label)}</span>
+          <span>${escHtml(task.date ? DB.fmtDate(task.date) : '日付未設定')}</span>
+          <span>担当：${member ? escHtml(member.name) : '未設定'}</span>
+          <span>${task.completed === true ? '完了' : '未完了'}</span>
+        </div>
+      </div>
+      <div class="cleanup-actions">
+        ${issue.type === 'missingFrom' ? `<button class="btn btn-secondary btn-sm" onclick="unlinkCleanupCarry('${task.id}', 'from')">元リンク解除</button>` : ''}
+        ${issue.type === 'missingTo' ? `<button class="btn btn-secondary btn-sm" onclick="unlinkCleanupCarry('${task.id}', 'to')">先リンク解除</button>` : ''}
+        ${issue.type === 'completedParentOpenChild' ? `<button class="btn btn-secondary btn-sm" onclick="completeCleanupCarryChild('${issue.related.id}')">繰り越し先も完了</button>` : ''}
+        ${issue.type === 'orphanPhase' ? `<button class="btn btn-secondary btn-sm" onclick="clearCleanupPhase('${task.id}')">フェーズ解除</button>` : ''}
+        <button class="btn btn-ghost btn-sm" onclick="openTaskModal('${task.id}')">編集</button>
+      </div>
+    </div>`;
+}
+
+function cleanupMissingInfoSection(projects) {
+  return `
+    <section class="cleanup-section card">
+      <div class="cleanup-section-head">
+        <div>
+          <h3>不足情報のあるプロジェクト</h3>
+          <p>ガントや進行管理に必要な情報が欠けているプロジェクトです。</p>
+        </div>
+        <span class="cleanup-pill">${projects.length}件</span>
+      </div>
+      ${projects.length ? projects.map(project => {
+        const missing = projectMissingInfo(project).map(item => item.label).join('、');
+        return `
+          <div class="cleanup-row">
+            <div class="cleanup-main">
+              <div class="cleanup-title">${escHtml(cleanupProjectName(project))}</div>
+              <div class="cleanup-meta">
+                <span class="cleanup-warning">不足：${escHtml(missing)}</span>
+                <span>納品：${project.deliveryDate ? escHtml(DB.fmtDate(project.deliveryDate)) : '未設定'}</span>
+              </div>
+            </div>
+            <div class="cleanup-actions">
+              <button class="btn btn-secondary btn-sm" onclick="openProjectModal('${project.id}')">編集</button>
+            </div>
+          </div>`;
+      }).join('') : cleanupEmpty('不足情報のあるプロジェクトはありません')}
+    </section>`;
+}
+
+function cleanupEmpty(text) {
+  return `<div class="empty-state" style="padding:24px"><div class="title">${escHtml(text)}</div></div>`;
+}
+
+async function saveCleanupAndRefresh(message) {
+  const ok = await DB.syncCloudStore?.();
+  if (ok === false) showToast('保存に失敗しました。通信状態を確認してください', 'error');
+  else showToast(message, 'success');
+  renderDataCleanup();
+}
+
+async function refreshCleanupData() {
+  const ok = await DB.reloadCloudStore?.();
+  if (ok === false) showToast('最新データの取得に失敗しました', 'error');
+  else showToast('最新データに更新しました', 'success');
+  renderDataCleanup();
+}
+
+async function assignCleanupTaskProject(taskId) {
+  const projectId = document.getElementById(`cleanup-task-project-${taskId}`)?.value;
+  if (!projectId) {
+    showToast('紐付ける正式プロジェクトを選んでください', 'error');
+    return;
+  }
+  DB.Tasks.update(taskId, {
+    projectId,
+    phaseId: null,
+    sourceProjectName: '',
+    needsProjectReview: false,
+  });
+  await saveCleanupAndRefresh('タスクを正式プロジェクトへ紐付けました');
+}
+
+async function mergeCleanupProject(projectId) {
+  const targetProjectId = document.getElementById(`cleanup-merge-${projectId}`)?.value;
+  if (!targetProjectId) {
+    showToast('統合先プロジェクトを選んでください', 'error');
+    return;
+  }
+  if (projectId === targetProjectId) {
+    showToast('同じプロジェクトには統合できません', 'error');
+    return;
+  }
+  const fromProject = DB.Projects.get(projectId);
+  const toProject = DB.Projects.get(targetProjectId);
+  if (!fromProject || !toProject) return;
+  if (!confirm(`${cleanupProjectName(fromProject)} の関連タスクを ${cleanupProjectName(toProject)} に移します。よろしいですか？`)) return;
+
+  DB.Tasks.all()
+    .filter(task => task.projectId === projectId)
+    .forEach(task => DB.Tasks.update(task.id, {
+      projectId: targetProjectId,
+      phaseId: null,
+      sourceProjectName: '',
+      needsProjectReview: false,
+    }));
+  DB.Projects.archive(projectId);
+  await saveCleanupAndRefresh('仮プロジェクトを正式プロジェクトへ統合しました');
+}
+
+async function archiveCleanupProject(projectId) {
+  const project = DB.Projects.get(projectId);
+  if (!project) return;
+  if (!confirm(`${cleanupProjectName(project)} をアーカイブします。関連タスクは削除されません。よろしいですか？`)) return;
+  DB.Projects.archive(projectId);
+  await saveCleanupAndRefresh('仮プロジェクトをアーカイブしました');
+}
+
+async function unlinkCleanupCarry(taskId, direction) {
+  const patch = direction === 'from' ? { carriedFromTaskId: null } : { carriedOverToTaskId: null };
+  DB.Tasks.update(taskId, patch);
+  await saveCleanupAndRefresh('繰り越しリンクを解除しました');
+}
+
+async function completeCleanupCarryChild(taskId) {
+  DB.Tasks.setCompletion(taskId, true, '');
+  await saveCleanupAndRefresh('繰り越し先も完了にしました');
+}
+
+async function clearCleanupPhase(taskId) {
+  DB.Tasks.update(taskId, { phaseId: null });
+  await saveCleanupAndRefresh('存在しないフェーズの紐付けを解除しました');
+}
+
+function downloadDataBackup() {
+  const snapshot = {
+    exportedAt: new Date().toISOString(),
+    members: DB.Members.all(),
+    projects: DB.Projects.all(),
+    tasks: DB.Tasks.all(),
+    asks: DB.Asks.all(),
+    templates: DB.Templates.all(),
+    chatworkImports: DB.ChatworkImports.all(),
+    projectReviews: DB.ProjectReviews.all(),
+  };
+  const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `taskboard-backup-${today()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 /* ============================================================
