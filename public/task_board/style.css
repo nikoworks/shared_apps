@@ -1548,7 +1548,7 @@ body {
 /* ─── Data Cleanup ───────────────────────────────────────── */
 .cleanup-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 12px;
   margin-bottom: 18px;
 }
@@ -1638,6 +1638,23 @@ body {
   min-width: 220px;
   flex: 1 1 220px;
 }
+.cleanup-actions-stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+.cleanup-action-line {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+.cleanup-action-line input,
+.cleanup-action-line select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.cleanup-row-client {
+  grid-template-columns: minmax(0, 1fr) minmax(420px, 50%);
+}
 
 /* ─── Animations ─────────────────────────────────────────── */
 @keyframes fadeInUp {
@@ -1656,7 +1673,8 @@ body {
   .grid-3 { grid-template-columns: 1fr 1fr; }
   .grid-4 { grid-template-columns: 1fr 1fr; }
   .cleanup-grid { grid-template-columns: 1fr 1fr; }
-  .cleanup-row { grid-template-columns: 1fr; }
+  .cleanup-row,
+  .cleanup-row-client { grid-template-columns: 1fr; }
   .cleanup-actions { justify-content: flex-start; }
 }
 @media (max-width: 680px) {

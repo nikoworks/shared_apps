@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'データ整理版 2026-06-09-03';
+const APP_BUILD_LABEL = 'クライアント整理版 2026-06-09-04';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 
 function apiUrl(path) {
@@ -3808,6 +3808,7 @@ function renderDataCleanup() {
           <option value="all" ${_cleanupFilter.issue === 'all' ? 'selected' : ''}>すべての確認項目</option>
           <option value="tasks" ${_cleanupFilter.issue === 'tasks' ? 'selected' : ''}>未紐付けタスク</option>
           <option value="projects" ${_cleanupFilter.issue === 'projects' ? 'selected' : ''}>仮プロジェクト</option>
+          <option value="clients" ${_cleanupFilter.issue === 'clients' ? 'selected' : ''}>クライアント整理</option>
           <option value="carry" ${_cleanupFilter.issue === 'carry' ? 'selected' : ''}>繰り越し不整合</option>
         </select>
       </div>
@@ -3815,12 +3816,14 @@ function renderDataCleanup() {
       <div class="cleanup-grid">
         ${cleanupSummaryCard('未紐付けタスク', issues.missingProjectTasks.length, `${escHtml(memberName)}の確認待ち`)}
         ${cleanupSummaryCard('仮プロジェクト', issues.provisionalProjects.length, '古い取り込み仕様の名残')}
+        ${cleanupSummaryCard('クライアント名', issues.clientStats.length, '表記ゆれ・重複の整理')}
         ${cleanupSummaryCard('繰り越し不整合', issues.carryoverIssues.length, '完了・持ち越しリンクの確認')}
         ${cleanupSummaryCard('不足情報PJ', issues.missingInfoProjects.length, '登録者・窓口・納品日など')}
       </div>
 
       ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'tasks' ? cleanupTaskSection(issues.missingProjectTasks) : ''}
       ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'projects' ? cleanupProjectSection(issues.provisionalProjects) : ''}
+      ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'clients' ? cleanupClientSection(issues.clientStats) : ''}
       ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'carry' ? cleanupCarryoverSection(issues.carryoverIssues) : ''}
       ${_cleanupFilter.issue === 'all' ? cleanupMissingInfoSection(issues.missingInfoProjects) : ''}
     </div>
@@ -3885,6 +3888,7 @@ function analyzeDataIssues() {
   return {
     provisionalProjects,
     missingProjectTasks,
+    clientStats: cleanupClientStats(projects),
     carryoverIssues: [...carryoverIssues, ...orphanPhaseTasks, ...missingMemberTasks],
     missingInfoProjects,
   };
@@ -3912,6 +3916,37 @@ function cleanupProjectOptionsHTML(selectedId = '', includeProvisional = false) 
       <option value="${project.id}" ${selectedId === project.id ? 'selected' : ''}>
         ${escHtml(cleanupProjectName(project))}
       </option>`)
+    .join('');
+}
+
+function cleanupClientStats(projects = DB.Projects.all()) {
+  const stats = new Map();
+  projects.forEach(project => {
+    const name = String(project.clientName || '').trim() || 'クライアント未設定';
+    const current = stats.get(name) || {
+      name,
+      total: 0,
+      active: 0,
+      completed: 0,
+      archived: 0,
+      provisional: 0,
+    };
+    current.total += 1;
+    if (project.archived) current.archived += 1;
+    else if (project.projectStatus === 'completed') current.completed += 1;
+    else current.active += 1;
+    if (isCleanupProvisionalProject(project)) current.provisional += 1;
+    stats.set(name, current);
+  });
+
+  return Array.from(stats.values())
+    .sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+}
+
+function cleanupClientOptionsHTML(currentName = '') {
+  return cleanupClientStats()
+    .filter(client => client.name !== currentName && client.name !== 'クライアント未設定')
+    .map(client => `<option value="${escHtml(client.name)}">${escHtml(client.name)}（${client.total}件）</option>`)
     .join('');
 }
 
@@ -3966,6 +4001,51 @@ function cleanupProjectSection(projects) {
       </div>
       ${projects.length ? projects.map(cleanupProjectRow).join('') : cleanupEmpty('仮プロジェクトはありません')}
     </section>`;
+}
+
+function cleanupClientSection(clients) {
+  return `
+    <section class="cleanup-section card">
+      <div class="cleanup-section-head">
+        <div>
+          <h3>クライアント整理</h3>
+          <p>京急と京浜急行のような表記ゆれを、正式なクライアント名へ統合します。関連プロジェクトのクライアント名だけを置き換え、タスクは削除しません。</p>
+        </div>
+        <span class="cleanup-pill">${clients.length}件</span>
+      </div>
+      ${clients.length ? clients.map(cleanupClientRow).join('') : cleanupEmpty('クライアント名はありません')}
+    </section>`;
+}
+
+function cleanupClientRow(client, index) {
+  const encodedName = encodeURIComponent(client.name);
+  const options = cleanupClientOptionsHTML(client.name);
+  return `
+    <div class="cleanup-row cleanup-row-client">
+      <div class="cleanup-main">
+        <div class="cleanup-title">${escHtml(client.name)}</div>
+        <div class="cleanup-meta">
+          <span>関連プロジェクト ${client.total}件</span>
+          <span>進行中 ${client.active}件</span>
+          <span>完了 ${client.completed}件</span>
+          <span>アーカイブ ${client.archived}件</span>
+          ${client.provisional ? `<span class="cleanup-warning">仮PJ ${client.provisional}件</span>` : ''}
+        </div>
+      </div>
+      <div class="cleanup-actions cleanup-actions-stack">
+        <div class="cleanup-action-line">
+          <select id="cleanup-client-target-${index}" ${options ? '' : 'disabled'}>
+            <option value="">統合先クライアントを選択...</option>
+            ${options}
+          </select>
+          <button class="btn btn-secondary btn-sm" onclick="mergeCleanupClient('${encodedName}', ${index})" ${options ? '' : 'disabled'}>統合</button>
+        </div>
+        <div class="cleanup-action-line">
+          <input class="form-input" id="cleanup-client-rename-${index}" placeholder="新しい正式名称を入力" value="${escHtml(client.name === 'クライアント未設定' ? '' : client.name)}">
+          <button class="btn btn-ghost btn-sm" onclick="renameCleanupClient('${encodedName}', ${index})">名称変更</button>
+        </div>
+      </div>
+    </div>`;
 }
 
 function cleanupProjectRow(project) {
@@ -4118,6 +4198,48 @@ async function mergeCleanupProject(projectId) {
     }));
   DB.Projects.archive(projectId);
   await saveCleanupAndRefresh('仮プロジェクトを正式プロジェクトへ統合しました');
+}
+
+async function mergeCleanupClient(encodedClientName, index) {
+  const fromName = decodeURIComponent(encodedClientName);
+  const toName = document.getElementById(`cleanup-client-target-${index}`)?.value?.trim();
+  if (!toName) {
+    showToast('統合先クライアントを選んでください', 'error');
+    return;
+  }
+  if (fromName === toName) {
+    showToast('同じクライアント名には統合できません', 'error');
+    return;
+  }
+  const affected = DB.Projects.all().filter(project => (String(project.clientName || '').trim() || 'クライアント未設定') === fromName);
+  if (!affected.length) {
+    showToast('統合対象のプロジェクトが見つかりません', 'error');
+    return;
+  }
+  if (!confirm(`${fromName} を ${toName} に統合します。\n対象プロジェクト：${affected.length}件\nよろしいですか？`)) return;
+  affected.forEach(project => DB.Projects.update(project.id, { clientName: toName }));
+  await saveCleanupAndRefresh('クライアント名を統合しました');
+}
+
+async function renameCleanupClient(encodedClientName, index) {
+  const fromName = decodeURIComponent(encodedClientName);
+  const toName = document.getElementById(`cleanup-client-rename-${index}`)?.value?.trim();
+  if (!toName) {
+    showToast('新しいクライアント名を入力してください', 'error');
+    return;
+  }
+  if (fromName === toName) {
+    showToast('同じ名前です', 'info');
+    return;
+  }
+  const affected = DB.Projects.all().filter(project => (String(project.clientName || '').trim() || 'クライアント未設定') === fromName);
+  if (!affected.length) {
+    showToast('名称変更するプロジェクトが見つかりません', 'error');
+    return;
+  }
+  if (!confirm(`${fromName} を ${toName} に名称変更します。\n対象プロジェクト：${affected.length}件\nよろしいですか？`)) return;
+  affected.forEach(project => DB.Projects.update(project.id, { clientName: toName }));
+  await saveCleanupAndRefresh('クライアント名を変更しました');
 }
 
 async function archiveCleanupProject(projectId) {
