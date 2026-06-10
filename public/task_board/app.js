@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '保存安定版 2026-06-10-08';
+const APP_BUILD_LABEL = '繰り越し日付説明版 2026-06-10-10';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 
@@ -1257,6 +1257,14 @@ function openTaskModal(editId) {
   const linkedAsk = editId ? getTaskLinkedAsk(editId) : null;
   const askMemberOpts = `<option value="">宛先を選択...</option>` + members.map(m =>
     `<option value="${m.id}" ${linkedAsk?.toMemberId === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
+  const carryOrigin = editId && _taskFormData.carriedFromTaskId ? getCarryOriginTask(_taskFormData) : null;
+  const carryOriginDate = carryOrigin?.date && carryOrigin.id !== _taskFormData.id ? carryOrigin.date : '';
+  const workDateHelp = carryOriginDate
+    ? `<div class="form-help" style="margin-top:8px">
+        このタスクは <strong>${escHtml(DB.fmtDate(carryOriginDate))}</strong> から繰り越されています。
+        上の作業日は「このタスクを処理する日」です。
+      </div>`
+    : `<div class="form-help" style="margin-top:8px">この日に表示されるタスクとして保存します。</div>`;
 
   openModal(`
     <div class="form-group">
@@ -1283,10 +1291,11 @@ function openTaskModal(editId) {
       </select>
     </div>
     <div class="form-group">
-      <label class="form-label">作業日 *</label>
+      <label class="form-label">作業日（この日に表示） *</label>
       <input type="date" class="form-input" id="tf-date"
              value="${_taskFormData.date || DB.today()}"
              onchange="_taskFormData.date=this.value">
+      ${workDateHelp}
     </div>
     <div class="form-group">
       <label class="form-label">タスク内容 *</label>
@@ -3230,8 +3239,8 @@ function dealCategoryLabel(value) {
 
 function projectMissingInfo(project) {
   const missing = [];
-  if (!project.createdByMemberId) missing.push({ key: 'createdByMemberId', label: '登録者' });
   if (!project.ownerMemberId) missing.push({ key: 'ownerMemberId', label: '窓口担当' });
+  if (!project.createdByMemberId && !project.ownerMemberId) missing.push({ key: 'createdByMemberId', label: '登録者' });
   if (!project.deliveryDate) missing.push({ key: 'deliveryDate', label: '納品日' });
   if (project.projectType === 'recurring' && !project.recurringSeries) {
     missing.push({ key: 'recurringSeries', label: '定期案件名' });
@@ -3504,11 +3513,11 @@ function openProjectModal(editId) {
       <input class="form-input" id="pj-name" placeholder="例：7月号 / 2026年7月切り替え / LP制作" value="${escHtml(project?.name||'')}">
     </div>
     <div class="form-group">
-      <label class="form-label">登録者 *</label>
+      <label class="form-label">登録者</label>
       <select class="form-select" id="pj-created-by">
         <option value="">未設定</option>${createdByOpts}
       </select>
-      <div class="form-help">情報が足りない時に、まず誰へ確認を戻すかを決める項目です。</div>
+      <div class="form-help">窓口担当が決まっていれば未設定でも大丈夫です。</div>
     </div>
     <div class="form-group">
       <label class="form-label">窓口担当</label>
@@ -3630,7 +3639,11 @@ function saveProjectNew() {
   const name       = document.getElementById('pj-name')?.value?.trim();
   if (!clientName || !name) { showToast('クライアント名とプロジェクト名は必須です', 'error'); return; }
   const createdByMemberId = document.getElementById('pj-created-by')?.value || '';
-  if (!createdByMemberId) { showToast('登録者は必須です', 'error'); return; }
+  const ownerMemberId = document.getElementById('pj-owner')?.value || '';
+  if (!createdByMemberId && !ownerMemberId) {
+    showToast('登録者または窓口担当のどちらかを選んでください', 'error');
+    return;
+  }
   const deliveryDate = document.getElementById('pj-delivery')?.value || '';
   if (!confirmProjectDeliveryDate(deliveryDate)) return;
   const projectType = document.getElementById('pj-type')?.value || 'standard';
@@ -3649,7 +3662,7 @@ function saveProjectNew() {
     dealCategory:    document.getElementById('pj-deal-category')?.value || 'existing',
     startDate:       document.getElementById('pj-start')?.value || '',
     createdByMemberId,
-    ownerMemberId:   document.getElementById('pj-owner')?.value || getDefaultOwnerMemberId(),
+    ownerMemberId:   ownerMemberId || getDefaultOwnerMemberId(),
     isProvisional:   false,
     detailsDueAt:    document.getElementById('pj-details-due')?.value || '',
     projectStatus:   document.getElementById('pj-status')?.value || 'active',
@@ -3665,7 +3678,11 @@ function saveProjectEdit(projectId) {
   const name       = document.getElementById('pj-name')?.value?.trim();
   if (!clientName || !name) { showToast('クライアント名とプロジェクト名は必須です', 'error'); return; }
   const createdByMemberId = document.getElementById('pj-created-by')?.value || '';
-  if (!createdByMemberId) { showToast('登録者は必須です', 'error'); return; }
+  const ownerMemberId = document.getElementById('pj-owner')?.value || '';
+  if (!createdByMemberId && !ownerMemberId) {
+    showToast('登録者または窓口担当のどちらかを選んでください', 'error');
+    return;
+  }
   const deliveryDate = document.getElementById('pj-delivery')?.value || '';
   if (!confirmProjectDeliveryDate(deliveryDate)) return;
   const projectType = document.getElementById('pj-type')?.value || 'standard';
@@ -3683,7 +3700,7 @@ function saveProjectEdit(projectId) {
     dealCategory:    document.getElementById('pj-deal-category')?.value || 'existing',
     startDate:       document.getElementById('pj-start')?.value || '',
     createdByMemberId,
-    ownerMemberId:   document.getElementById('pj-owner')?.value || '',
+    ownerMemberId,
     isProvisional:   false,
     detailsDueAt:    document.getElementById('pj-details-due')?.value || '',
     projectStatus:   document.getElementById('pj-status')?.value || 'active',
@@ -3699,21 +3716,40 @@ function confirmProjectDeliveryDate(deliveryDate) {
   return confirm('納品日が未入力です。納品日は必須項目です。\n未入力のまま保存すると、プロジェクト画面に警告が出ます。\nこのまま保存しますか？');
 }
 
-function projectInfoRequestRecipient(project) {
-  const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
-  const createdBy = project.createdByMemberId ? DB.Members.get(project.createdByMemberId) : null;
-  return owner || createdBy || null;
+function findSakumaMember() {
+  return DB.Members.all().find(member => /佐久間|sakuma/i.test(member.name || '')) || null;
 }
 
-function buildProjectInfoRequestMessage(project, recipient, withMention = false) {
+function uniqueMembers(members) {
+  const seen = new Set();
+  return members.filter(member => {
+    if (!member || seen.has(member.id)) return false;
+    seen.add(member.id);
+    return true;
+  });
+}
+
+function projectInfoRequestRecipients(project) {
+  const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
+  const createdBy = project.createdByMemberId ? DB.Members.get(project.createdByMemberId) : null;
+  const sakuma = findSakumaMember();
+  return uniqueMembers([owner || createdBy, sakuma]);
+}
+
+function buildProjectInfoRequestMessage(project, recipients, withMention = false) {
   const missing = projectMissingInfo(project);
-  const url = getMemberProjectEditUrl(recipient?.id || '', project.id);
+  const recipientList = Array.isArray(recipients) ? recipients : [recipients].filter(Boolean);
+  const primaryRecipient = recipientList[0] || null;
+  const url = getMemberProjectEditUrl(primaryRecipient?.id || '', project.id);
   const projectName = `${project.clientName} / ${project.name}`;
-  const mention = withMention && recipient?.chatworkAccountId
-    ? `[To:${recipient.chatworkAccountId}] ${recipient.name}さん\n`
+  const mention = withMention
+    ? recipientList
+        .filter(member => member.chatworkAccountId)
+        .map(member => `[To:${member.chatworkAccountId}] ${member.name}さん`)
+        .join('\n')
     : '';
   return [
-    mention + '[info][title]プロジェクト情報の入力をお願いします[/title]',
+    `${mention ? `${mention}\n` : ''}[info][title]プロジェクト情報の入力をお願いします[/title]`,
     `${projectName} に不足している情報があります。`,
     '',
     `不足情報：${missing.map(item => item.label).join('、')}`,
@@ -3728,8 +3764,8 @@ function buildProjectInfoRequestMessage(project, recipient, withMention = false)
 async function copyProjectInfoRequest(projectId) {
   const project = DB.Projects.get(projectId);
   if (!project) return;
-  const recipient = projectInfoRequestRecipient(project);
-  const message = buildProjectInfoRequestMessage(project, recipient, false);
+  const recipients = projectInfoRequestRecipients(project);
+  const message = buildProjectInfoRequestMessage(project, recipients, true);
 
   try {
     await navigator.clipboard.writeText(message);
@@ -3742,17 +3778,18 @@ async function copyProjectInfoRequest(projectId) {
 async function sendProjectInfoRequest(projectId) {
   const project = DB.Projects.get(projectId);
   if (!project) return;
-  const recipient = projectInfoRequestRecipient(project);
-  if (!recipient) {
+  const recipients = projectInfoRequestRecipients(project);
+  if (!recipients.length) {
     showToast('登録者と窓口担当が未設定です。先にどちらかを選んでください', 'error');
     return;
   }
-  if (!recipient.chatworkAccountId) {
-    showToast(`${recipient.name}さんのChatworkアカウントIDが未設定です。設定 > メンバーから登録してください`, 'error');
+  const missingChatworkMembers = recipients.filter(member => !member.chatworkAccountId);
+  if (missingChatworkMembers.length) {
+    showToast(`${missingChatworkMembers.map(member => member.name).join('、')}さんのChatworkアカウントIDが未設定です。設定 > メンバーから登録してください`, 'error');
     return;
   }
 
-  const body = buildProjectInfoRequestMessage(project, recipient, true);
+  const body = buildProjectInfoRequestMessage(project, recipients, true);
   let importKey = getSavedChatworkImportKey();
   try {
     let res = await fetch(apiUrl('/api/chatwork/reply'), {
@@ -3782,7 +3819,7 @@ async function sendProjectInfoRequest(projectId) {
     }
 
     if (!res.ok) throw new Error(data.error || 'Chatwork送信に失敗しました');
-    showToast(`${recipient.name}さん宛にChatworkへ送信しました`, 'success');
+    showToast(`${recipients.map(member => member.name).join('、')}さん宛にChatworkへ送信しました`, 'success');
   } catch (error) {
     showToast(error.message || 'Chatwork送信に失敗しました', 'error');
   }
