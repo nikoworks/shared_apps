@@ -393,6 +393,9 @@ const Tasks = {
   update(id, patch) {
     save(KEYS.TASKS, this.all().map(t => t.id === id ? { ...t, ...patch } : t));
   },
+  replaceAll(list) {
+    save(KEYS.TASKS, Array.isArray(list) ? list : []);
+  },
   remove(id) {
     save(KEYS.TASKS, this.all().filter(t => t.id !== id));
   },

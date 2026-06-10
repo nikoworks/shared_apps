@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'ライト可読性改善版 2026-06-10-07';
+const APP_BUILD_LABEL = '保存安定版 2026-06-10-08';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 
@@ -760,15 +760,18 @@ function morningTaskRow(task) {
 }
 
 async function markTaskComplete(taskId) {
+  const before = taskSnapshot();
   DB.Tasks.setCompletion(taskId, true, '');
   const ok = await DB.syncCloudStore?.();
+  if (ok === false) restoreTaskSnapshot(before);
   renderMorningCheck();
-  showToast(ok === false ? '保存に失敗しました。最新に更新してから再度チェックしてください' : '完了としてマークしました', ok === false ? 'error' : 'success');
+  showToast(ok === false ? '保存できなかったため、チェックを元に戻しました。最新に更新してから再度実行してください' : '完了としてマークしました', ok === false ? 'error' : 'success');
 }
 
 async function markTaskFail(taskId) {
   const task = DB.Tasks.get(taskId);
   if (!task) return;
+  const before = taskSnapshot();
   // トグル動作：既に失敗ならリセット
   if (task.completed === false) {
     DB.Tasks.setCompletion(taskId, null, '');
@@ -777,7 +780,10 @@ async function markTaskFail(taskId) {
     if (task.date < DB.today()) DB.Tasks.carryOverTask(taskId);
   }
   const ok = await DB.syncCloudStore?.();
-  if (ok === false) showToast('保存に失敗しました。最新に更新してから再度チェックしてください', 'error');
+  if (ok === false) {
+    restoreTaskSnapshot(before);
+    showToast('保存できなかったため、チェックを元に戻しました。最新に更新してから再度実行してください', 'error');
+  }
   renderMorningCheck();
 }
 
@@ -848,6 +854,16 @@ async function refreshTaskData(options = {}) {
   }
   renderTodayTasks();
   updateMorningBadge();
+}
+
+function taskSnapshot() {
+  return DB.Tasks.all().map(task => ({ ...task }));
+}
+
+function restoreTaskSnapshot(snapshot) {
+  if (DB.Tasks.replaceAll) {
+    DB.Tasks.replaceAll(snapshot);
+  }
 }
 
 async function toggleCompletedVisibility() {
@@ -1031,12 +1047,17 @@ function taskProjectDisplayHTML(task) {
 async function toggleTodayTaskComplete(taskId) {
   const task = DB.Tasks.get(taskId);
   if (!task) return;
+  const before = taskSnapshot();
   const nextCompleted = task.completed === true ? null : true;
   DB.Tasks.setCompletion(taskId, nextCompleted, '');
-  if (nextCompleted === true) _recentlyCompletedTaskIds.add(taskId);
-  else _recentlyCompletedTaskIds.delete(taskId);
   const ok = await DB.syncCloudStore?.();
-  if (ok === false) showToast('保存に失敗しました。最新に更新してから再度チェックしてください', 'error');
+  if (ok === false) {
+    restoreTaskSnapshot(before);
+    showToast('保存できなかったため、チェックを元に戻しました。最新に更新してから再度実行してください', 'error');
+  } else {
+    if (nextCompleted === true) _recentlyCompletedTaskIds.add(taskId);
+    else _recentlyCompletedTaskIds.delete(taskId);
+  }
   renderTodayTasks();
   updateMorningBadge();
 }
@@ -3292,8 +3313,13 @@ function projectTaskListRow(task) {
 async function toggleProjectTaskComplete(taskId) {
   const task = DB.Tasks.get(taskId);
   if (!task) return;
+  const before = taskSnapshot();
   DB.Tasks.setCompletion(taskId, task.completed === true ? null : true, '');
-  await DB.syncCloudStore?.();
+  const ok = await DB.syncCloudStore?.();
+  if (ok === false) {
+    restoreTaskSnapshot(before);
+    showToast('保存できなかったため、チェックを元に戻しました。最新に更新してから再度実行してください', 'error');
+  }
   const refreshed = DB.Tasks.get(taskId);
   if (refreshed?.projectId) openProjectTasksModal(refreshed.projectId);
   updateMorningBadge();
