@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'プロジェクト作成補助版 2026-06-11-03';
+const APP_BUILD_LABEL = '案件流入元追加版 2026-06-12-01';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 
@@ -1533,6 +1533,14 @@ function buildTaskProjectCreatePanel() {
         </select>
       </div>
       <div class="form-group">
+        <label class="form-label">案件流入元</label>
+        <select class="form-select" id="qpj-lead-source">
+          ${leadSourceOptionsHTML()}
+        </select>
+        <input class="form-input" id="qpj-lead-source-detail" style="margin-top:8px"
+               placeholder="例：LPの資料請求フォーム / メディアレーダー資料DL後 / 〇〇社から紹介">
+      </div>
+      <div class="form-group">
         <label class="form-label">プロジェクト種別</label>
         <select class="form-select" id="qpj-type" onchange="toggleTaskProjectCreateFields()">
           <option value="standard" ${draft.projectType === 'standard' ? 'selected' : ''}>通常プロジェクト</option>
@@ -1643,6 +1651,8 @@ async function createProjectFromTaskInline() {
     projectType,
     recurringSeries,
     dealCategory: document.getElementById('qpj-deal-category')?.value || 'existing',
+    leadSource: document.getElementById('qpj-lead-source')?.value || '',
+    leadSourceDetail: document.getElementById('qpj-lead-source-detail')?.value?.trim() || '',
     startDate: _taskFormData.date || DB.today(),
     createdByMemberId: ownerMemberId,
     ownerMemberId,
@@ -3285,6 +3295,40 @@ let _projectView = 'active'; // 'active' | 'completed' | 'archived'
 let _projectOwnerFilter = '';
 let _projectDealFilter = '';
 let _projectClientFilter = '';
+let _projectLeadSourceFilter = '';
+
+const LEAD_SOURCE_OPTIONS = [
+  { value: 'in_house', label: '自社開発' },
+  { value: 'lp_inquiry', label: 'LPからの問い合わせ' },
+  { value: 'website_inquiry', label: '自社HPからの問い合わせ' },
+  { value: 'client_referral', label: '既存クライアントからの紹介' },
+  { value: 'agency', label: '代理店からの案件' },
+  { value: 'media_radar', label: 'メディアレーダー' },
+  { value: 'repeat_client', label: '既存クライアントからの追加依頼' },
+  { value: 'direct_sales', label: '営業・直接提案' },
+  { value: 'other', label: 'その他' },
+];
+
+function leadSourceLabel(value) {
+  return LEAD_SOURCE_OPTIONS.find(option => option.value === value)?.label || '未設定';
+}
+
+function leadSourceOptionsHTML(current = '') {
+  return [
+    `<option value="" ${!current ? 'selected' : ''}>未設定</option>`,
+    ...LEAD_SOURCE_OPTIONS.map(option =>
+      `<option value="${option.value}" ${current === option.value ? 'selected' : ''}>${option.label}</option>`),
+  ].join('');
+}
+
+function leadSourceFilterOptionsHTML(current = '') {
+  return [
+    `<option value="" ${!current ? 'selected' : ''}>全流入元</option>`,
+    `<option value="__none__" ${current === '__none__' ? 'selected' : ''}>流入元未設定</option>`,
+    ...LEAD_SOURCE_OPTIONS.map(option =>
+      `<option value="${option.value}" ${current === option.value ? 'selected' : ''}>${option.label}</option>`),
+  ].join('');
+}
 
 function renderProjects() {
   const main     = document.getElementById('main-content');
@@ -3301,6 +3345,8 @@ function renderProjects() {
     if (_projectOwnerFilter === '__none__' && project.ownerMemberId) return false;
     if (_projectOwnerFilter && _projectOwnerFilter !== '__none__' && project.ownerMemberId !== _projectOwnerFilter) return false;
     if (_projectDealFilter && (project.dealCategory || 'existing') !== _projectDealFilter) return false;
+    if (_projectLeadSourceFilter === '__none__' && project.leadSource) return false;
+    if (_projectLeadSourceFilter && _projectLeadSourceFilter !== '__none__' && project.leadSource !== _projectLeadSourceFilter) return false;
     if (_projectClientFilter && project.clientName !== _projectClientFilter) return false;
     return true;
   });
@@ -3353,6 +3399,9 @@ function renderProjects() {
             <option value="" ${!_projectDealFilter ? 'selected' : ''}>全案件区分</option>
             <option value="existing" ${_projectDealFilter === 'existing' ? 'selected' : ''}>既存クライアント</option>
             <option value="proposal" ${_projectDealFilter === 'proposal' ? 'selected' : ''}>提案ベース</option>
+          </select>
+          <select class="form-select" style="width:205px" onchange="_projectLeadSourceFilter=this.value;renderProjects()">
+            ${leadSourceFilterOptionsHTML(_projectLeadSourceFilter)}
           </select>
         </div>
         <button class="btn btn-primary" id="add-project-btn" onclick="openProjectModal(null)">
@@ -3448,6 +3497,10 @@ function projectCard(project) {
             ${project.projectType === 'recurring' && project.recurringSeries ? `<span class="project-meta-item"><strong>定期案件</strong>${escHtml(project.recurringSeries)}</span>` : ''}
             <span class="project-meta-item ${createdBy ? '' : 'missing'}"><strong>登録者</strong>${createdBy ? escHtml(createdBy.name) : '未設定'}</span>
             <span class="project-meta-item ${owner ? '' : 'missing'}"><strong>窓口</strong>${owner ? escHtml(owner.name) : '未設定'}</span>
+            <span class="project-meta-item ${project.leadSource ? '' : 'missing'}">
+              <strong>流入元</strong>${escHtml(leadSourceLabel(project.leadSource))}
+              ${project.leadSourceDetail ? ` / ${escHtml(project.leadSourceDetail)}` : ''}
+            </span>
             ${effectiveStart ? `<span class="project-meta-item"><strong>${project.startDate ? '開始日' : '開始目安'}</strong>${DB.fmtDate(effectiveStart)}</span>` : ''}
             ${project.detailsDueAt ? `<span class="project-meta-item"><strong>詳細登録期限</strong>${DB.fmtDate(project.detailsDueAt)}</span>` : ''}
           </div>
@@ -3494,6 +3547,7 @@ function projectMissingInfo(project) {
   if (!project.ownerMemberId) missing.push({ key: 'ownerMemberId', label: '窓口担当' });
   if (!project.createdByMemberId && !project.ownerMemberId) missing.push({ key: 'createdByMemberId', label: '登録者' });
   if (!project.deliveryDate) missing.push({ key: 'deliveryDate', label: '納品日' });
+  if (!project.leadSource) missing.push({ key: 'leadSource', label: '案件流入元' });
   if (project.projectType === 'recurring' && !project.recurringSeries) {
     missing.push({ key: 'recurringSeries', label: '定期案件名' });
   }
@@ -3698,6 +3752,7 @@ function openProjectModal(editId) {
   const type = project?.projectType === 'recurring' ? 'recurring' : 'standard';
   const status = project?.projectStatus === 'completed' ? 'active' : (project?.projectStatus || 'active');
   const dealCategory = project?.dealCategory || 'existing';
+  const leadSource = project?.leadSource || '';
   const clientName = project?.clientName || '';
   const clientOptions = clientNameSelectOptions(clientName);
   const clientSelectValue = clientName && isSuspiciousClientName(clientName)
@@ -3735,6 +3790,16 @@ function openProjectModal(editId) {
         <option value="existing" ${dealCategory === 'existing' ? 'selected' : ''}>既存クライアント</option>
         <option value="proposal" ${dealCategory === 'proposal' ? 'selected' : ''}>提案ベース</option>
       </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">案件流入元</label>
+      <select class="form-select" id="pj-lead-source">
+        ${leadSourceOptionsHTML(leadSource)}
+      </select>
+      <input class="form-input" id="pj-lead-source-detail" style="margin-top:8px"
+             placeholder="例：LPの資料請求フォーム / メディアレーダー資料DL後 / 〇〇社から紹介"
+             value="${escHtml(project?.leadSourceDetail || '')}">
+      <div class="form-help">案件がどこから来たかを残します。後から流入チャネル別の傾向確認に使います。</div>
     </div>
     <div class="form-group">
       <label class="form-label">プロジェクト種別</label>
@@ -3917,6 +3982,8 @@ function saveProjectNew() {
     projectType,
     recurringSeries,
     dealCategory:    document.getElementById('pj-deal-category')?.value || 'existing',
+    leadSource:      document.getElementById('pj-lead-source')?.value || '',
+    leadSourceDetail: document.getElementById('pj-lead-source-detail')?.value?.trim() || '',
     startDate:       document.getElementById('pj-start')?.value || '',
     createdByMemberId,
     ownerMemberId:   ownerMemberId || getDefaultOwnerMemberId(),
@@ -3955,6 +4022,8 @@ function saveProjectEdit(projectId) {
     projectType,
     recurringSeries,
     dealCategory:    document.getElementById('pj-deal-category')?.value || 'existing',
+    leadSource:      document.getElementById('pj-lead-source')?.value || '',
+    leadSourceDetail: document.getElementById('pj-lead-source-detail')?.value?.trim() || '',
     startDate:       document.getElementById('pj-start')?.value || '',
     createdByMemberId,
     ownerMemberId,

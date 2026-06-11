@@ -96,6 +96,8 @@ create table if not exists public.taskboard_data (
 | `ownerMemberId` | 窓口担当メンバーID |
 | `createdByMemberId` | 登録者メンバーID |
 | `dealCategory` | 案件区分。既存クライアント / 提案系など |
+| `leadSource` | 案件流入元。問い合わせ・紹介・代理店・媒体などのチャネル |
+| `leadSourceDetail` | 案件流入元の詳細。フォーム名、紹介元、媒体名、代理店名など |
 | `startDate` | 開始日。未設定の場合はタスク日付から補う運用 |
 | `isProvisional` | 仮プロジェクトかどうか |
 | `detailsDueAt` | 不足情報の確認期限 |
@@ -233,6 +235,10 @@ Chatworkから来たタスクのプロジェクト名が既存プロジェクト
 |---|---|---|
 | 未紐付けタスク | `projectId` が空、存在しない、または `needsProjectReview: true` | 正式プロジェクトへ紐付け |
 | 仮プロジェクト | `isProvisional: true`、`projectType: provisional`、または名称に `仮プロジェクト` を含む | 正式プロジェクトへ統合、またはアーカイブ |
+| クライアント表記ゆれ | `projects.clientName` に複数の表記が存在 | 統合先クライアント名を選び、対象プロジェクトの `clientName` を一括置換 |
 | 繰り越し不整合 | `carriedFromTaskId` / `carriedOverToTaskId` の参照先がない、または完了状態が食い違う | リンク解除、繰り越し先も完了、タスク編集 |
 | フェーズ不整合 | `phaseId` があるが、対象プロジェクト内にそのフェーズがない | フェーズ解除、またはタスク編集 |
 | 不足情報プロジェクト | 登録者、窓口、納品日、定期案件名などが不足 | プロジェクト編集で補完 |
+
+クライアントは独立したテーブルではなく、各プロジェクトの `clientName` 文字列として保存しています。
+そのため、クライアント整理は「クライアント行を削除する」のではなく、その名前を使っているプロジェクトの `clientName` を正式名称へ置き換える処理です。

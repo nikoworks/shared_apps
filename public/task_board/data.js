@@ -230,6 +230,8 @@ function seedDemoData() {
       return d.toISOString().slice(0, 10);
     })(),
     budget: '480000',
+    leadSource: 'website_inquiry',
+    leadSourceDetail: '自社HPの問い合わせフォーム',
     templateId: 'tpl_pamphlet',
   });
   // フェーズを進行中状態に更新
@@ -263,6 +265,8 @@ function seedDemoData() {
       return d.toISOString().slice(0, 10);
     })(),
     budget: '120000',
+    leadSource: 'repeat_client',
+    leadSourceDetail: '既存クライアントからの追加依頼',
     templateId: 'tpl_website_upd',
   });
   if (p2.phases.length >= 3) {
@@ -323,6 +327,7 @@ const Projects = {
     projectType = 'standard', recurringSeries = '', ownerMemberId = '',
     createdByMemberId = '',
     dealCategory = 'existing', startDate = '',
+    leadSource = '', leadSourceDetail = '',
     isProvisional = false, detailsDueAt = '', projectStatus = 'active', note = '',
   }) {
     const list = this.all();
@@ -330,6 +335,7 @@ const Projects = {
     const project = {
       id: genId(), clientName, name, deliveryDate, budget,
       projectType, recurringSeries, ownerMemberId, createdByMemberId, dealCategory, startDate,
+      leadSource, leadSourceDetail,
       isProvisional, detailsDueAt,
       projectStatus, note,
       archived: false, createdAt: today(), phases,
