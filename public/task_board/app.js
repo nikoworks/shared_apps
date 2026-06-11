@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '未紐付け重複集約版 2026-06-12-02';
+const APP_BUILD_LABEL = '未紐付け日跨ぎ集約版 2026-06-12-03';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 
@@ -4341,11 +4341,17 @@ function normalizeCleanupTaskValue(value) {
 function cleanupTaskDuplicateKey(task) {
   return [
     task.memberId || '',
-    task.date || '',
     normalizeCleanupTaskValue(task.content),
     normalizeCleanupTaskValue(task.sourceProjectName || task.projectId || ''),
     Number(task.estimatedHours) || 0,
   ].join('||');
+}
+
+function cleanupTaskDateSummary(tasks) {
+  const dates = [...new Set(tasks.map(task => task.date).filter(Boolean))].sort();
+  if (!dates.length) return '日付未設定';
+  if (dates.length === 1) return DB.fmtDate(dates[0]);
+  return `${DB.fmtDate(dates[0])}〜${DB.fmtDate(dates[dates.length - 1])}`;
 }
 
 function groupCleanupMissingProjectTasks(tasks) {
@@ -4367,6 +4373,7 @@ function groupCleanupMissingProjectTasks(tasks) {
         primaryTask: sortedTasks[0],
         duplicateCount: sortedTasks.length,
         taskIds: sortedTasks.map(task => task.id),
+        dateSummary: cleanupTaskDateSummary(sortedTasks),
       };
     })
     .sort((a, b) => {
@@ -4443,6 +4450,7 @@ function cleanupTaskRow(taskGroup) {
   const task = taskGroup.primaryTask || taskGroup;
   const taskIds = taskGroup.taskIds || [task.id];
   const duplicateCount = taskGroup.duplicateCount || 1;
+  const dateSummary = taskGroup.dateSummary || (task.date ? DB.fmtDate(task.date) : '日付未設定');
   const member = DB.Members.get(task.memberId);
   const currentProject = DB.Projects.get(task.projectId);
   const projectHint = task.sourceProjectName
@@ -4457,7 +4465,7 @@ function cleanupTaskRow(taskGroup) {
           ${duplicateCount > 1 ? `<span class="cleanup-pill" style="margin-left:8px">重複 ${duplicateCount}件</span>` : ''}
         </div>
         <div class="cleanup-meta">
-          <span>${escHtml(task.date ? DB.fmtDate(task.date) : '日付未設定')}</span>
+          <span>${escHtml(dateSummary)}</span>
           <span>担当：${member ? escHtml(member.name) : '未設定'}</span>
           <span>${escHtml(projectHint)}</span>
           <span>${Number(task.estimatedHours) || 0}h</span>
