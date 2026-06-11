@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '案件流入元追加版 2026-06-12-01';
+const APP_BUILD_LABEL = '未紐付け重複集約版 2026-06-12-02';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 
@@ -4208,6 +4208,10 @@ function renderDataCleanup() {
     .map(m => `<option value="${m.id}" ${_cleanupFilter.memberId === m.id ? 'selected' : ''}>${escHtml(m.name)}</option>`)
     .join('');
   const memberName = _cleanupFilter.memberId ? (DB.Members.get(_cleanupFilter.memberId)?.name || '選択中') : '全員';
+  const missingProjectTaskCount = issues.missingProjectTasks.reduce((sum, group) => sum + (group.duplicateCount || 1), 0);
+  const missingProjectTaskSub = missingProjectTaskCount === issues.missingProjectTasks.length
+    ? `${escHtml(memberName)}の確認待ち`
+    : `${escHtml(memberName)}の確認待ち / 実タスク${missingProjectTaskCount}件`;
 
   main.innerHTML = `
     <div class="page-header">
@@ -4241,7 +4245,7 @@ function renderDataCleanup() {
       </div>
 
       <div class="cleanup-grid">
-        ${cleanupSummaryCard('未紐付けタスク', issues.missingProjectTasks.length, `${escHtml(memberName)}の確認待ち`)}
+        ${cleanupSummaryCard('未紐付けタスク', issues.missingProjectTasks.length, missingProjectTaskSub)}
         ${cleanupSummaryCard('仮プロジェクト', issues.provisionalProjects.length, '古い取り込み仕様の名残')}
         ${cleanupSummaryCard('クライアント名', issues.clientStats.length, '表記ゆれ・重複の整理')}
         ${cleanupSummaryCard('繰り越し不整合', issues.carryoverIssues.length, '完了・持ち越しリンクの確認')}
@@ -4277,9 +4281,9 @@ function analyzeDataIssues() {
     .filter(p => isCleanupProvisionalProject(p))
     .sort((a, b) => cleanupProjectName(a).localeCompare(cleanupProjectName(b), 'ja'));
 
-  const missingProjectTasks = tasks
+  const missingProjectTasks = groupCleanupMissingProjectTasks(tasks
     .filter(t => !t.projectId || !projectIds.has(t.projectId) || t.needsProjectReview)
-    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))));
 
   const carryoverIssues = [];
   tasks.forEach(task => {
@@ -4330,6 +4334,48 @@ function isCleanupProvisionalProject(project) {
   );
 }
 
+function normalizeCleanupTaskValue(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+function cleanupTaskDuplicateKey(task) {
+  return [
+    task.memberId || '',
+    task.date || '',
+    normalizeCleanupTaskValue(task.content),
+    normalizeCleanupTaskValue(task.sourceProjectName || task.projectId || ''),
+    Number(task.estimatedHours) || 0,
+  ].join('||');
+}
+
+function groupCleanupMissingProjectTasks(tasks) {
+  const groups = new Map();
+  tasks.forEach(task => {
+    const key = cleanupTaskDuplicateKey(task);
+    const group = groups.get(key) || { key, tasks: [] };
+    group.tasks.push(task);
+    groups.set(key, group);
+  });
+  return Array.from(groups.values())
+    .map(group => {
+      const sortedTasks = group.tasks
+        .slice()
+        .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+      return {
+        ...group,
+        tasks: sortedTasks,
+        primaryTask: sortedTasks[0],
+        duplicateCount: sortedTasks.length,
+        taskIds: sortedTasks.map(task => task.id),
+      };
+    })
+    .sort((a, b) => {
+      const dateCompare = String(b.primaryTask?.date || '').localeCompare(String(a.primaryTask?.date || ''));
+      if (dateCompare) return dateCompare;
+      return String(a.primaryTask?.content || '').localeCompare(String(b.primaryTask?.content || ''), 'ja');
+    });
+}
+
 function cleanupProjectName(project) {
   if (!project) return 'プロジェクト未選択';
   return `${project.clientName || 'クライアント未設定'} / ${project.name || '名称未設定'}`;
@@ -4378,29 +4424,38 @@ function cleanupClientOptionsHTML(currentName = '') {
 }
 
 function cleanupTaskSection(tasks) {
+  const actualTaskCount = tasks.reduce((sum, group) => sum + (group.duplicateCount || 1), 0);
+  const duplicateCount = actualTaskCount - tasks.length;
   return `
     <section class="cleanup-section card">
       <div class="cleanup-section-head">
         <div>
           <h3>未紐付け・確認待ちタスク</h3>
-          <p>Chatwork取り込みや古い入力で、正式プロジェクトに紐付いていないタスクです。</p>
+          <p>Chatwork取り込みや古い入力で、正式プロジェクトに紐付いていないタスクです。重複候補は1行にまとめています。</p>
         </div>
-        <span class="cleanup-pill">${tasks.length}件</span>
+        <span class="cleanup-pill">${tasks.length}行${duplicateCount ? ` / 重複${duplicateCount}件を集約` : ''}</span>
       </div>
       ${tasks.length ? tasks.map(cleanupTaskRow).join('') : cleanupEmpty('未紐付けタスクはありません')}
     </section>`;
 }
 
-function cleanupTaskRow(task) {
+function cleanupTaskRow(taskGroup) {
+  const task = taskGroup.primaryTask || taskGroup;
+  const taskIds = taskGroup.taskIds || [task.id];
+  const duplicateCount = taskGroup.duplicateCount || 1;
   const member = DB.Members.get(task.memberId);
   const currentProject = DB.Projects.get(task.projectId);
   const projectHint = task.sourceProjectName
     ? `確認名：${task.sourceProjectName}`
     : `現在の紐付け：${cleanupProjectName(currentProject)}`;
+  const selectId = `cleanup-task-project-${task.id}`;
   return `
     <div class="cleanup-row">
       <div class="cleanup-main">
-        <div class="cleanup-title">${escHtml(task.content || '未入力タスク')}</div>
+        <div class="cleanup-title">
+          ${escHtml(task.content || '未入力タスク')}
+          ${duplicateCount > 1 ? `<span class="cleanup-pill" style="margin-left:8px">重複 ${duplicateCount}件</span>` : ''}
+        </div>
         <div class="cleanup-meta">
           <span>${escHtml(task.date ? DB.fmtDate(task.date) : '日付未設定')}</span>
           <span>担当：${member ? escHtml(member.name) : '未設定'}</span>
@@ -4409,11 +4464,13 @@ function cleanupTaskRow(task) {
         </div>
       </div>
       <div class="cleanup-actions">
-        <select id="cleanup-task-project-${task.id}" onchange="assignCleanupTaskProject('${task.id}', this.value)">
+        <select id="${selectId}" onchange="assignCleanupTaskProjectGroup('${taskIds.join(',')}', this.value, '${selectId}')">
           <option value="">正式プロジェクトを選択...</option>
           ${cleanupProjectOptionsHTML(task.projectId || '')}
         </select>
-        <button class="btn btn-secondary btn-sm" onclick="assignCleanupTaskProject('${task.id}')">紐付け</button>
+        <button class="btn btn-secondary btn-sm" onclick="assignCleanupTaskProjectGroup('${taskIds.join(',')}', '', '${selectId}')">
+          ${duplicateCount > 1 ? 'まとめて紐付け' : '紐付け'}
+        </button>
         <button class="btn btn-ghost btn-sm" onclick="openTaskModal('${task.id}')">編集</button>
       </div>
     </div>`;
@@ -4601,6 +4658,31 @@ async function assignCleanupTaskProject(taskId, selectedProjectId = '') {
     needsProjectReview: false,
   });
   await saveCleanupAndRefresh('タスクを正式プロジェクトへ紐付けました');
+}
+
+async function assignCleanupTaskProjectGroup(taskIdsText, selectedProjectId = '', selectId = '') {
+  const taskIds = String(taskIdsText || '').split(',').map(id => id.trim()).filter(Boolean);
+  const projectId = selectedProjectId || (selectId ? document.getElementById(selectId)?.value : '');
+  if (!taskIds.length) {
+    showToast('紐付けるタスクが見つかりません', 'error');
+    return;
+  }
+  if (!projectId) {
+    showToast('紐付ける正式プロジェクトを選んでください', 'error');
+    return;
+  }
+  taskIds.forEach(taskId => {
+    DB.Tasks.update(taskId, {
+      projectId,
+      phaseId: null,
+      sourceProjectName: '',
+      needsProjectReview: false,
+    });
+  });
+  const message = taskIds.length > 1
+    ? `重複タスク${taskIds.length}件を正式プロジェクトへ紐付けました`
+    : 'タスクを正式プロジェクトへ紐付けました';
+  await saveCleanupAndRefresh(message);
 }
 
 async function mergeCleanupProject(projectId) {
