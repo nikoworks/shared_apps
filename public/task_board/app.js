@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '5点整理版 2026-06-11-02';
+const APP_BUILD_LABEL = 'プロジェクト作成補助版 2026-06-11-03';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 
@@ -811,6 +811,7 @@ function updateMorningBadge() {
 let _taskFilter = { memberId: '', projectId: '', date: '', startDate: '', endDate: '', showCompleted: false };
 const _recentlyCompletedTaskIds = new Set();
 let _taskFormData = { memberId: '', projectId: '', phaseId: '', content: '', estimatedHours: 1, note: '', date: '' };
+let _openTaskProjectCreateOnNextModal = false;
 let _bulkTaskData = { memberId: '', ownerMemberId: '', date: '', text: '', preview: null };
 const CHATWORK_ROOM_KEY = 'tb_chatwork_room_id';
 const CHATWORK_IMPORT_KEY = 'tb_chatwork_import_key';
@@ -1076,7 +1077,7 @@ function todayTaskRow(task) {
         </div>
       </div>
       <div style="display:flex;gap:5px;align-items:center;flex-shrink:0">
-        <button class="btn btn-ghost btn-sm" onclick="openTaskModal('${task.id}')">編集</button>
+        <button class="btn btn-ghost btn-sm" onclick="openCleanupTaskEdit('${task.id}')">編集</button>
         <button class="btn btn-danger btn-sm" onclick="deleteTask('${task.id}')">削除</button>
       </div>
     </div>`;
@@ -1280,6 +1281,11 @@ async function copyAskReplyMessage(askId) {
 }
 
 /* ─ タスクモーダル ─ */
+function openCleanupTaskEdit(taskId) {
+  _openTaskProjectCreateOnNextModal = true;
+  openTaskModal(taskId);
+}
+
 function openTaskModal(editId) {
   const members  = DB.Members.all();
   const projects = DB.Projects.active();
@@ -1415,6 +1421,11 @@ function openTaskModal(editId) {
       </button>
     </div>
   `, editId ? 'タスクを編集' : 'タスクを追加');
+
+  if (_openTaskProjectCreateOnNextModal) {
+    _openTaskProjectCreateOnNextModal = false;
+    toggleTaskProjectCreateBox(true);
+  }
 }
 
 function refreshModalPhases() {
@@ -1456,32 +1467,64 @@ function buildTaskProjectOptions() {
     }).join('');
 }
 
+function inferProjectDraftFromTaskForm() {
+  const sourceName = String(_taskFormData.sourceProjectName || '').trim();
+  const content = String(_taskFormData.content || '').trim();
+  const parsed = sourceName ? parseProjectName(sourceName) : { clientName: '', name: '', recurringSeries: '' };
+  const parsedClient = String(parsed.clientName || '').trim();
+  const clientName = parsedClient && parsedClient !== '未分類' && parsedClient !== '未設定' && !isSuspiciousClientName(parsedClient)
+    ? parsedClient
+    : '';
+  const parsedName = String(parsed.name || '').trim();
+  const projectName = parsedName && parsedName !== '仮プロジェクト'
+    ? parsedName
+    : (sourceName && !isSuspiciousClientName(sourceName) ? sourceName : content);
+
+  return {
+    sourceName,
+    clientName,
+    projectName,
+    projectType: parsed.recurringSeries ? 'recurring' : 'standard',
+    recurringSeries: parsed.recurringSeries || '',
+    ownerMemberId: _personalMemberId || _taskFormData.memberId || getDefaultOwnerMemberId(),
+  };
+}
+
 function buildTaskProjectCreatePanel() {
+  const draft = inferProjectDraftFromTaskForm();
   const members = DB.Members.all();
-  const ownerDefault = _personalMemberId || _taskFormData.memberId || getDefaultOwnerMemberId();
+  const ownerDefault = draft.ownerMemberId;
   const memberOpts = members.map(member =>
     `<option value="${member.id}" ${ownerDefault === member.id ? 'selected' : ''}>${escHtml(member.name)}</option>`).join('');
-  const clientOptions = clientNameSelectOptions('');
+  const clientOptions = clientNameSelectOptions(draft.clientName);
+  const clientSelectValue = draft.clientName && clientOptions.includes(draft.clientName)
+    ? draft.clientName
+    : (draft.clientName || !clientOptions.length ? '__new__' : '');
   const clientSelectOpts = [
-    clientOptions.length ? '<option value="">既存クライアントを選択...</option>' : '',
-    ...clientOptions.map(name => `<option value="${escHtml(name)}">${escHtml(name)}</option>`),
-    `<option value="__new__" ${clientOptions.length ? '' : 'selected'}>＋ 新規クライアント名を入力</option>`,
+    clientOptions.length ? `<option value="" ${clientSelectValue === '' ? 'selected' : ''}>既存クライアントを選択...</option>` : '',
+    ...clientOptions.map(name => `<option value="${escHtml(name)}" ${clientSelectValue === name ? 'selected' : ''}>${escHtml(name)}</option>`),
+    `<option value="__new__" ${clientSelectValue === '__new__' ? 'selected' : ''}>＋ 新規クライアント名を入力</option>`,
   ].join('');
-  const recurringOptions = recurringSeriesSelectOptions('');
+  const recurringOptions = recurringSeriesSelectOptions(draft.recurringSeries);
+  const recurringSelectValue = draft.recurringSeries && recurringOptions.includes(draft.recurringSeries)
+    ? draft.recurringSeries
+    : (draft.recurringSeries || !recurringOptions.length ? '__new__' : '');
   const recurringSelectOpts = [
-    recurringOptions.length ? '<option value="">既存の定期案件を選択...</option>' : '',
-    ...recurringOptions.map(name => `<option value="${escHtml(name)}">${escHtml(name)}</option>`),
-    `<option value="__new__" ${recurringOptions.length ? '' : 'selected'}>＋ 新規定期案件名を入力</option>`,
+    recurringOptions.length ? `<option value="" ${recurringSelectValue === '' ? 'selected' : ''}>既存の定期案件を選択...</option>` : '',
+    ...recurringOptions.map(name => `<option value="${escHtml(name)}" ${recurringSelectValue === name ? 'selected' : ''}>${escHtml(name)}</option>`),
+    `<option value="__new__" ${recurringSelectValue === '__new__' ? 'selected' : ''}>＋ 新規定期案件名を入力</option>`,
   ].join('');
-  const suggestedName = (_taskFormData.sourceProjectName || '').trim()
-    || (_taskFormData.content || '').trim();
-  const clientInputDisplay = clientOptions.length ? 'display:none' : '';
-  const recurringInputDisplay = recurringOptions.length ? 'display:none' : '';
+  const clientInputDisplay = clientSelectValue === '__new__' ? '' : 'display:none';
+  const recurringInputDisplay = recurringSelectValue === '__new__' ? '' : 'display:none';
+  const recurringGroupDisplay = draft.projectType === 'recurring' ? '' : 'display:none';
+  const draftHelp = draft.sourceName
+    ? `元プロジェクト名「${escHtml(draft.sourceName)}」から候補を入れています。違う場合はこの画面で直せます。`
+    : 'タスク内容から候補を入れています。違う場合はこの画面で直せます。';
 
   return `
     <div id="task-project-create-box" style="display:none;margin-top:12px;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--bg-glass)">
       <div style="font-weight:800;margin-bottom:10px;color:var(--text-1)">このタスク用のプロジェクトを作成</div>
-      <div class="form-help" style="margin-bottom:12px">作成すると、このタスクのプロジェクト欄に自動で入ります。</div>
+      <div class="form-help" style="margin-bottom:12px">${draftHelp}<br>作成すると、このタスクのプロジェクト欄に自動で入ります。</div>
       <div class="form-group">
         <label class="form-label">案件区分</label>
         <select class="form-select" id="qpj-deal-category">
@@ -1492,17 +1535,18 @@ function buildTaskProjectCreatePanel() {
       <div class="form-group">
         <label class="form-label">プロジェクト種別</label>
         <select class="form-select" id="qpj-type" onchange="toggleTaskProjectCreateFields()">
-          <option value="standard">通常プロジェクト</option>
-          <option value="recurring">定期プロジェクト</option>
+          <option value="standard" ${draft.projectType === 'standard' ? 'selected' : ''}>通常プロジェクト</option>
+          <option value="recurring" ${draft.projectType === 'recurring' ? 'selected' : ''}>定期プロジェクト</option>
         </select>
       </div>
-      <div class="form-group" id="qpj-recurring-group" style="display:none">
+      <div class="form-group" id="qpj-recurring-group" style="${recurringGroupDisplay}">
         <label class="form-label">定期案件名</label>
         <select class="form-select" id="qpj-recurring-select" onchange="toggleTaskProjectCreateFields()">
           ${recurringSelectOpts}
         </select>
         <input class="form-input" id="qpj-recurring" style="margin-top:8px;${recurringInputDisplay}"
-               placeholder="例：明治安田 月号 / プレゼントキャンペーン更新">
+               placeholder="例：明治安田 月号 / プレゼントキャンペーン更新"
+               value="${recurringSelectValue === '__new__' ? escHtml(draft.recurringSeries) : ''}">
         <div class="form-help">定期案件は既存名から選ぶと、表記ゆれを防げます。</div>
       </div>
       <div class="form-group">
@@ -1511,13 +1555,14 @@ function buildTaskProjectCreatePanel() {
           ${clientSelectOpts}
         </select>
         <input class="form-input" id="qpj-client" style="margin-top:8px;${clientInputDisplay}"
-               placeholder="例：〇〇株式会社">
+               placeholder="例：〇〇株式会社"
+               value="${clientSelectValue === '__new__' ? escHtml(draft.clientName) : ''}">
       </div>
       <div class="form-group">
         <label class="form-label">プロジェクト名 *</label>
         <input class="form-input" id="qpj-name"
                placeholder="例：7月号 / LP制作 / 2026年7月切り替え"
-               value="${escHtml(suggestedName)}">
+               value="${escHtml(draft.projectName)}">
       </div>
       <div class="form-group">
         <label class="form-label">窓口担当 *</label>
@@ -2542,6 +2587,16 @@ function parseProjectName(projectName) {
   if (monthly) {
     const clientName = monthly[1].trim();
     const monthName = `${parseInt(monthly[2], 10)}月号`;
+    return {
+      clientName,
+      name: monthName,
+      recurringSeries: `${clientName} 月号`,
+    };
+  }
+  const looseMonthly = normalized.match(/^(.+?)\s*([0-9]{1,2})月$/);
+  if (looseMonthly) {
+    const clientName = looseMonthly[1].trim();
+    const monthName = `${parseInt(looseMonthly[2], 10)}月`;
     return {
       clientName,
       name: monthName,
