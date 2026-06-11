@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '繰り越し日付説明版 2026-06-10-10';
+const APP_BUILD_LABEL = 'タスク内プロジェクト作成版 2026-06-11-01';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 
@@ -1244,12 +1244,14 @@ function openTaskModal(editId) {
       date: getTaskDefaultDate(),
     };
   }
+  if (!_taskFormData.projectKindFilter) {
+    const currentProject = _taskFormData.projectId ? DB.Projects.get(_taskFormData.projectId) : null;
+    _taskFormData.projectKindFilter = currentProject?.projectType === 'recurring' ? 'recurring' : 'all';
+  }
 
   const memberOpts  = members.map(m =>
     `<option value="${m.id}" ${_taskFormData.memberId === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
-  const projectOpts = `<option value="">プロジェクトを選択...</option>` +
-    projects.map(p =>
-      `<option value="${p.id}" ${_taskFormData.projectId === p.id ? 'selected' : ''}>${p.clientName} / ${p.name}</option>`).join('');
+  const projectOpts = buildTaskProjectOptions();
   const curPhases = _taskFormData.projectId ? (DB.Projects.get(_taskFormData.projectId)?.phases || []) : [];
   const phaseOpts = `<option value="">フェーズなし</option>` +
     curPhases.map(ph =>
@@ -1275,14 +1277,22 @@ function openTaskModal(editId) {
     </div>
     <div class="form-group">
       <label class="form-label">プロジェクト</label>
+      <select class="form-select" id="tf-project-kind"
+              style="margin-bottom:8px"
+              onchange="_taskFormData.projectKindFilter=this.value;_taskFormData.projectId='';_taskFormData.phaseId='';refreshTaskProjectOptions()">
+        <option value="all" ${_taskFormData.projectKindFilter === 'all' ? 'selected' : ''}>すべてのプロジェクト</option>
+        <option value="standard" ${_taskFormData.projectKindFilter === 'standard' ? 'selected' : ''}>通常プロジェクトだけ</option>
+        <option value="recurring" ${_taskFormData.projectKindFilter === 'recurring' ? 'selected' : ''}>定期プロジェクトだけ</option>
+      </select>
       <select class="form-select" id="tf-project"
               onchange="_taskFormData.projectId=this.value;_taskFormData.phaseId='';refreshModalPhases()">
         ${projectOpts}
       </select>
-      <div class="form-help">新規プロジェクトは佐久間さん・窓口担当・発起人が作成します。通常は既存プロジェクトを選んでください。</div>
-      <button class="btn btn-ghost" type="button" onclick="quickCreateProjectFromTask()">
-        発起人・窓口として新規作成
+      <div class="form-help">通常は既存プロジェクトを選びます。ない場合だけ、この場で新規作成して紐付けます。</div>
+      <button class="btn btn-ghost" type="button" onclick="toggleTaskProjectCreateBox()">
+        このタスク用にプロジェクトを作成
       </button>
+      ${buildTaskProjectCreatePanel()}
     </div>
     <div class="form-group">
       <label class="form-label">フェーズ</label>
@@ -1360,48 +1370,175 @@ function refreshModalPhases() {
 function refreshTaskProjectOptions() {
   const sel = document.getElementById('tf-project');
   if (!sel) return;
-  const projects = DB.Projects.active();
-  sel.innerHTML = `<option value="">プロジェクトを選択...</option>` +
-    projects.map(p =>
-      `<option value="${p.id}" ${_taskFormData.projectId === p.id ? 'selected' : ''}>${escHtml(p.clientName)} / ${escHtml(p.name)}</option>`).join('');
+  sel.innerHTML = buildTaskProjectOptions();
   sel.value = _taskFormData.projectId || '';
   refreshModalPhases();
 }
 
-async function quickCreateProjectFromTask() {
-  if (!window.confirm('新規プロジェクトを作成します。これは佐久間さん・窓口担当・発起人だけが使う操作です。続けますか？')) {
+function buildTaskProjectOptions() {
+  const kind = _taskFormData.projectKindFilter || 'all';
+  let projects = DB.Projects.active().filter(project => {
+    if (kind === 'recurring') return project.projectType === 'recurring';
+    if (kind === 'standard') return project.projectType !== 'recurring';
+    return true;
+  });
+  const selectedProject = _taskFormData.projectId ? DB.Projects.get(_taskFormData.projectId) : null;
+  if (selectedProject && !projects.some(project => project.id === selectedProject.id)) {
+    projects = [selectedProject, ...projects];
+  }
+  projects = projects.slice().sort((a, b) =>
+    `${a.clientName || ''}${a.name || ''}`.localeCompare(`${b.clientName || ''}${b.name || ''}`, 'ja'));
+  return `<option value="">プロジェクトを選択...</option>` +
+    projects.map(project => {
+      const typeLabel = project.projectType === 'recurring' ? '定期' : '通常';
+      return `<option value="${project.id}" ${_taskFormData.projectId === project.id ? 'selected' : ''}>
+        ${escHtml(project.clientName)} / ${escHtml(project.name)}（${typeLabel}）
+      </option>`;
+    }).join('');
+}
+
+function buildTaskProjectCreatePanel() {
+  const members = DB.Members.all();
+  const ownerDefault = _personalMemberId || _taskFormData.memberId || getDefaultOwnerMemberId();
+  const memberOpts = members.map(member =>
+    `<option value="${member.id}" ${ownerDefault === member.id ? 'selected' : ''}>${escHtml(member.name)}</option>`).join('');
+  const clientOptions = clientNameSelectOptions('');
+  const clientSelectOpts = [
+    clientOptions.length ? '<option value="">既存クライアントを選択...</option>' : '',
+    ...clientOptions.map(name => `<option value="${escHtml(name)}">${escHtml(name)}</option>`),
+    `<option value="__new__" ${clientOptions.length ? '' : 'selected'}>＋ 新規クライアント名を入力</option>`,
+  ].join('');
+  const recurringOptions = recurringSeriesSelectOptions('');
+  const recurringSelectOpts = [
+    recurringOptions.length ? '<option value="">既存の定期案件を選択...</option>' : '',
+    ...recurringOptions.map(name => `<option value="${escHtml(name)}">${escHtml(name)}</option>`),
+    `<option value="__new__" ${recurringOptions.length ? '' : 'selected'}>＋ 新規定期案件名を入力</option>`,
+  ].join('');
+  const suggestedName = (_taskFormData.sourceProjectName || '').trim()
+    || (_taskFormData.content || '').trim();
+  const clientInputDisplay = clientOptions.length ? 'display:none' : '';
+  const recurringInputDisplay = recurringOptions.length ? 'display:none' : '';
+
+  return `
+    <div id="task-project-create-box" style="display:none;margin-top:12px;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--bg-glass)">
+      <div style="font-weight:800;margin-bottom:10px;color:var(--text-1)">このタスク用のプロジェクトを作成</div>
+      <div class="form-help" style="margin-bottom:12px">作成すると、このタスクのプロジェクト欄に自動で入ります。</div>
+      <div class="form-group">
+        <label class="form-label">案件区分</label>
+        <select class="form-select" id="qpj-deal-category">
+          <option value="existing">既存クライアント</option>
+          <option value="proposal">提案ベース</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">プロジェクト種別</label>
+        <select class="form-select" id="qpj-type" onchange="toggleTaskProjectCreateFields()">
+          <option value="standard">通常プロジェクト</option>
+          <option value="recurring">定期プロジェクト</option>
+        </select>
+      </div>
+      <div class="form-group" id="qpj-recurring-group" style="display:none">
+        <label class="form-label">定期案件名</label>
+        <select class="form-select" id="qpj-recurring-select" onchange="toggleTaskProjectCreateFields()">
+          ${recurringSelectOpts}
+        </select>
+        <input class="form-input" id="qpj-recurring" style="margin-top:8px;${recurringInputDisplay}"
+               placeholder="例：明治安田 月号 / プレゼントキャンペーン更新">
+        <div class="form-help">定期案件は既存名から選ぶと、表記ゆれを防げます。</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">クライアント名 *</label>
+        <select class="form-select" id="qpj-client-select" onchange="toggleTaskProjectCreateFields()">
+          ${clientSelectOpts}
+        </select>
+        <input class="form-input" id="qpj-client" style="margin-top:8px;${clientInputDisplay}"
+               placeholder="例：〇〇株式会社">
+      </div>
+      <div class="form-group">
+        <label class="form-label">プロジェクト名 *</label>
+        <input class="form-input" id="qpj-name"
+               placeholder="例：7月号 / LP制作 / 2026年7月切り替え"
+               value="${escHtml(suggestedName)}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">窓口担当 *</label>
+        <select class="form-select" id="qpj-owner">
+          <option value="">選択してください</option>${memberOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">納品日 *</label>
+        <input type="date" class="form-input" id="qpj-delivery">
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
+        <button class="btn btn-ghost" type="button" onclick="toggleTaskProjectCreateBox(false)">閉じる</button>
+        <button class="btn btn-primary" type="button" onclick="createProjectFromTaskInline()">作成して紐付け</button>
+      </div>
+    </div>
+  `;
+}
+
+function toggleTaskProjectCreateBox(force) {
+  const box = document.getElementById('task-project-create-box');
+  if (!box) return;
+  const shouldShow = typeof force === 'boolean' ? force : box.style.display === 'none';
+  box.style.display = shouldShow ? '' : 'none';
+  if (shouldShow) toggleTaskProjectCreateFields();
+}
+
+function toggleTaskProjectCreateFields() {
+  const type = document.getElementById('qpj-type')?.value || 'standard';
+  const recurringGroup = document.getElementById('qpj-recurring-group');
+  if (recurringGroup) recurringGroup.style.display = type === 'recurring' ? '' : 'none';
+
+  const recurringSelect = document.getElementById('qpj-recurring-select');
+  const recurringInput = document.getElementById('qpj-recurring');
+  if (recurringInput) recurringInput.style.display = recurringSelect?.value === '__new__' ? '' : 'none';
+
+  const clientSelect = document.getElementById('qpj-client-select');
+  const clientInput = document.getElementById('qpj-client');
+  if (clientInput) clientInput.style.display = clientSelect?.value === '__new__' ? '' : 'none';
+}
+
+function getTaskProjectCreateClientName() {
+  const selected = document.getElementById('qpj-client-select')?.value || '';
+  if (selected && selected !== '__new__') return selected.trim();
+  return document.getElementById('qpj-client')?.value?.trim() || '';
+}
+
+function getTaskProjectCreateRecurringSeries(projectType) {
+  if (projectType !== 'recurring') return '';
+  const selected = document.getElementById('qpj-recurring-select')?.value || '';
+  if (selected && selected !== '__new__') return selected.trim();
+  return document.getElementById('qpj-recurring')?.value?.trim() || '';
+}
+
+async function createProjectFromTaskInline() {
+  const clientName = getTaskProjectCreateClientName();
+  const projectName = document.getElementById('qpj-name')?.value?.trim() || '';
+  const ownerMemberId = document.getElementById('qpj-owner')?.value || '';
+  const deliveryDate = document.getElementById('qpj-delivery')?.value || '';
+  const projectType = document.getElementById('qpj-type')?.value || 'standard';
+  const recurringSeries = getTaskProjectCreateRecurringSeries(projectType);
+
+  if (!clientName) { showToast('クライアント名を選ぶか、新規入力してください', 'error'); return; }
+  if (!projectName) { showToast('プロジェクト名を入力してください', 'error'); return; }
+  if (!ownerMemberId) { showToast('窓口担当を選んでください', 'error'); return; }
+  if (!deliveryDate) { showToast('納品日を入力してください', 'error'); return; }
+  if (projectType === 'recurring' && !recurringSeries) {
+    showToast('定期プロジェクトは定期案件名を選ぶか、新規入力してください', 'error');
     return;
   }
 
-  const clientName = window.prompt('クライアント名を入力してください');
-  if (!clientName?.trim()) {
-    showToast('クライアント名がないため作成を中止しました', 'error');
-    return;
-  }
-
-  const projectName = window.prompt('プロジェクト名を入力してください', _taskFormData.content || '');
-  if (!projectName?.trim()) {
-    showToast('プロジェクト名がないため作成を中止しました', 'error');
-    return;
-  }
-
-  const deliveryInput = window.prompt('納品日を入力してください（例：2026/06/30）');
-  const deliveryDate = toISODate(deliveryInput);
-  if (!deliveryDate) {
-    showToast('納品日がないため作成を中止しました', 'error');
-    return;
-  }
-
-  const ownerMemberId = _personalMemberId || _taskFormData.memberId || getDefaultOwnerMemberId();
   const project = DB.Projects.add({
-    clientName: clientName.trim(),
-    name: projectName.trim(),
+    clientName,
+    name: projectName,
     deliveryDate,
     budget: '',
     templateId: 'tpl_blank',
-    projectType: 'standard',
-    recurringSeries: '',
-    dealCategory: 'existing',
+    projectType,
+    recurringSeries,
+    dealCategory: document.getElementById('qpj-deal-category')?.value || 'existing',
     startDate: _taskFormData.date || DB.today(),
     createdByMemberId: ownerMemberId,
     ownerMemberId,
@@ -1412,9 +1549,13 @@ async function quickCreateProjectFromTask() {
 
   _taskFormData.projectId = project.id;
   _taskFormData.phaseId = '';
+  _taskFormData.projectKindFilter = projectType === 'recurring' ? 'recurring' : 'standard';
   _taskFormData.needsProjectReview = false;
   _taskFormData.sourceProjectName = '';
+  const kindSel = document.getElementById('tf-project-kind');
+  if (kindSel) kindSel.value = _taskFormData.projectKindFilter;
   refreshTaskProjectOptions();
+  toggleTaskProjectCreateBox(false);
 
   const ok = await DB.syncCloudStore?.();
   if (ok === false) {
