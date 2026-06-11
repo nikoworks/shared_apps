@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'タスク内プロジェクト作成版 2026-06-11-01';
+const APP_BUILD_LABEL = '5点整理版 2026-06-11-02';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 
@@ -964,7 +964,13 @@ function renderTodayTasks() {
               <button class="btn btn-primary btn-sm" onclick="openTaskModal(null)">タスクを追加する</button>
             </div>
           </div>`
-        : Object.entries(byMember).map(([memberId, tasks]) => {
+        : Object.entries(byMember)
+          .sort(([aId], [bId]) => {
+            const aName = DB.Members.get(aId)?.name || '（不明）';
+            const bName = DB.Members.get(bId)?.name || '（不明）';
+            return aName.localeCompare(bName, 'ja');
+          })
+          .map(([memberId, tasks]) => {
             const member = DB.Members.get(memberId);
             const mTotal = tasks.reduce((s, t) => s + (t.estimatedHours || 0), 0);
             return `
@@ -976,7 +982,7 @@ function renderTodayTasks() {
                     <div style="font-size:11px;color:var(--text-2)">${tasks.length}件 / ${mTotal}h</div>
                   </div>
                 </div>
-                ${tasks.map(t => todayTaskRow(t)).join('')}
+                ${renderMemberTaskGroups(tasks)}
               </div>`;
           }).join('')}
     </div>`;
@@ -984,6 +990,11 @@ function renderTodayTasks() {
 
 function sortTasksForWorkday(tasks) {
   return [...tasks].sort((a, b) => {
+    const aProject = taskProjectSortLabel(a);
+    const bProject = taskProjectSortLabel(b);
+    const projectCompare = aProject.localeCompare(bProject, 'ja');
+    if (projectCompare !== 0) return projectCompare;
+
     const aDate = sourceDateForTask(a) || a.date || '9999-99-99';
     const bDate = sourceDateForTask(b) || b.date || '9999-99-99';
     const dateCompare = String(aDate).localeCompare(String(bDate));
@@ -995,8 +1006,43 @@ function sortTasksForWorkday(tasks) {
 
     const aCreated = a.createdAt || '';
     const bCreated = b.createdAt || '';
-    return String(aCreated).localeCompare(String(bCreated));
+    const createdCompare = String(aCreated).localeCompare(String(bCreated));
+    if (createdCompare !== 0) return createdCompare;
+
+    return String(a.content || '').localeCompare(String(b.content || ''), 'ja');
   });
+}
+
+function taskProjectSortLabel(task) {
+  const project = task?.projectId ? DB.Projects.get(task.projectId) : null;
+  if (project) return cleanupProjectName(project);
+  if (task?.sourceProjectName) return `確認待ち / ${task.sourceProjectName}`;
+  return '未選択';
+}
+
+function renderMemberTaskGroups(tasks) {
+  const groups = [];
+  tasks.forEach(task => {
+    const key = taskProjectSortLabel(task);
+    let group = groups.find(item => item.key === key);
+    if (!group) {
+      group = { key, tasks: [] };
+      groups.push(group);
+    }
+    group.tasks.push(task);
+  });
+
+  return groups.map(group => {
+    const hours = group.tasks.reduce((sum, task) => sum + (task.estimatedHours || 0), 0);
+    return `
+      <div class="task-project-group">
+        <div class="task-project-group-head">
+          <span>${escHtml(group.key)}</span>
+          <small>${group.tasks.length}件 / ${hours}h</small>
+        </div>
+        ${group.tasks.map(t => todayTaskRow(t)).join('')}
+      </div>`;
+  }).join('');
 }
 
 function todayTaskRow(task) {
@@ -1007,6 +1053,7 @@ function todayTaskRow(task) {
   const originDate = sourceDateForTask(task);
   const isCarry = Boolean(task.carriedFromTaskId);
   const isDone = task.completed === true;
+  const visibleNote = visibleTaskNote(task);
   return `
     <div class="task-row ${isCarry ? 'task-row-carry' : ''} ${isDone ? 'task-row-done' : ''}" id="task-row-${task.id}">
       <button class="check-btn ${isDone ? 'done' : ''}"
@@ -1016,7 +1063,7 @@ function todayTaskRow(task) {
       <div class="task-accent-bar"></div>
       <div class="flex-1">
         <div class="task-title">${escHtml(task.content)}</div>
-        ${task.note ? `<div class="task-note">備考：${escHtml(task.note)}</div>` : ''}
+        ${visibleNote ? `<div class="task-note">備考：${escHtml(visibleNote)}</div>` : ''}
         <div class="task-meta">
           ${taskDateTagHTML(originDate, { carried: isCarry })}
           <span>担当：${escHtml(ownerLabel)}</span>
@@ -1037,11 +1084,23 @@ function todayTaskRow(task) {
 
 function taskProjectDisplayHTML(task) {
   const projectLabel = getProjectLabel(task);
-  if (projectLabel) return `<span>${escHtml(projectLabel)}</span>`;
+  if (projectLabel) return `<span class="tag tag-project-label">${escHtml(projectLabel)}</span>`;
   if (task.sourceProjectName) {
     return `<span class="tag tag-missing-project">プロジェクト確認待ち：${escHtml(task.sourceProjectName)}</span>`;
   }
   return '<span style="color:var(--text-3)">プロジェクト未選択</span>';
+}
+
+function visibleTaskNote(task) {
+  return cleanVisibleTaskNote(task?.note || '');
+}
+
+function cleanVisibleTaskNote(note) {
+  return String(note || '')
+    .split(/\s+\/\s+|\n/)
+    .map(part => part.trim())
+    .filter(part => part && !/^元プロジェクト名\s*[:：]/.test(part))
+    .join(' / ');
 }
 
 async function toggleTodayTaskComplete(taskId) {
@@ -2389,10 +2448,7 @@ function resolveInputProject(projectName) {
 }
 
 function buildInputTaskNote(note, projectName, project) {
-  const parts = [];
-  if (projectName && !project) parts.push(`元プロジェクト名：${projectName}`);
-  if (note) parts.push(note);
-  return parts.join(' / ');
+  return cleanVisibleTaskNote(note);
 }
 
 function extractHours(value) {
@@ -3437,6 +3493,7 @@ function projectTaskListRow(task) {
   const phaseName = getPhaseName(task);
   const isDone = task.completed === true;
   const originDate = sourceDateForTask(task);
+  const visibleNote = visibleTaskNote(task);
   return `
     <div class="task-row ${task.carriedFromTaskId ? 'task-row-carry' : ''} ${isDone ? 'task-row-done' : ''}" style="margin-bottom:8px">
       <button class="check-btn ${isDone ? 'done' : ''}"
@@ -3446,7 +3503,7 @@ function projectTaskListRow(task) {
       <div class="task-accent-bar"></div>
       <div class="flex-1">
         <div class="task-title">${escHtml(task.content)}</div>
-        ${task.note ? `<div class="task-note">備考：${escHtml(task.note)}</div>` : ''}
+        ${visibleNote ? `<div class="task-note">備考：${escHtml(visibleNote)}</div>` : ''}
         <div class="task-meta">
           ${taskDateTagHTML(originDate, { carried: Boolean(task.carriedFromTaskId) })}
           <span>担当：${member ? escHtml(member.name) : '未設定'}</span>
@@ -3671,12 +3728,15 @@ function openProjectModal(editId) {
       <input type="date" class="form-input" id="pj-delivery" value="${project?.deliveryDate||''}">
     </div>
     <details style="margin:14px 0;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-glass)" ${project ? 'open' : ''}>
-      <summary style="cursor:pointer;font-weight:800;color:var(--text-1)">詳細情報を追加</summary>
+      <summary style="cursor:pointer;font-weight:800;color:var(--text-1)">任意項目（必要になったら入力）</summary>
       <div style="margin-top:14px">
+        <div class="form-help" style="margin-bottom:12px">
+          納品日・窓口などの基本項目だけで登録できます。ここはガント、予算、補足管理に使う追加情報です。
+        </div>
         <div class="form-group">
           <label class="form-label">開始日</label>
           <input type="date" class="form-input" id="pj-start" value="${project?.startDate||''}">
-          <div class="form-help">ガントチャートや進行表の開始位置に使います。未定なら空欄で大丈夫です。</div>
+          <div class="form-help">ガントの開始位置です。未設定なら、タスク登録日や納品日から自動推定します。</div>
         </div>
         <div class="form-group">
           <label class="form-label">進行状態</label>
@@ -3693,6 +3753,7 @@ function openProjectModal(editId) {
         <div class="form-group">
           <label class="form-label">詳細登録期限</label>
           <input type="date" class="form-input" id="pj-details-due" value="${project?.detailsDueAt||''}">
+          <div class="form-help">不足情報をいつまでに埋めるかの目安です。未設定でも登録できます。</div>
         </div>
         <div class="form-group">
           <label class="form-label">プロジェクト備考</label>
@@ -4209,6 +4270,9 @@ function cleanupTaskSection(tasks) {
 function cleanupTaskRow(task) {
   const member = DB.Members.get(task.memberId);
   const currentProject = DB.Projects.get(task.projectId);
+  const projectHint = task.sourceProjectName
+    ? `確認名：${task.sourceProjectName}`
+    : `現在の紐付け：${cleanupProjectName(currentProject)}`;
   return `
     <div class="cleanup-row">
       <div class="cleanup-main">
@@ -4216,12 +4280,12 @@ function cleanupTaskRow(task) {
         <div class="cleanup-meta">
           <span>${escHtml(task.date ? DB.fmtDate(task.date) : '日付未設定')}</span>
           <span>担当：${member ? escHtml(member.name) : '未設定'}</span>
-          <span>元プロジェクト名：${escHtml(task.sourceProjectName || cleanupProjectName(currentProject))}</span>
+          <span>${escHtml(projectHint)}</span>
           <span>${Number(task.estimatedHours) || 0}h</span>
         </div>
       </div>
       <div class="cleanup-actions">
-        <select id="cleanup-task-project-${task.id}">
+        <select id="cleanup-task-project-${task.id}" onchange="assignCleanupTaskProject('${task.id}', this.value)">
           <option value="">正式プロジェクトを選択...</option>
           ${cleanupProjectOptionsHTML(task.projectId || '')}
         </select>
@@ -4400,8 +4464,8 @@ async function refreshCleanupData() {
   renderDataCleanup();
 }
 
-async function assignCleanupTaskProject(taskId) {
-  const projectId = document.getElementById(`cleanup-task-project-${taskId}`)?.value;
+async function assignCleanupTaskProject(taskId, selectedProjectId = '') {
+  const projectId = selectedProjectId || document.getElementById(`cleanup-task-project-${taskId}`)?.value;
   if (!projectId) {
     showToast('紐付ける正式プロジェクトを選んでください', 'error');
     return;
