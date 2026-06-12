@@ -362,7 +362,8 @@ const Projects = {
 // タスク
 // ============================================================
 const Tasks = {
-  all()            { return load(KEYS.TASKS) ?? []; },
+  all()            { return (load(KEYS.TASKS) ?? []).filter(t => !t.mergedIntoTaskId); },
+  allIncludingMerged() { return load(KEYS.TASKS) ?? []; },
   byDate(date)     { return this.all().filter(t => t.date === date); },
   byDateRange(startDate, endDate) {
     const start = startDate || today();
@@ -402,13 +403,13 @@ const Tasks = {
     return task;
   },
   update(id, patch) {
-    save(KEYS.TASKS, this.all().map(t => t.id === id ? { ...t, ...patch } : t));
+    save(KEYS.TASKS, this.allIncludingMerged().map(t => t.id === id ? { ...t, ...patch } : t));
   },
   replaceAll(list) {
     save(KEYS.TASKS, Array.isArray(list) ? list : []);
   },
   remove(id) {
-    save(KEYS.TASKS, this.all().filter(t => t.id !== id));
+    save(KEYS.TASKS, this.allIncludingMerged().filter(t => t.id !== id));
   },
   setCompletion(id, completed, reason = '') {
     const list = this.all();

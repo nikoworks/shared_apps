@@ -141,6 +141,8 @@ create table if not exists public.taskboard_data (
 | `carriedOverToTaskId` | 旧仕様の繰り越し先タスクID |
 | `completed` | `null` 未確認 / `true` 完了 / `false` 未完了 |
 | `incompleteReason` | 未完了理由 |
+| `mergedIntoTaskId` | 重複整理で統合先になったタスクID。設定済みのタスクは通常表示から外す |
+| `mergedAt` | 重複整理で統合した日時 |
 | `createdAt` | 作成日時 |
 
 ## asks
