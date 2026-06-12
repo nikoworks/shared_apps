@@ -128,6 +128,7 @@ create table if not exists public.taskboard_data (
 |---|---|
 | `id` | タスクID |
 | `date` | タスク日付 |
+| `originalDate` | 未完了で日を跨いだ場合の元の作業日 |
 | `memberId` | 担当者メンバーID |
 | `projectId` | 紐付くプロジェクトID |
 | `phaseId` | 紐付くフェーズID |
@@ -136,8 +137,8 @@ create table if not exists public.taskboard_data (
 | `note` | 備考 |
 | `sourceProjectName` | Chatwork等から来た元のプロジェクト名 |
 | `needsProjectReview` | プロジェクト確認待ちか |
-| `carriedFromTaskId` | 繰り越し元タスクID |
-| `carriedOverToTaskId` | 繰り越し先タスクID |
+| `carriedFromTaskId` | 旧仕様の繰り越し元タスクID |
+| `carriedOverToTaskId` | 旧仕様の繰り越し先タスクID |
 | `completed` | `null` 未確認 / `true` 完了 / `false` 未完了 |
 | `incompleteReason` | 未完了理由 |
 | `createdAt` | 作成日時 |

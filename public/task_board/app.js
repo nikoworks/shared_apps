@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '紐付け手動保存版 2026-06-12-05';
+const APP_BUILD_LABEL = '未完了日付移動版 2026-06-12-07';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 
@@ -800,7 +800,6 @@ async function markTaskFail(taskId) {
     DB.Tasks.setCompletion(taskId, null, '');
   } else {
     DB.Tasks.setCompletion(taskId, false, '');
-    if (task.date < DB.today()) DB.Tasks.carryOverTask(taskId);
   }
   const ok = await DB.syncCloudStore?.();
   if (ok === false) {
@@ -890,9 +889,9 @@ function restoreTaskSnapshot(snapshot) {
   }
 }
 
-async function toggleCompletedVisibility() {
+function toggleCompletedVisibility() {
   _taskFilter.showCompleted = !_taskFilter.showCompleted;
-  await refreshTaskData({ silent: true });
+  renderTodayTasks();
 }
 
 function taskRangeLabel(range) {
@@ -916,7 +915,8 @@ function renderTodayTasks() {
     return true;
   });
 
-  const sortedFiltered = sortTasksForWorkday(filtered);
+  const visibleTasks = collapseTaskDisplayDuplicates(filtered);
+  const sortedFiltered = sortTasksForWorkday(visibleTasks);
   const totalH = sortedFiltered.reduce((s, t) => s + (t.estimatedHours || 0), 0);
 
   // メンバーグループ
@@ -1037,6 +1037,62 @@ function sortTasksForWorkday(tasks) {
   });
 }
 
+function normalizeTaskDisplayValue(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+function taskDisplayDuplicateKey(task) {
+  return [
+    task.memberId || '',
+    task.projectId || normalizeTaskDisplayValue(task.sourceProjectName) || '',
+    normalizeTaskDisplayValue(task.content),
+    Number(task.estimatedHours) || 0,
+    sourceDateForTask(task) || task.date || '',
+  ].join('||');
+}
+
+function taskDisplayDateSummary(tasks) {
+  const dates = [...new Set(tasks.map(task => task.date).filter(Boolean))].sort();
+  if (!dates.length) return '';
+  if (dates.length === 1) return dates[0];
+  return `${DB.fmtDate(dates[0])}〜${DB.fmtDate(dates[dates.length - 1])}`;
+}
+
+function chooseTaskDisplayRepresentative(tasks) {
+  const openTasks = tasks.filter(task => task.completed !== true);
+  const candidates = openTasks.length ? openTasks : tasks;
+  return candidates
+    .slice()
+    .sort((a, b) => {
+      const dateCompare = String(b.date || '').localeCompare(String(a.date || ''));
+      if (dateCompare) return dateCompare;
+      const aCarry = a.carriedFromTaskId ? 0 : 1;
+      const bCarry = b.carriedFromTaskId ? 0 : 1;
+      if (aCarry !== bCarry) return aCarry - bCarry;
+      return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+    })[0];
+}
+
+function collapseTaskDisplayDuplicates(tasks) {
+  const groups = new Map();
+  tasks.forEach(task => {
+    const key = taskDisplayDuplicateKey(task);
+    const group = groups.get(key) || [];
+    group.push(task);
+    groups.set(key, group);
+  });
+
+  return Array.from(groups.values()).map(group => {
+    const representative = chooseTaskDisplayRepresentative(group);
+    return {
+      ...representative,
+      _displayDuplicateCount: group.length,
+      _displayDateSummary: taskDisplayDateSummary(group),
+      _displayTaskIds: group.map(task => task.id),
+    };
+  });
+}
+
 function taskProjectSortLabel(task) {
   const project = task?.projectId ? DB.Projects.get(task.projectId) : null;
   if (project) return cleanupProjectName(project);
@@ -1078,6 +1134,7 @@ function todayTaskRow(task) {
   const isCarry = Boolean(task.carriedFromTaskId);
   const isDone = task.completed === true;
   const visibleNote = visibleTaskNote(task);
+  const duplicateCount = task._displayDuplicateCount || 1;
   return `
     <div class="task-row ${isCarry ? 'task-row-carry' : ''} ${isDone ? 'task-row-done' : ''}" id="task-row-${task.id}">
       <button class="check-btn ${isDone ? 'done' : ''}"
@@ -1096,6 +1153,7 @@ function todayTaskRow(task) {
           ${isCarry ? '<span class="tag tag-carry tag-carry-strong">繰り越し</span>' : ''}
           ${isDone ? '<span class="tag tag-done">完了</span>' : ''}
           ${linkedAsk ? '<span class="tag tag-ask">確認あり</span>' : ''}
+          ${duplicateCount > 1 ? `<span class="tag">集約 ${duplicateCount}件</span>` : ''}
           <span class="tag-hours">${task.estimatedHours}h</span>
         </div>
       </div>
@@ -1152,6 +1210,7 @@ function taskDateTagHTML(dateStr, options = {}) {
 }
 
 function sourceDateForTask(task) {
+  if (task?.originalDate) return task.originalDate;
   if (!task?.carriedFromTaskId) return task?.date || '';
   return getCarryOriginTask(task)?.date || task.date;
 }
@@ -5195,7 +5254,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   navigate(_personalMemberId ? 'tasks' : 'dashboard');
   openUrlRequestedProject();
   if (carriedCount > 0) {
-    showToast(`${carriedCount}件の未達成タスクを今日へ繰り越しました`, 'info');
+    showToast(`${carriedCount}件の未完了タスクを今日のタスクへ移動しました`, 'info');
   }
 });
 

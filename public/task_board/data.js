@@ -369,7 +369,12 @@ const Tasks = {
     const end = endDate || start;
     const from = start <= end ? start : end;
     const to = start <= end ? end : start;
-    return this.all().filter(t => t.date >= from && t.date <= to);
+    return this.all().filter(t => {
+      const taskDate = t.date || '';
+      const originalDate = t.originalDate || '';
+      return (taskDate >= from && taskDate <= to) ||
+        (originalDate >= from && originalDate <= to);
+    });
   },
   todayTasks()     { return this.byDate(today()).filter(t => t.completed !== true); },
   yesterdayTasks() { return this.byDate(yesterday()); },
@@ -441,32 +446,20 @@ const Tasks = {
   carryOverTask(taskId, targetDate = today()) {
     const source = this.get(taskId);
     if (!source || source.completed === true || source.date >= targetDate) return null;
-    if (source.carriedOverToTaskId && this.get(source.carriedOverToTaskId)) return null;
-
-    const exists = this.all().find(t => t.carriedFromTaskId === source.id && t.date === targetDate);
-    if (exists) return exists;
-
-    const carried = this.add({
-      memberId: source.memberId,
-      projectId: source.projectId,
-      phaseId: source.phaseId,
-      content: source.content,
-      estimatedHours: source.estimatedHours,
-      note: source.note,
+    const originDate = source.originalDate || source.date;
+    this.update(source.id, {
       date: targetDate,
-      carriedFromTaskId: source.id,
-      sourceProjectName: source.sourceProjectName || '',
-      needsProjectReview: Boolean(source.needsProjectReview),
+      originalDate: originDate,
+      carriedFromTaskId: null,
+      carriedOverToTaskId: null,
     });
-    this.update(source.id, { carriedOverToTaskId: carried.id });
-    return carried;
+    return this.get(source.id);
   },
 
   carryOverOpenTasks(targetDate = today()) {
     const candidates = this.all().filter(t =>
       t.date < targetDate &&
-      t.completed !== true &&
-      !t.carriedOverToTaskId
+      t.completed !== true
     );
     let count = 0;
     candidates.forEach(t => {
