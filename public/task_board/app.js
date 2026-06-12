@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '未紐付け日跨ぎ集約版 2026-06-12-03';
+const APP_BUILD_LABEL = '紐付け手動保存版 2026-06-12-05';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 
@@ -59,6 +59,29 @@ function renderPage(page) {
     case 'cleanup':   renderDataCleanup(); break;
     case 'settings':  renderSettings(); break;
     default:          renderDashboard();
+  }
+}
+
+function refreshCurrentPage() {
+  switch (_currentPage) {
+    case 'tasks':
+    case 'morning':
+      renderTodayTasks();
+      break;
+    case 'projects':
+      renderProjects();
+      break;
+    case 'cleanup':
+      renderDataCleanup();
+      break;
+    case 'gantt':
+      renderGantt();
+      break;
+    case 'settings':
+      renderSettings();
+      break;
+    default:
+      renderPage(_currentPage);
   }
 }
 
@@ -1723,7 +1746,7 @@ function saveTask(editId) {
   }
   saveTaskLinkedAsk(savedTask, askPayload);
   closeModal();
-  renderTodayTasks();
+  refreshCurrentPage();
 }
 
 function readTaskAskForm() {
@@ -3650,7 +3673,7 @@ function cyclePhaseStatus(projectId, phaseId) {
   const phases = p.phases.map(ph =>
     ph.id === phaseId ? { ...ph, status: cycle[ph.status] || 'pending' } : ph);
   DB.Projects.updatePhases(projectId, phases);
-  renderProjects();
+  refreshCurrentPage();
 }
 
 /* ─ フェーズ編集モーダル ─ */
@@ -3734,7 +3757,7 @@ function savePhaseEditor(projectId) {
   DB.Projects.updatePhases(projectId, updated);
   closeModal();
   showToast('フェーズを保存しました', 'success');
-  renderProjects();
+  refreshCurrentPage();
 }
 
 /* ─ プロジェクト追加/編集モーダル ─ */
@@ -3994,7 +4017,7 @@ function saveProjectNew() {
   });
   closeModal();
   showToast('プロジェクトを作成しました', 'success');
-  renderProjects();
+  refreshCurrentPage();
 }
 
 function saveProjectEdit(projectId) {
@@ -4034,7 +4057,7 @@ function saveProjectEdit(projectId) {
   });
   closeModal();
   showToast('プロジェクトを更新しました', 'success');
-  renderProjects();
+  refreshCurrentPage();
 }
 
 function confirmProjectDeliveryDate(deliveryDate) {
@@ -4166,33 +4189,33 @@ function sendDeliveryDateRequest(projectId) {
 function archiveProject(id) {
   DB.Projects.archive(id);
   showToast('アーカイブしました', 'info');
-  renderProjects();
+  refreshCurrentPage();
 }
 
 function restoreProject(id) {
   DB.Projects.restore(id);
   showToast('復元しました', 'success');
-  renderProjects();
+  refreshCurrentPage();
 }
 
 function completeProject(id) {
   if (!confirm('このプロジェクトを完了にしますか？')) return;
   DB.Projects.update(id, { projectStatus: 'completed' });
   showToast('プロジェクトを完了にしました', 'success');
-  renderProjects();
+  refreshCurrentPage();
 }
 
 function reopenProject(id) {
   DB.Projects.update(id, { projectStatus: 'active' });
   showToast('プロジェクトを進行中に戻しました', 'success');
-  renderProjects();
+  refreshCurrentPage();
 }
 
 function deleteProject(id) {
   if (!confirm('このプロジェクトを削除しますか？\n（タスクとの紐付けは保持されます）')) return;
   DB.Projects.remove(id);
   showToast('プロジェクトを削除しました', 'info');
-  renderProjects();
+  refreshCurrentPage();
 }
 
 /* ============================================================
@@ -4472,7 +4495,7 @@ function cleanupTaskRow(taskGroup) {
         </div>
       </div>
       <div class="cleanup-actions">
-        <select id="${selectId}" onchange="assignCleanupTaskProjectGroup('${taskIds.join(',')}', this.value, '${selectId}')">
+        <select id="${selectId}">
           <option value="">正式プロジェクトを選択...</option>
           ${cleanupProjectOptionsHTML(task.projectId || '')}
         </select>
@@ -4678,6 +4701,11 @@ async function assignCleanupTaskProjectGroup(taskIdsText, selectedProjectId = ''
   if (!projectId) {
     showToast('紐付ける正式プロジェクトを選んでください', 'error');
     return;
+  }
+  if (taskIds.length > 1) {
+    const project = DB.Projects.get(projectId);
+    const projectName = project ? cleanupProjectName(project) : '選択したプロジェクト';
+    if (!confirm(`重複タスク${taskIds.length}件を「${projectName}」へまとめて紐付けます。\nよろしいですか？`)) return;
   }
   taskIds.forEach(taskId => {
     DB.Tasks.update(taskId, {
