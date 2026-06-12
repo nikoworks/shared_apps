@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '重複整理追加版 2026-06-12-08';
+const APP_BUILD_LABEL = '重複詳細確認版 2026-06-12-10';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 
@@ -1047,15 +1047,28 @@ function taskDisplayDuplicateKey(task) {
     task.projectId || normalizeTaskDisplayValue(task.sourceProjectName) || '',
     normalizeTaskDisplayValue(task.content),
     Number(task.estimatedHours) || 0,
-    sourceDateForTask(task) || task.date || '',
   ].join('||');
 }
 
+function shortDateLabel(dateStr) {
+  if (!dateStr) return '日付なし';
+  if (dateStr === DB.today()) return '今日';
+  const d = new Date(`${dateStr}T00:00:00`);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+function taskDisplayDates(tasks) {
+  return [...new Set(tasks
+    .flatMap(task => [task.originalDate, sourceDateForTask(task), task.date])
+    .filter(Boolean))]
+    .sort();
+}
+
 function taskDisplayDateSummary(tasks) {
-  const dates = [...new Set(tasks.map(task => task.date).filter(Boolean))].sort();
+  const dates = taskDisplayDates(tasks);
   if (!dates.length) return '';
   if (dates.length === 1) return dates[0];
-  return `${DB.fmtDate(dates[0])}〜${DB.fmtDate(dates[dates.length - 1])}`;
+  return `${shortDateLabel(dates[0])}〜${shortDateLabel(dates[dates.length - 1])}`;
 }
 
 function chooseTaskDisplayRepresentative(tasks) {
@@ -1084,10 +1097,12 @@ function collapseTaskDisplayDuplicates(tasks) {
 
   return Array.from(groups.values()).map(group => {
     const representative = chooseTaskDisplayRepresentative(group);
+    const dates = taskDisplayDates(group);
     return {
       ...representative,
       _displayDuplicateCount: group.length,
       _displayDateSummary: taskDisplayDateSummary(group),
+      _displayOriginDate: dates[0] || sourceDateForTask(representative),
       _displayTaskIds: group.map(task => task.id),
     };
   });
@@ -1130,15 +1145,17 @@ function todayTaskRow(task) {
   const projectHTML = taskProjectDisplayHTML(task);
   const ownerLabel = getTaskOwnerLabel(task);
   const linkedAsk = getTaskLinkedAsk(task.id);
-  const originDate = sourceDateForTask(task);
-  const isCarry = Boolean(task.carriedFromTaskId);
+  const duplicateCount = task._displayDuplicateCount || 1;
+  const taskIds = task._displayTaskIds || [task.id];
+  const originDate = task._displayOriginDate || sourceDateForTask(task);
+  const isCarry = Boolean(task.carriedFromTaskId || task.originalDate || duplicateCount > 1);
   const isDone = task.completed === true;
   const visibleNote = visibleTaskNote(task);
-  const duplicateCount = task._displayDuplicateCount || 1;
+  const dateLabel = duplicateCount > 1 && task._displayDateSummary ? task._displayDateSummary : '';
   return `
     <div class="task-row ${isCarry ? 'task-row-carry' : ''} ${isDone ? 'task-row-done' : ''}" id="task-row-${task.id}">
       <button class="check-btn ${isDone ? 'done' : ''}"
-              onclick="toggleTodayTaskComplete('${task.id}')"
+              onclick="toggleTodayTaskCompleteGroup('${taskIds.join(',')}')"
               title="${isDone ? '未完了に戻す' : '完了にする'}"
               aria-label="${isDone ? '未完了に戻す' : '完了にする'}">✓</button>
       <div class="task-accent-bar"></div>
@@ -1146,7 +1163,7 @@ function todayTaskRow(task) {
         <div class="task-title">${escHtml(task.content)}</div>
         ${visibleNote ? `<div class="task-note">備考：${escHtml(visibleNote)}</div>` : ''}
         <div class="task-meta">
-          ${taskDateTagHTML(originDate, { carried: isCarry })}
+          ${taskDateTagHTML(originDate, { carried: isCarry, label: dateLabel || undefined })}
           <span>担当：${escHtml(ownerLabel)}</span>
           ${projectHTML}
           ${phaseName ? `<span class="tag tag-phase">${phaseName}</span>` : ''}
@@ -1186,18 +1203,26 @@ function cleanVisibleTaskNote(note) {
 }
 
 async function toggleTodayTaskComplete(taskId) {
-  const task = DB.Tasks.get(taskId);
-  if (!task) return;
+  return toggleTodayTaskCompleteGroup(taskId);
+}
+
+async function toggleTodayTaskCompleteGroup(taskIdsText) {
+  const taskIds = String(taskIdsText || '').split(',').map(id => id.trim()).filter(Boolean);
+  if (!taskIds.length) return;
+  const mainTask = DB.Tasks.get(taskIds[0]);
+  if (!mainTask) return;
   const before = taskSnapshot();
-  const nextCompleted = task.completed === true ? null : true;
-  DB.Tasks.setCompletion(taskId, nextCompleted, '');
+  const nextCompleted = mainTask.completed === true ? null : true;
+  taskIds.forEach(taskId => DB.Tasks.setCompletion(taskId, nextCompleted, ''));
   const ok = await DB.syncCloudStore?.();
   if (ok === false) {
     restoreTaskSnapshot(before);
     showToast('保存できなかったため、チェックを元に戻しました。最新に更新してから再度実行してください', 'error');
   } else {
-    if (nextCompleted === true) _recentlyCompletedTaskIds.add(taskId);
-    else _recentlyCompletedTaskIds.delete(taskId);
+    taskIds.forEach(taskId => {
+      if (nextCompleted === true) _recentlyCompletedTaskIds.add(taskId);
+      else _recentlyCompletedTaskIds.delete(taskId);
+    });
   }
   renderTodayTasks();
   updateMorningBadge();
@@ -4636,12 +4661,14 @@ function cleanupDuplicateTaskRow(group) {
   const projectLabel = project ? cleanupProjectName(project) : (task.sourceProjectName ? `確認待ち：${task.sourceProjectName}` : 'プロジェクト未選択');
   const doneCount = group.tasks.filter(item => item.completed === true).length;
   const openCount = group.tasks.length - doneCount;
+  const detailRows = group.tasks.map(item => cleanupDuplicateTaskDetailRow(item, item.id === group.keepTaskId)).join('');
   return `
     <div class="cleanup-row">
       <div class="cleanup-main">
         <div class="cleanup-title">
           ${escHtml(task.content || '未入力タスク')}
           <span class="cleanup-pill" style="margin-left:8px">${group.count}件</span>
+          ${doneCount ? `<span class="cleanup-pill" style="margin-left:6px;background:var(--danger-soft);color:var(--danger)">完了混在</span>` : ''}
         </div>
         <div class="cleanup-meta">
           <span>${escHtml(group.dateSummary)}</span>
@@ -4650,10 +4677,40 @@ function cleanupDuplicateTaskRow(group) {
           <span>未完了 ${openCount}件 / 完了 ${doneCount}件</span>
           <span>${Number(task.estimatedHours) || 0}h</span>
         </div>
+        <details style="margin-top:10px">
+          <summary style="cursor:pointer;color:var(--text-2);font-weight:700">候補タスクの内容を確認</summary>
+          <div style="margin-top:8px;display:grid;gap:6px">
+            ${detailRows}
+          </div>
+        </details>
       </div>
       <div class="cleanup-actions">
         <button class="btn btn-secondary btn-sm" onclick="mergeCleanupDuplicateTasks('${group.taskIds.join(',')}', '${group.keepTaskId}')">統合</button>
         <button class="btn btn-ghost btn-sm" onclick="openTaskModal('${group.keepTaskId}')">残すタスクを編集</button>
+      </div>
+    </div>`;
+}
+
+function cleanupDuplicateTaskDetailRow(task, willKeep = false) {
+  const member = DB.Members.get(task.memberId);
+  const project = task.projectId ? DB.Projects.get(task.projectId) : null;
+  const projectLabel = project ? cleanupProjectName(project) : (task.sourceProjectName ? `確認待ち：${task.sourceProjectName}` : 'プロジェクト未選択');
+  const status = task.completed === true ? '完了' : task.completed === false ? '未完了' : '未確認';
+  const note = visibleTaskNote(task);
+  return `
+    <div style="border:1px solid var(--border);border-radius:8px;padding:8px;background:var(--bg-glass)">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
+        ${willKeep ? '<span class="tag tag-done">残す候補</span>' : ''}
+        <span class="tag">${escHtml(task.date ? DB.fmtDate(task.date) : '日付未設定')}</span>
+        ${task.originalDate ? `<span class="tag">開始 ${escHtml(DB.fmtDate(task.originalDate))}</span>` : ''}
+        <span class="tag ${task.completed === true ? 'tag-done' : ''}">${status}</span>
+        <span class="tag-hours">${Number(task.estimatedHours) || 0}h</span>
+      </div>
+      <div style="font-weight:700;color:var(--text-1);margin-bottom:3px">${escHtml(task.content || '未入力タスク')}</div>
+      <div class="cleanup-meta">
+        <span>担当：${member ? escHtml(member.name) : '未設定'}</span>
+        <span>${escHtml(projectLabel)}</span>
+        ${note ? `<span>備考：${escHtml(note)}</span>` : ''}
       </div>
     </div>`;
 }
@@ -4895,7 +4952,10 @@ async function mergeCleanupDuplicateTasks(taskIdsText, keepTaskId) {
     .slice()
     .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))[0];
   const target = latestOpen || keepTask;
-  if (!confirm(`${tasks.length}件の同じタスクを1件に統合します。\n残すタスク：${target.content || '未入力タスク'}\nよろしいですか？`)) return;
+  const doneCount = tasks.filter(task => task.completed === true).length;
+  const openCount = tasks.length - doneCount;
+  const warning = doneCount ? `\n完了済み ${doneCount}件、未完了 ${openCount}件が含まれています。` : '';
+  if (!confirm(`${tasks.length}件の同じタスクを1件に統合します。${warning}\n残すタスク：${target.content || '未入力タスク'}\n日付：${target.date ? DB.fmtDate(target.date) : '未設定'}\nよろしいですか？`)) return;
 
   DB.Tasks.update(target.id, {
     date: target.completed === true ? target.date : DB.today(),
