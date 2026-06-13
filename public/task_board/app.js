@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '重複詳細確認版 2026-06-12-10';
+const APP_BUILD_LABEL = '発起人自動設定版 2026-06-13-01';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 
@@ -251,6 +251,10 @@ function getDefaultOwnerMemberId() {
   if (me) return me.id;
   const created = DB.Members.add({ name: '佐久間さん', color: '#3b82f6' });
   return created.id;
+}
+
+function getDefaultCreatorMemberId() {
+  return _personalMemberId || getDefaultOwnerMemberId();
 }
 
 function normalizeMemberToken(value) {
@@ -1761,7 +1765,7 @@ async function createProjectFromTaskInline() {
     leadSource: document.getElementById('qpj-lead-source')?.value || '',
     leadSourceDetail: document.getElementById('qpj-lead-source-detail')?.value?.trim() || '',
     startDate: _taskFormData.date || DB.today(),
-    createdByMemberId: ownerMemberId,
+    createdByMemberId: _personalMemberId || ownerMemberId || getDefaultCreatorMemberId(),
     ownerMemberId,
     isProvisional: false,
     projectStatus: 'active',
@@ -2692,7 +2696,7 @@ function findOrCreateBulkProject(projectName, ownerMemberId) {
     projectType: isRecurring ? 'recurring' : 'provisional',
     recurringSeries: parsed.recurringSeries,
     ownerMemberId,
-    createdByMemberId: ownerMemberId,
+    createdByMemberId: _personalMemberId || ownerMemberId || getDefaultCreatorMemberId(),
     isProvisional: true,
     detailsDueAt: tomorrowDate(),
   });
@@ -2995,7 +2999,7 @@ function saveProjectReview(reviewId) {
         projectType: parsed.recurringSeries ? 'recurring' : 'provisional',
         recurringSeries: parsed.recurringSeries || '',
         ownerMemberId: review.memberId || '',
-        createdByMemberId: review.memberId || '',
+        createdByMemberId: review.memberId || getDefaultCreatorMemberId(),
         isProvisional: true,
         detailsDueAt: tomorrowDate(),
       });
@@ -3602,7 +3606,7 @@ function projectCard(project) {
             </span>
             ${project.budget ? `<span class="project-meta-item"><strong>予算</strong>¥${Number(project.budget).toLocaleString()}</span>` : ''}
             ${project.projectType === 'recurring' && project.recurringSeries ? `<span class="project-meta-item"><strong>定期案件</strong>${escHtml(project.recurringSeries)}</span>` : ''}
-            <span class="project-meta-item ${createdBy ? '' : 'missing'}"><strong>登録者</strong>${createdBy ? escHtml(createdBy.name) : '未設定'}</span>
+            <span class="project-meta-item ${createdBy ? '' : 'missing'}"><strong>発起人</strong>${createdBy ? escHtml(createdBy.name) : '未設定'}</span>
             <span class="project-meta-item ${owner ? '' : 'missing'}"><strong>窓口</strong>${owner ? escHtml(owner.name) : '未設定'}</span>
             <span class="project-meta-item ${project.leadSource ? '' : 'missing'}">
               <strong>流入元</strong>${escHtml(leadSourceLabel(project.leadSource))}
@@ -3652,7 +3656,7 @@ function dealCategoryLabel(value) {
 function projectMissingInfo(project) {
   const missing = [];
   if (!project.ownerMemberId) missing.push({ key: 'ownerMemberId', label: '窓口担当' });
-  if (!project.createdByMemberId && !project.ownerMemberId) missing.push({ key: 'createdByMemberId', label: '登録者' });
+  if (!project.createdByMemberId && !project.ownerMemberId) missing.push({ key: 'createdByMemberId', label: '発起人' });
   if (!project.deliveryDate) missing.push({ key: 'deliveryDate', label: '納品日' });
   if (!project.leadSource) missing.push({ key: 'leadSource', label: '案件流入元' });
   if (project.projectType === 'recurring' && !project.recurringSeries) {
@@ -3850,7 +3854,7 @@ function openProjectModal(editId) {
   const templates = DB.Templates.all();
   const tplOpts   = templates.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
   const ownerDefault = project?.ownerMemberId || (!editId ? getDefaultOwnerMemberId() : '');
-  const createdByDefault = project?.createdByMemberId || (!editId ? getDefaultOwnerMemberId() : '');
+  const createdByDefault = project?.createdByMemberId || (!editId ? getDefaultCreatorMemberId() : getDefaultCreatorMemberId());
   const members   = DB.Members.all();
   const memberOpts = members.map(m =>
     `<option value="${m.id}" ${ownerDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
@@ -3938,11 +3942,11 @@ function openProjectModal(editId) {
       <input class="form-input" id="pj-name" placeholder="例：7月号 / 2026年7月切り替え / LP制作" value="${escHtml(project?.name||'')}">
     </div>
     <div class="form-group">
-      <label class="form-label">登録者</label>
+      <label class="form-label">発起人</label>
       <select class="form-select" id="pj-created-by">
-        <option value="">未設定</option>${createdByOpts}
+        ${createdByOpts}
       </select>
-      <div class="form-help">窓口担当が決まっていれば未設定でも大丈夫です。</div>
+      <div class="form-help">プロジェクトを作成した人です。新規作成時は自動で入ります。</div>
     </div>
     <div class="form-group">
       <label class="form-label">窓口担当</label>
@@ -4067,10 +4071,10 @@ function saveProjectNew() {
   const clientName = getClientNameFromProjectForm();
   const name       = document.getElementById('pj-name')?.value?.trim();
   if (!clientName || !name) { showToast('クライアント名とプロジェクト名は必須です', 'error'); return; }
-  const createdByMemberId = document.getElementById('pj-created-by')?.value || '';
+  const createdByMemberId = document.getElementById('pj-created-by')?.value || getDefaultCreatorMemberId();
   const ownerMemberId = document.getElementById('pj-owner')?.value || '';
   if (!createdByMemberId && !ownerMemberId) {
-    showToast('登録者または窓口担当のどちらかを選んでください', 'error');
+    showToast('発起人または窓口担当のどちらかを選んでください', 'error');
     return;
   }
   const deliveryDate = document.getElementById('pj-delivery')?.value || '';
@@ -4108,10 +4112,10 @@ function saveProjectEdit(projectId) {
   const clientName = getClientNameFromProjectForm();
   const name       = document.getElementById('pj-name')?.value?.trim();
   if (!clientName || !name) { showToast('クライアント名とプロジェクト名は必須です', 'error'); return; }
-  const createdByMemberId = document.getElementById('pj-created-by')?.value || '';
+  const createdByMemberId = document.getElementById('pj-created-by')?.value || getDefaultCreatorMemberId();
   const ownerMemberId = document.getElementById('pj-owner')?.value || '';
   if (!createdByMemberId && !ownerMemberId) {
-    showToast('登録者または窓口担当のどちらかを選んでください', 'error');
+    showToast('発起人または窓口担当のどちらかを選んでください', 'error');
     return;
   }
   const deliveryDate = document.getElementById('pj-delivery')?.value || '';
@@ -4213,7 +4217,7 @@ async function sendProjectInfoRequest(projectId) {
   if (!project) return;
   const recipients = projectInfoRequestRecipients(project);
   if (!recipients.length) {
-    showToast('登録者と窓口担当が未設定です。先にどちらかを選んでください', 'error');
+    showToast('発起人と窓口担当が未設定です。先にどちらかを選んでください', 'error');
     return;
   }
   const missingChatworkMembers = recipients.filter(member => !member.chatworkAccountId);
@@ -4358,7 +4362,7 @@ function renderDataCleanup() {
         ${cleanupSummaryCard('仮プロジェクト', issues.provisionalProjects.length, '古い取り込み仕様の名残')}
         ${cleanupSummaryCard('クライアント名', issues.clientStats.length, '表記ゆれ・重複の整理')}
         ${cleanupSummaryCard('繰り越し不整合', issues.carryoverIssues.length, '完了・持ち越しリンクの確認')}
-        ${cleanupSummaryCard('不足情報PJ', issues.missingInfoProjects.length, '登録者・窓口・納品日など')}
+        ${cleanupSummaryCard('不足情報PJ', issues.missingInfoProjects.length, '発起人・窓口・納品日など')}
       </div>
 
       ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'tasks' ? cleanupTaskSection(issues.missingProjectTasks) : ''}
