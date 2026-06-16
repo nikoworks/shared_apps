@@ -1738,6 +1738,59 @@ body {
 .banner-warning { background: var(--warning-lite); border: 1px solid rgba(245,158,11,.25); color: var(--warning); }
 .banner-info    { background: var(--primary-lite); border: 1px solid rgba(99,102,241,.25); color: var(--primary); }
 
+.project-review-task-notice {
+  border: 1px solid rgba(245,158,11,.28);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  background: var(--warning-lite);
+}
+.project-review-task-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.project-review-task-head h3 {
+  margin: 0;
+  font-size: 15px;
+  color: var(--text-1);
+}
+.project-review-task-head p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.project-review-task-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid rgba(245,158,11,.18);
+}
+.project-review-task-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px 12px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.project-review-task-main strong {
+  font-size: 14px;
+  color: var(--text-1);
+}
+.project-review-task-more {
+  padding-top: 8px;
+  border-top: 1px solid rgba(245,158,11,.18);
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 /* ─── Trend Table ────────────────────────────────────────── */
 .trend-table { width: 100%; border-collapse: collapse; }
 .trend-table th, .trend-table td {

@@ -469,6 +469,80 @@ const Tasks = {
     return count;
   },
 
+  compactCarryoverDuplicates() {
+    const list = this.allIncludingMerged();
+    const active = list.filter(t => !t.mergedIntoTaskId);
+    const groups = new Map();
+
+    active
+      .filter(t => t.memberId && t.content)
+      .forEach(task => {
+        const source = String(task.sourceProjectName || '').trim().replace(/\s+/g, ' ');
+        const content = String(task.content || '').trim().replace(/\s+/g, ' ');
+        const key = [
+          task.memberId || '',
+          task.projectId || source || '',
+          content,
+          Number(task.estimatedHours) || 0,
+        ].join('||');
+        const group = groups.get(key) || [];
+        group.push(task);
+        groups.set(key, group);
+      });
+
+    let mergedCount = 0;
+    let mergedGroupCount = 0;
+    const now = new Date().toISOString();
+    const updated = list.map(task => ({ ...task }));
+
+    groups.forEach(group => {
+      if (group.length < 2) return;
+      const openTasks = group.filter(task => task.completed !== true);
+      const candidates = openTasks.length ? openTasks : group;
+      const target = candidates.slice().sort((a, b) => {
+        const dateCompare = String(b.date || '').localeCompare(String(a.date || ''));
+        if (dateCompare) return dateCompare;
+        return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+      })[0];
+      if (!target) return;
+
+      const dates = group
+        .flatMap(task => [task.originalDate, task.date])
+        .filter(Boolean)
+        .sort();
+      const originalDate = dates[0] || target.originalDate || target.date || '';
+      const targetIndex = updated.findIndex(task => task.id === target.id);
+      if (targetIndex >= 0) {
+        updated[targetIndex] = {
+          ...updated[targetIndex],
+          originalDate,
+          carriedFromTaskId: null,
+          carriedOverToTaskId: null,
+        };
+      }
+
+      let groupMergedCount = 0;
+      group
+        .filter(task => task.id !== target.id)
+        .forEach(task => {
+          const index = updated.findIndex(item => item.id === task.id);
+          if (index < 0 || updated[index].mergedIntoTaskId) return;
+          updated[index] = {
+            ...updated[index],
+            mergedIntoTaskId: target.id,
+            mergedAt: now,
+          };
+          mergedCount++;
+          groupMergedCount++;
+        });
+
+      if (groupMergedCount > 0) mergedGroupCount++;
+    });
+
+    if (mergedCount > 0) save(KEYS.TASKS, updated);
+    return { mergedCount, groupCount: mergedGroupCount };
+  },
+
   /** 指定プロジェクト・フェーズのタスク完了率 */
   progressByPhase(projectId, phaseId) {
     const tasks = this.all().filter(t => t.projectId === projectId && t.phaseId === phaseId);

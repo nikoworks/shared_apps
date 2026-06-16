@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '発起人自動設定版 2026-06-13-01';
+const APP_BUILD_LABEL = '繰り越し統合版 2026-06-16-02';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 
@@ -3463,6 +3463,7 @@ function renderProjects() {
   });
   const projects = sortProjectsByDelivery(filteredProjects);
   const projectsWithMissingInfo = projects.filter(p => projectMissingInfo(p).length > 0);
+  const projectReviewGroups = projectReviewTaskGroups();
   const ownerOptions = members.map(m =>
     `<option value="${m.id}" ${_projectOwnerFilter === m.id ? 'selected' : ''}>${escHtml(m.name)}</option>`
   ).join('');
@@ -3486,6 +3487,7 @@ function renderProjects() {
           <span>必要情報が未入力のプロジェクトが ${projectsWithMissingInfo.length}件あります。各プロジェクトの警告から入力依頼を送れます。</span>
         </div>
       ` : ''}
+      ${projectReviewGroups.length ? projectReviewTaskNotice(projectReviewGroups) : ''}
 
       <div class="action-row">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -3529,6 +3531,84 @@ function renderProjects() {
           </div>`
         : projects.map(p => projectCard(p)).join('')}
     </div>`;
+}
+
+function projectReviewTaskGroups() {
+  const projectIds = new Set(DB.Projects.all().map(project => project.id));
+  const groups = new Map();
+
+  DB.Tasks.all()
+    .filter(task => {
+      if (!task.sourceProjectName) return false;
+      if (task.projectId && projectIds.has(task.projectId) && !task.needsProjectReview) return false;
+      return true;
+    })
+    .forEach(task => {
+      const sourceName = String(task.sourceProjectName || '').trim() || '名称未設定';
+      const key = `${sourceName}||${task.memberId || ''}`;
+      const group = groups.get(key) || {
+        sourceName,
+        memberId: task.memberId || '',
+        tasks: [],
+      };
+      group.tasks.push(task);
+      groups.set(key, group);
+    });
+
+  return Array.from(groups.values())
+    .map(group => {
+      const member = group.memberId ? DB.Members.get(group.memberId) : null;
+      const openCount = group.tasks.filter(task => task.completed !== true).length;
+      const hours = group.tasks.reduce((sum, task) => sum + (Number(task.estimatedHours) || 0), 0);
+      const sortedDates = group.tasks
+        .map(task => task.date)
+        .filter(Boolean)
+        .sort();
+      const latestDate = sortedDates[sortedDates.length - 1] || '';
+      return {
+        ...group,
+        memberName: member?.name || '担当未設定',
+        openCount,
+        doneCount: group.tasks.length - openCount,
+        hours,
+        latestDate,
+      };
+    })
+    .sort((a, b) => String(b.latestDate || '').localeCompare(String(a.latestDate || '')));
+}
+
+function projectReviewTaskNotice(groups) {
+  const rows = groups.slice(0, 6).map(group => `
+    <div class="project-review-task-row">
+      <div class="project-review-task-main">
+        <strong>${escHtml(group.sourceName)}</strong>
+        <span>担当：${escHtml(group.memberName)}</span>
+        <span>${group.tasks.length}件 / 未完了 ${group.openCount}件 / ${group.hours}h</span>
+        ${group.latestDate ? `<span>最新 ${escHtml(DB.fmtDate(group.latestDate))}</span>` : ''}
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="openProjectReviewCleanup('${group.memberId}')">データ整理で確認</button>
+    </div>
+  `).join('');
+  const hidden = groups.length > 6 ? `<div class="project-review-task-more">ほか ${groups.length - 6}件</div>` : '';
+
+  return `
+    <section class="project-review-task-notice">
+      <div class="project-review-task-head">
+        <div>
+          <h3>プロジェクト確認待ちタスク</h3>
+          <p>ここにある名前はまだ正式プロジェクトではありません。正式プロジェクトへ紐付けると、通常のプロジェクト一覧に反映されます。</p>
+        </div>
+        <span class="cleanup-pill">${groups.length}件</span>
+      </div>
+      ${rows}
+      ${hidden}
+    </section>`;
+}
+
+function openProjectReviewCleanup(memberId = '') {
+  _cleanupFilter.issue = 'tasks';
+  _cleanupFilter.memberId = memberId || '';
+  navigate('cleanup');
 }
 
 function sortProjectsByDelivery(projects) {
@@ -3679,19 +3759,26 @@ function projectEffectiveStartDate(project) {
 function openProjectTasksModal(projectId) {
   const project = DB.Projects.get(projectId);
   if (!project) return;
-  const tasks = DB.Tasks.all()
+  const rawTasks = DB.Tasks.all()
     .filter(t => t.projectId === projectId)
     .sort((a, b) => {
       if ((a.completed === true) !== (b.completed === true)) return a.completed === true ? 1 : -1;
       return String(b.date || '').localeCompare(String(a.date || ''));
     });
+  const tasks = collapseTaskDisplayDuplicates(rawTasks)
+    .sort((a, b) => {
+      if ((a.completed === true) !== (b.completed === true)) return a.completed === true ? 1 : -1;
+      return String(sourceDateForTask(a) || a.date || '').localeCompare(String(sourceDateForTask(b) || b.date || ''));
+    });
   const totalH = tasks.reduce((sum, task) => sum + (Number(task.estimatedHours) || 0), 0);
   const doneCount = tasks.filter(t => t.completed === true).length;
   const title = `${project.clientName} / ${project.name} のタスク`;
+  const hiddenCount = rawTasks.length - tasks.length;
 
   openModal(`
     <div class="form-help" style="margin-bottom:12px">
       ${tasks.length}件 / ${totalH}h　完了 ${doneCount}件・未完了 ${tasks.length - doneCount}件
+      ${hiddenCount > 0 ? `　繰り越し履歴 ${hiddenCount}件を集約表示` : ''}
     </div>
     <div style="max-height:60vh;overflow:auto;padding-right:4px">
       ${tasks.length
@@ -3712,12 +3799,16 @@ function projectTaskListRow(task) {
   const member = DB.Members.get(task.memberId);
   const phaseName = getPhaseName(task);
   const isDone = task.completed === true;
-  const originDate = sourceDateForTask(task);
+  const duplicateCount = task._displayDuplicateCount || 1;
+  const taskIds = task._displayTaskIds || [task.id];
+  const originDate = task._displayOriginDate || sourceDateForTask(task);
+  const dateLabel = duplicateCount > 1 && task._displayDateSummary ? task._displayDateSummary : '';
+  const isCarry = Boolean(task.carriedFromTaskId || task.originalDate || duplicateCount > 1);
   const visibleNote = visibleTaskNote(task);
   return `
-    <div class="task-row ${task.carriedFromTaskId ? 'task-row-carry' : ''} ${isDone ? 'task-row-done' : ''}" style="margin-bottom:8px">
+    <div class="task-row ${isCarry ? 'task-row-carry' : ''} ${isDone ? 'task-row-done' : ''}" style="margin-bottom:8px">
       <button class="check-btn ${isDone ? 'done' : ''}"
-              onclick="toggleProjectTaskComplete('${task.id}')"
+              onclick="toggleProjectTaskComplete('${taskIds.join(',')}')"
               title="${isDone ? '未完了に戻す' : '完了にする'}"
               aria-label="${isDone ? '未完了に戻す' : '完了にする'}">✓</button>
       <div class="task-accent-bar"></div>
@@ -3725,11 +3816,12 @@ function projectTaskListRow(task) {
         <div class="task-title">${escHtml(task.content)}</div>
         ${visibleNote ? `<div class="task-note">備考：${escHtml(visibleNote)}</div>` : ''}
         <div class="task-meta">
-          ${taskDateTagHTML(originDate, { carried: Boolean(task.carriedFromTaskId) })}
+          ${taskDateTagHTML(originDate, { carried: isCarry, label: dateLabel || undefined })}
           <span>担当：${member ? escHtml(member.name) : '未設定'}</span>
           ${phaseName ? `<span class="tag tag-phase">${escHtml(phaseName)}</span>` : '<span style="color:var(--text-3)">フェーズなし</span>'}
-          ${task.carriedFromTaskId ? '<span class="tag tag-carry tag-carry-strong">繰り越し</span>' : ''}
+          ${isCarry ? '<span class="tag tag-carry tag-carry-strong">繰り越し</span>' : ''}
           ${isDone ? '<span class="tag tag-done">完了</span>' : ''}
+          ${duplicateCount > 1 ? `<span class="tag">集約 ${duplicateCount}件</span>` : ''}
           <span class="tag-hours">${task.estimatedHours}h</span>
         </div>
       </div>
@@ -3737,18 +3829,21 @@ function projectTaskListRow(task) {
     </div>`;
 }
 
-async function toggleProjectTaskComplete(taskId) {
-  const task = DB.Tasks.get(taskId);
+async function toggleProjectTaskComplete(taskIdsText) {
+  const taskIds = String(taskIdsText || '').split(',').map(id => id.trim()).filter(Boolean);
+  if (!taskIds.length) return;
+  const task = DB.Tasks.get(taskIds[0]);
   if (!task) return;
+  const projectId = task.projectId;
   const before = taskSnapshot();
-  DB.Tasks.setCompletion(taskId, task.completed === true ? null : true, '');
+  const nextCompleted = task.completed === true ? null : true;
+  taskIds.forEach(taskId => DB.Tasks.setCompletion(taskId, nextCompleted, ''));
   const ok = await DB.syncCloudStore?.();
   if (ok === false) {
     restoreTaskSnapshot(before);
     showToast('保存できなかったため、チェックを元に戻しました。最新に更新してから再度実行してください', 'error');
   }
-  const refreshed = DB.Tasks.get(taskId);
-  if (refreshed?.projectId) openProjectTasksModal(refreshed.projectId);
+  if (projectId) openProjectTasksModal(projectId);
   updateMorningBadge();
   if (_currentPage === 'projects') renderProjects();
 }
@@ -5452,6 +5547,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await DB.initStore();
   DB.seedDemoData();       // 初回のみデモデータを投入
   const carriedCount = DB.Tasks.carryOverOpenTasks();
+  const compacted = DB.Tasks.compactCarryoverDuplicates?.() || { mergedCount: 0 };
   const urlMember = resolveMemberFromUrl();
   if (urlMember) {
     _personalMemberId = urlMember.id;
@@ -5465,6 +5561,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   openUrlRequestedProject();
   if (carriedCount > 0) {
     showToast(`${carriedCount}件の未完了タスクを今日のタスクへ移動しました`, 'info');
+  }
+  if (compacted.mergedCount > 0) {
+    showToast(`${compacted.mergedCount}件の繰り越し履歴を同じタスクに統合しました`, 'info');
   }
 });
 
