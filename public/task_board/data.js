@@ -843,9 +843,9 @@ const ProjectReviews = {
 // ============================================================
 const Templates = {
   all() { return load(KEYS.TEMPLATES) ?? []; },
-  add({ name, phases }) {
+  add({ name, phases, tasks = [] }) {
     const list = this.all();
-    const tpl = { id: genId(), name, phases, tasks: [], custom: true };
+    const tpl = { id: genId(), name, phases, tasks, custom: true };
     list.push(tpl);
     save(KEYS.TEMPLATES, list);
     return tpl;

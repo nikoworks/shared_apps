@@ -552,6 +552,35 @@ body {
 .tpl-phase-input {
   flex: 1;
 }
+.tpl-task-list {
+  display: grid;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.tpl-task-row {
+  display: grid;
+  grid-template-columns: 28px minmax(180px, 1fr) 130px 82px 130px 86px 68px 32px 32px 32px;
+  gap: 6px;
+  align-items: center;
+  min-width: 980px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-glass);
+}
+.tpl-task-number {
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 800;
+  text-align: right;
+}
+.tpl-task-row input,
+.tpl-task-row select {
+  min-width: 0;
+  font-size: 12px;
+  padding: 6px 8px;
+}
 
 /* ─── Progress Bar ───────────────────────────────────────── */
 .progress-bar {
@@ -1829,7 +1858,7 @@ body {
 }
 .template-preview-row {
   display: grid;
-  grid-template-columns: auto minmax(180px, 1fr) 92px 145px 72px minmax(90px, auto);
+  grid-template-columns: auto minmax(180px, 1fr) 92px 130px 145px 72px minmax(90px, auto);
   gap: 8px;
   align-items: center;
   padding: 7px 8px;

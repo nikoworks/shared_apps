@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '定期案件補完版 2026-06-21-01';
+const APP_BUILD_LABEL = 'テンプレートタスク編集版 2026-06-21-02';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const JP_HOLIDAYS = new Set([
@@ -4417,6 +4417,9 @@ function renderProjectTemplatePreview() {
         ${['作業','依頼','確認','待ち','修正','連絡','納品'].map(type =>
           `<option value="${type}" ${(task.type || '作業') === type ? 'selected' : ''}>${type}</option>`).join('')}
       </select>
+      <select class="form-select tpl-task-member" aria-label="担当">
+        ${memberOptionsHTML(task.defaultMemberId || '', true)}
+      </select>
       <input type="date" class="form-input tpl-task-date" value="${deliveryDate ? escHtml(task.dueDate) : ''}" aria-label="仮締切">
       <input type="number" class="form-input tpl-task-hours" min="0.25" step="0.25" value="${Number(task.hours || 1)}" aria-label="工数">
       <small>${escHtml(task.phase || 'フェーズなし')}</small>
@@ -4441,6 +4444,7 @@ function readTemplateTaskDrafts(templateId, deliveryDate) {
       phase: row.dataset.phase || '',
       content: row.querySelector('.tpl-task-content')?.value?.trim() || '',
       type: row.querySelector('.tpl-task-type')?.value || '作業',
+      defaultMemberId: row.querySelector('.tpl-task-member')?.value || '',
       dueDate: row.querySelector('.tpl-task-date')?.value || '',
       hours: Number(row.querySelector('.tpl-task-hours')?.value || 1) || 1,
     }))
@@ -4456,7 +4460,7 @@ function createTemplateTasksForProject(project, templateId, fallbackMemberId, ta
   tasks.forEach(task => {
     const phase = phaseByName.get(task.phase);
     DB.Tasks.add({
-      memberId: fallbackMemberId,
+      memberId: task.defaultMemberId || fallbackMemberId,
       projectId: project.id,
       phaseId: phase?.id || null,
       content: task.content,
@@ -5736,6 +5740,7 @@ function templatesTabHTML(templates) {
 function openTemplateModal(editId) {
   const tpl    = editId ? DB.Templates.get(editId) : null;
   const phases = tpl ? [...tpl.phases] : [''];
+  const tasks = tpl?.tasks || [];
 
   openModal(`
     <div class="form-group">
@@ -5750,6 +5755,15 @@ function openTemplateModal(editId) {
       <button class="btn btn-ghost" style="width:100%;margin-top:6px"
               onclick="addTplPhaseRow()">＋ フェーズを追加</button>
     </div>
+    <div class="form-group">
+      <label class="form-label">標準タスク</label>
+      <div class="form-help">納品日からの営業日数、種別、デフォルト担当を設定できます。担当未設定の場合は、プロジェクトの窓口担当が入ります。</div>
+      <div id="tpl-tasks-list" class="tpl-task-list">
+        ${tasks.map((task, i) => tplTaskRow(task, i, phases)).join('')}
+      </div>
+      <button class="btn btn-ghost" style="width:100%;margin-top:6px"
+              onclick="addTplTaskRow()">＋ 標準タスクを追加</button>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal()">キャンセル</button>
       <button class="btn btn-primary" onclick="${editId ? `saveTemplateEdit('${editId}')` : 'saveTemplateNew()'}">
@@ -5760,10 +5774,11 @@ function openTemplateModal(editId) {
 }
 
 function tplPhaseRow(value, i) {
+  const phaseName = typeof value === 'string' ? value : value?.name || '';
   return `
     <div class="tpl-phase-row" id="tpl-row-${i}">
       <span class="tpl-phase-number">${i+1}</span>
-      <input class="form-input tpl-phase-input" placeholder="フェーズ名" value="${escHtml(value)}" id="tpl-ph-${i}">
+      <input class="form-input tpl-phase-input" placeholder="フェーズ名" value="${escHtml(phaseName)}" id="tpl-ph-${i}" oninput="refreshTplTaskPhaseOptions()">
       <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplPhaseRow(this, -1)" title="上へ">↑</button>
       <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplPhaseRow(this, 1)" title="下へ">↓</button>
       <button class="btn btn-danger btn-sm btn-icon" onclick="this.closest('.tpl-phase-row').remove();renumberTplPhases()">✕</button>
@@ -5782,7 +5797,7 @@ function addTplPhaseRow() {
   div.id = id;
   div.innerHTML = `
     <span class="tpl-phase-number">${idx}</span>
-    <input class="form-input tpl-phase-input" placeholder="フェーズ名" id="tf-dyn-ph-${_tplRowCount}">
+    <input class="form-input tpl-phase-input" placeholder="フェーズ名" id="tf-dyn-ph-${_tplRowCount}" oninput="refreshTplTaskPhaseOptions()">
     <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplPhaseRow(this, -1)" title="上へ">↑</button>
     <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplPhaseRow(this, 1)" title="下へ">↓</button>
     <button class="btn btn-danger btn-sm btn-icon" onclick="this.closest('.tpl-phase-row').remove();renumberTplPhases()">✕</button>`;
@@ -5809,6 +5824,7 @@ function renumberTplPhases() {
     const num = row.querySelector('.tpl-phase-number');
     if (num) num.textContent = String(i + 1);
   });
+  refreshTplTaskPhaseOptions();
 }
 
 function getTemplatePhases() {
@@ -5816,10 +5832,99 @@ function getTemplatePhases() {
     .map(el => el.value.trim()).filter(Boolean);
 }
 
+function memberOptionsHTML(selectedId = '', includeEmpty = true) {
+  return [
+    includeEmpty ? `<option value="" ${!selectedId ? 'selected' : ''}>未設定</option>` : '',
+    ...DB.Members.all().map(member =>
+      `<option value="${member.id}" ${selectedId === member.id ? 'selected' : ''}>${escHtml(member.name)}</option>`),
+  ].join('');
+}
+
+function templatePhaseOptionsHTML(selectedPhase = '') {
+  const phases = getTemplatePhases();
+  return [
+    `<option value="" ${!selectedPhase ? 'selected' : ''}>フェーズなし</option>`,
+    ...phases.map(phase =>
+      `<option value="${escHtml(phase)}" ${selectedPhase === phase ? 'selected' : ''}>${escHtml(phase)}</option>`),
+  ].join('');
+}
+
+function tplTaskRow(task = {}, i = 0, phases = getTemplatePhases()) {
+  const phase = task.phase || (phases[0] ? (typeof phases[0] === 'string' ? phases[0] : phases[0].name) : '');
+  const type = task.type || '作業';
+  return `
+    <div class="tpl-task-row" data-index="${i}">
+      <span class="tpl-task-number">${i + 1}</span>
+      <input class="form-input tpl-task-content-edit" placeholder="タスク名" value="${escHtml(task.content || '')}">
+      <select class="form-select tpl-task-phase-edit">${templatePhaseOptionsHTML(phase)}</select>
+      <select class="form-select tpl-task-type-edit">
+        ${['作業','依頼','確認','待ち','修正','連絡','納品'].map(item =>
+          `<option value="${item}" ${type === item ? 'selected' : ''}>${item}</option>`).join('')}
+      </select>
+      <select class="form-select tpl-task-member-edit">${memberOptionsHTML(task.defaultMemberId || '', true)}</select>
+      <input type="number" class="form-input tpl-task-offset-edit" value="${Number(task.offset || 0)}" title="納品日からの営業日" step="1">
+      <input type="number" class="form-input tpl-task-hours-edit" value="${Number(task.hours || 1)}" min="0.25" step="0.25" title="工数">
+      <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplTaskRow(this, -1)" title="上へ">↑</button>
+      <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplTaskRow(this, 1)" title="下へ">↓</button>
+      <button class="btn btn-danger btn-sm btn-icon" onclick="this.closest('.tpl-task-row').remove();renumberTplTasks()">✕</button>
+    </div>`;
+}
+
+let _tplTaskRowCount = 0;
+function addTplTaskRow() {
+  const list = document.getElementById('tpl-tasks-list');
+  if (!list) return;
+  _tplTaskRowCount++;
+  const div = document.createElement('div');
+  div.innerHTML = tplTaskRow({}, list.children.length, getTemplatePhases());
+  list.appendChild(div.firstElementChild);
+  renumberTplTasks();
+}
+
+function moveTplTaskRow(button, direction) {
+  const row = button.closest('.tpl-task-row');
+  const list = document.getElementById('tpl-tasks-list');
+  if (!row || !list) return;
+  if (direction < 0 && row.previousElementSibling) {
+    list.insertBefore(row, row.previousElementSibling);
+  }
+  if (direction > 0 && row.nextElementSibling) {
+    list.insertBefore(row.nextElementSibling, row);
+  }
+  renumberTplTasks();
+}
+
+function renumberTplTasks() {
+  document.querySelectorAll('#tpl-tasks-list .tpl-task-row').forEach((row, i) => {
+    const num = row.querySelector('.tpl-task-number');
+    if (num) num.textContent = String(i + 1);
+  });
+}
+
+function refreshTplTaskPhaseOptions() {
+  document.querySelectorAll('#tpl-tasks-list .tpl-task-phase-edit').forEach(select => {
+    const current = select.value;
+    select.innerHTML = templatePhaseOptionsHTML(current);
+  });
+}
+
+function getTemplateTasks() {
+  return Array.from(document.querySelectorAll('#tpl-tasks-list .tpl-task-row'))
+    .map(row => ({
+      content: row.querySelector('.tpl-task-content-edit')?.value?.trim() || '',
+      phase: row.querySelector('.tpl-task-phase-edit')?.value || '',
+      type: row.querySelector('.tpl-task-type-edit')?.value || '作業',
+      defaultMemberId: row.querySelector('.tpl-task-member-edit')?.value || '',
+      offset: Number(row.querySelector('.tpl-task-offset-edit')?.value || 0) || 0,
+      hours: Number(row.querySelector('.tpl-task-hours-edit')?.value || 1) || 1,
+    }))
+    .filter(task => task.content);
+}
+
 function saveTemplateNew() {
   const name = document.getElementById('tpl-name')?.value?.trim();
   if (!name) { showToast('テンプレート名を入力してください', 'error'); return; }
-  DB.Templates.add({ name, phases: getTemplatePhases() });
+  DB.Templates.add({ name, phases: getTemplatePhases(), tasks: getTemplateTasks() });
   closeModal();
   showToast('テンプレートを作成しました', 'success');
   renderSettings();
@@ -5828,7 +5933,7 @@ function saveTemplateNew() {
 function saveTemplateEdit(tplId) {
   const name = document.getElementById('tpl-name')?.value?.trim();
   if (!name) { showToast('テンプレート名を入力してください', 'error'); return; }
-  DB.Templates.update(tplId, { name, phases: getTemplatePhases() });
+  DB.Templates.update(tplId, { name, phases: getTemplatePhases(), tasks: getTemplateTasks() });
   closeModal();
   showToast('テンプレートを更新しました', 'success');
   renderSettings();
