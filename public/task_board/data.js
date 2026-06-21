@@ -565,6 +565,14 @@ const Tasks = {
   remove(id) {
     save(KEYS.TASKS, this.allIncludingMerged().filter(t => t.id !== id));
   },
+  removeByProject(projectId) {
+    const list = this.allIncludingMerged();
+    const removedIds = list
+      .filter(t => t.projectId === projectId)
+      .map(t => t.id);
+    save(KEYS.TASKS, list.filter(t => t.projectId !== projectId));
+    return removedIds;
+  },
   setCompletion(id, completed, reason = '') {
     const list = this.all();
     const target = list.find(t => t.id === id);
@@ -771,6 +779,13 @@ const Asks = {
   },
   remove(id) {
     save(KEYS.ASKS, this.all().filter(a => a.id !== id));
+  },
+  removeByProjectOrTasks(projectId, taskIds = []) {
+    const taskIdSet = new Set(taskIds);
+    const list = this.all();
+    const kept = list.filter(a => a.projectId !== projectId && !taskIdSet.has(a.taskId));
+    save(KEYS.ASKS, kept);
+    return list.length - kept.length;
   },
   byMember(memberId) {
     return this.all().filter(a => a.toMemberId === memberId || a.toName === '全員');

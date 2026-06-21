@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'テンプレート編集UI改善版 2026-06-22-01';
+const APP_BUILD_LABEL = 'プロジェクト削除連動版 2026-06-22-02';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const JP_HOLIDAYS = new Set([
@@ -4733,9 +4733,22 @@ function reopenProject(id) {
 }
 
 function deleteProject(id) {
-  if (!confirm('このプロジェクトを削除しますか？\n（タスクとの紐付けは保持されます）')) return;
+  const project = DB.Projects.get(id);
+  if (!project) return;
+  const relatedTasks = DB.Tasks.allIncludingMerged().filter(task => task.projectId === id);
+  const relatedAsks = DB.Asks.all().filter(ask =>
+    ask.projectId === id || relatedTasks.some(task => task.id === ask.taskId)
+  );
+  const projectName = `${project.clientName || '未設定'} / ${project.name || '名称未設定'}`;
+  const detail = relatedTasks.length || relatedAsks.length
+    ? `\n\n関連タスク ${relatedTasks.length}件、確認・お願い ${relatedAsks.length}件も一緒に削除されます。`
+    : '\n\n関連タスクはありません。';
+
+  if (!confirm(`${projectName} を削除しますか？${detail}\nこの操作は元に戻せません。`)) return;
+  const removedTaskIds = DB.Tasks.removeByProject(id);
+  DB.Asks.removeByProjectOrTasks(id, removedTaskIds);
   DB.Projects.remove(id);
-  showToast('プロジェクトを削除しました', 'info');
+  showToast(`プロジェクトと関連タスク${removedTaskIds.length}件を削除しました`, 'info');
   refreshCurrentPage();
 }
 
