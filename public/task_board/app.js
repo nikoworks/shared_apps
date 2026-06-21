@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'テンプレートタスク編集版 2026-06-21-02';
+const APP_BUILD_LABEL = 'テンプレート編集UI改善版 2026-06-22-01';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const JP_HOLIDAYS = new Set([
@@ -98,15 +98,16 @@ function refreshCurrentPage() {
 /* ============================================================
    モーダル
    ============================================================ */
-function openModal(contentHTML, title) {
+function openModal(contentHTML, title, options = {}) {
   const overlay = document.getElementById('modal-overlay');
   const modal   = document.getElementById('modal');
+  modal.className = `modal ${options.wide ? 'modal-wide' : ''}`;
   modal.innerHTML = `
     <div class="modal-header">
       <span class="modal-title" id="modal-title-text">${title}</span>
       <button class="modal-close" onclick="closeModal()" aria-label="閉じる">✕</button>
     </div>
-    ${contentHTML}
+    <div class="modal-body">${contentHTML}</div>
   `;
   overlay.classList.add('open');
 }
@@ -5757,8 +5758,20 @@ function openTemplateModal(editId) {
     </div>
     <div class="form-group">
       <label class="form-label">標準タスク</label>
-      <div class="form-help">納品日からの営業日数、種別、デフォルト担当を設定できます。担当未設定の場合は、プロジェクトの窓口担当が入ります。</div>
+      <div class="form-help">担当の右は「営業日前」と「工数」です。営業日前は納品日から何営業日前に仮締切を置くか、工数は予定時間です。担当未設定の場合は、プロジェクトの窓口担当が入ります。</div>
       <div id="tpl-tasks-list" class="tpl-task-list">
+        <div class="tpl-task-header" aria-hidden="true">
+          <span>No.</span>
+          <span>タスク名</span>
+          <span>フェーズ</span>
+          <span>種別</span>
+          <span>担当</span>
+          <span>営業日前</span>
+          <span>工数</span>
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
         ${tasks.map((task, i) => tplTaskRow(task, i, phases)).join('')}
       </div>
       <button class="btn btn-ghost" style="width:100%;margin-top:6px"
@@ -5770,7 +5783,7 @@ function openTemplateModal(editId) {
         ${editId ? '更新する' : '作成する'}
       </button>
     </div>
-  `, editId ? 'テンプレートを編集' : 'テンプレートを追加');
+  `, editId ? 'テンプレートを編集' : 'テンプレートを追加', { wide: true });
 }
 
 function tplPhaseRow(value, i) {
@@ -5862,8 +5875,8 @@ function tplTaskRow(task = {}, i = 0, phases = getTemplatePhases()) {
           `<option value="${item}" ${type === item ? 'selected' : ''}>${item}</option>`).join('')}
       </select>
       <select class="form-select tpl-task-member-edit">${memberOptionsHTML(task.defaultMemberId || '', true)}</select>
-      <input type="number" class="form-input tpl-task-offset-edit" value="${Number(task.offset || 0)}" title="納品日からの営業日" step="1">
-      <input type="number" class="form-input tpl-task-hours-edit" value="${Number(task.hours || 1)}" min="0.25" step="0.25" title="工数">
+      <input type="number" class="form-input tpl-task-offset-edit" value="${Number(task.offset || 0)}" title="納品日からの営業日" aria-label="営業日前" placeholder="営業日前" step="1">
+      <input type="number" class="form-input tpl-task-hours-edit" value="${Number(task.hours || 1)}" min="0.25" step="0.25" title="工数" aria-label="工数" placeholder="工数">
       <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplTaskRow(this, -1)" title="上へ">↑</button>
       <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplTaskRow(this, 1)" title="下へ">↓</button>
       <button class="btn btn-danger btn-sm btn-icon" onclick="this.closest('.tpl-task-row').remove();renumberTplTasks()">✕</button>
@@ -5876,7 +5889,7 @@ function addTplTaskRow() {
   if (!list) return;
   _tplTaskRowCount++;
   const div = document.createElement('div');
-  div.innerHTML = tplTaskRow({}, list.children.length, getTemplatePhases());
+  div.innerHTML = tplTaskRow({}, list.querySelectorAll('.tpl-task-row').length, getTemplatePhases());
   list.appendChild(div.firstElementChild);
   renumberTplTasks();
 }
@@ -5885,7 +5898,7 @@ function moveTplTaskRow(button, direction) {
   const row = button.closest('.tpl-task-row');
   const list = document.getElementById('tpl-tasks-list');
   if (!row || !list) return;
-  if (direction < 0 && row.previousElementSibling) {
+  if (direction < 0 && row.previousElementSibling?.classList.contains('tpl-task-row')) {
     list.insertBefore(row, row.previousElementSibling);
   }
   if (direction > 0 && row.nextElementSibling) {
