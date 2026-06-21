@@ -164,6 +164,40 @@ function getProjectLabel(task) {
   return p ? `${p.clientName} / ${p.name}` : '（削除済みPJ）';
 }
 
+function projectSortBucket(project) {
+  return project?.projectType === 'recurring' ? '1' : '0';
+}
+
+function projectSortLabel(project) {
+  return [
+    projectSortBucket(project),
+    project?.clientName || '',
+    project?.recurringSeries || '',
+    project?.name || '',
+    project?.createdAt || '',
+  ].join(' / ');
+}
+
+function sortProjectsForPicker(projects) {
+  return [...projects].sort((a, b) =>
+    projectSortLabel(a).localeCompare(projectSortLabel(b), 'ja'));
+}
+
+function projectOptionGroupLabel(project) {
+  return project?.projectType === 'recurring' ? '定期' : '通常';
+}
+
+function projectOptionLabel(project, includeType = false) {
+  const base = `${project.clientName || 'クライアント未設定'} / ${project.name || '名称未設定'}`;
+  return includeType ? `${projectOptionGroupLabel(project)} / ${base}` : base;
+}
+
+function projectOptionsHTML(projects, selectedId = '', includeType = false) {
+  return sortProjectsForPicker(projects).map(project =>
+    `<option value="${project.id}" ${selectedId === project.id ? 'selected' : ''}>${escHtml(projectOptionLabel(project, includeType))}</option>`
+  ).join('');
+}
+
 /** タスク担当者名 */
 function getTaskOwnerLabel(task) {
   const member = DB.Members.get(task.memberId);
@@ -633,7 +667,7 @@ function renderMorningCheck() {
   });
   const personalMember = _personalMemberId ? DB.Members.get(_personalMemberId) : null;
   const memberOpts = members.map(m => `<option value="${m.id}" ${selectedMemberId === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
-  const projectOpts = projects.map(p => `<option value="${p.id}" ${_morningFilter.projectId === p.id ? 'selected' : ''}>${p.clientName} / ${p.name}</option>`).join('');
+  const projectOpts = projectOptionsHTML(projects, _morningFilter.projectId, true);
 
   if (!filteredTasks.length) {
     main.innerHTML = `
@@ -939,7 +973,7 @@ function renderTodayTasks() {
   sortedFiltered.forEach(t => (byMember[t.memberId] = byMember[t.memberId] || []).push(t));
 
   const memberOpts  = members.map(m => `<option value="${m.id}" ${_taskFilter.memberId === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
-  const projectOpts = projects.map(p => `<option value="${p.id}" ${_taskFilter.projectId === p.id ? 'selected' : ''}>${p.clientName} / ${p.name}</option>`).join('');
+  const projectOpts = projectOptionsHTML(projects, _taskFilter.projectId, true);
 
   main.innerHTML = `
     <div class="page-header"><div class="page-header-left">
@@ -1581,10 +1615,8 @@ function buildTaskProjectOptions() {
   if (selectedProject && !projects.some(project => project.id === selectedProject.id)) {
     projects = [selectedProject, ...projects];
   }
-  projects = projects.slice().sort((a, b) =>
-    `${a.clientName || ''}${a.name || ''}`.localeCompare(`${b.clientName || ''}${b.name || ''}`, 'ja'));
   return `<option value="">プロジェクトを選択...</option>` +
-    projects.map(project => {
+    sortProjectsForPicker(projects).map(project => {
       const typeLabel = project.projectType === 'recurring' ? '定期' : '通常';
       return `<option value="${project.id}" ${_taskFormData.projectId === project.id ? 'selected' : ''}>
         ${escHtml(project.clientName)} / ${escHtml(project.name)}（${typeLabel}）
@@ -3301,6 +3333,7 @@ function ganttPhaseRowHTML(project, phase, index, projectTasks, members, days, p
         ${memberNames.length ? `<span>${escHtml(memberNames.join('、'))}</span>` : ''}
         ${total ? `<span>${done}/${total}件</span>` : '<span>タスクなし</span>'}
       </div>
+      ${ganttPhaseTaskListHTML(phaseTasks, members)}
     </div>
     <div class="gantt-scroll ${groupEndClass} ${groupClass} ${timingClass}">
       <div class="gantt-row-line" style="width:${days.length * 36}px">
@@ -3309,6 +3342,38 @@ function ganttPhaseRowHTML(project, phase, index, projectTasks, members, days, p
       </div>
     </div>
   `;
+}
+
+function ganttPhaseTaskListHTML(tasks, members) {
+  if (!tasks.length) return '';
+  const rows = tasks
+    .slice()
+    .sort((a, b) => {
+      const dateCompare = String(a.date || '').localeCompare(String(b.date || ''));
+      if (dateCompare) return dateCompare;
+      return String(a.content || '').localeCompare(String(b.content || ''), 'ja');
+    })
+    .map(task => {
+      const member = members.find(m => m.id === task.memberId) || DB.Members.get(task.memberId);
+      const status = task.completed === true ? '完了' : task.completed === false ? '未完了' : '未確認';
+      const note = visibleTaskNote(task);
+      return `
+        <button type="button" class="gantt-phase-task" onclick="openTaskModal('${task.id}')">
+          <span class="gantt-phase-task-title">${escHtml(task.content || '未入力タスク')}</span>
+          <span class="gantt-phase-task-meta">
+            ${task.date ? escHtml(DB.fmtDate(task.date)) : '日付未設定'}
+            / ${member ? escHtml(member.name) : '担当未設定'}
+            / ${Number(task.estimatedHours) || 0}h
+            / ${status}
+          </span>
+          ${note ? `<span class="gantt-phase-task-note">${escHtml(note)}</span>` : ''}
+        </button>`;
+    }).join('');
+  return `
+    <details class="gantt-phase-tasks">
+      <summary>タスクを見る (${tasks.length})</summary>
+      <div class="gantt-phase-task-list">${rows}</div>
+    </details>`;
 }
 
 function ganttDayHeaderHTML(dateStr) {
@@ -5002,14 +5067,11 @@ function cleanupProjectName(project) {
 }
 
 function cleanupProjectOptionsHTML(selectedId = '', includeProvisional = false) {
-  return DB.Projects.active()
-    .filter(project => includeProvisional || !isCleanupProvisionalProject(project))
-    .sort((a, b) => cleanupProjectName(a).localeCompare(cleanupProjectName(b), 'ja'))
-    .map(project => `
-      <option value="${project.id}" ${selectedId === project.id ? 'selected' : ''}>
-        ${escHtml(cleanupProjectName(project))}
-      </option>`)
-    .join('');
+  return projectOptionsHTML(
+    DB.Projects.active().filter(project => includeProvisional || !isCleanupProvisionalProject(project)),
+    selectedId,
+    true
+  );
 }
 
 function cleanupClientStats(projects = DB.Projects.all()) {
@@ -5066,8 +5128,11 @@ function cleanupTaskRow(taskGroup) {
   const dateSummary = taskGroup.dateSummary || (task.date ? DB.fmtDate(task.date) : '日付未設定');
   const member = DB.Members.get(task.memberId);
   const currentProject = DB.Projects.get(task.projectId);
+  const isDeletedProjectTask = Boolean(task.projectId && !currentProject);
   const projectHint = task.sourceProjectName
     ? `確認名：${task.sourceProjectName}`
+    : isDeletedProjectTask
+    ? '削除済みプロジェクトの残タスク'
     : `現在の紐付け：${cleanupProjectName(currentProject)}`;
   const selectId = `cleanup-task-project-${task.id}`;
   return `
@@ -5093,6 +5158,7 @@ function cleanupTaskRow(taskGroup) {
           ${duplicateCount > 1 ? 'まとめて紐付け' : '紐付け'}
         </button>
         <button class="btn btn-ghost btn-sm" onclick="openTaskModal('${task.id}')">編集</button>
+        ${isDeletedProjectTask ? `<button class="btn btn-danger btn-sm" onclick="deleteCleanupTasks('${taskIds.join(',')}')">タスク削除</button>` : ''}
       </div>
     </div>`;
 }
@@ -5388,6 +5454,19 @@ async function assignCleanupTaskProjectGroup(taskIdsText, selectedProjectId = ''
     ? `重複タスク${taskIds.length}件を正式プロジェクトへ紐付けました`
     : 'タスクを正式プロジェクトへ紐付けました';
   await saveCleanupAndRefresh(message);
+}
+
+async function deleteCleanupTasks(taskIdsText) {
+  const taskIds = String(taskIdsText || '').split(',').map(id => id.trim()).filter(Boolean);
+  const tasks = taskIds.map(id => DB.Tasks.get(id)).filter(Boolean);
+  if (!tasks.length) {
+    showToast('削除するタスクが見つかりません', 'error');
+    return;
+  }
+  if (!confirm(`${tasks.length}件の残タスクを削除します。\nこの操作は元に戻せません。よろしいですか？`)) return;
+  taskIds.forEach(taskId => DB.Tasks.remove(taskId));
+  DB.Asks.removeByProjectOrTasks?.('', taskIds);
+  await saveCleanupAndRefresh('削除済みプロジェクトの残タスクを削除しました');
 }
 
 async function mergeCleanupDuplicateTasks(taskIdsText, keepTaskId) {
