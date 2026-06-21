@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '制作テンプレート版 2026-06-20-03';
+const APP_BUILD_LABEL = '定期案件補完版 2026-06-21-01';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const JP_HOLIDAYS = new Set([
@@ -4139,12 +4139,15 @@ function openProjectModal(editId) {
     </div>
     <div class="form-group" id="pj-recurring-group" style="${type === 'recurring' ? '' : 'display:none'}">
       <label class="form-label">定期案件名</label>
-      <select class="form-select" id="pj-recurring-select" onchange="toggleRecurringProjectFields()">
+      <select class="form-select" id="pj-recurring-select" onchange="handleRecurringSeriesChange()">
         ${recurringSelectOpts}
       </select>
       <input class="form-input" id="pj-recurring" style="margin-top:8px;${recurringSelectValue === '__new__' ? '' : 'display:none'}"
-             placeholder="例：明治安田 月号 / プレゼントキャンペーン更新" value="${recurringSelectValue === '__new__' ? escHtml(recurringSeries) : ''}">
-      <div class="form-help">定期プロジェクトだけ入力します。既存から選ぶと表記ゆれを防げます。</div>
+             placeholder="例：明治安田 月号 / プレゼントキャンペーン更新" value="${recurringSelectValue === '__new__' ? escHtml(recurringSeries) : ''}" oninput="suggestRecurringProjectName()">
+      <input class="form-input" id="pj-recurring-issue" style="margin-top:8px"
+             oninput="suggestRecurringProjectName()"
+             placeholder="例：7月号 / 夏 / 2026年秋号" value="">
+      <div class="form-help">既存の定期案件を選ぶと、クライアント名などを自動補完します。プロジェクト名は月号や季節だけ入力できます。</div>
     </div>
     <div class="form-group">
       <label class="form-label">クライアント名 *</label>
@@ -4157,7 +4160,8 @@ function openProjectModal(editId) {
     </div>
     <div class="form-group">
       <label class="form-label">プロジェクト名 *</label>
-      <input class="form-input" id="pj-name" placeholder="例：7月号 / 2026年7月切り替え / LP制作" value="${escHtml(project?.name||'')}">
+      <input class="form-input" id="pj-name" placeholder="例：7月号 / 2026年7月切り替え / LP制作" value="${escHtml(project?.name||'')}"
+             oninput="this.dataset.manualEdited='1'">
     </div>
     <div class="form-group">
       <label class="form-label">発起人</label>
@@ -4239,6 +4243,79 @@ function toggleRecurringProjectFields() {
   const recurringSelect = document.getElementById('pj-recurring-select');
   const recurringInput = document.getElementById('pj-recurring');
   if (recurringInput) recurringInput.style.display = recurringSelect?.value === '__new__' ? '' : 'none';
+  suggestRecurringProjectName();
+}
+
+function latestProjectForRecurringSeries(series) {
+  const normalized = String(series || '').trim();
+  if (!normalized) return null;
+  return DB.Projects.all()
+    .filter(project => String(project.recurringSeries || '').trim() === normalized)
+    .sort((a, b) => String(b.deliveryDate || b.createdAt || '').localeCompare(String(a.deliveryDate || a.createdAt || '')))[0] || null;
+}
+
+function setProjectClientFromName(clientName) {
+  if (!clientName) return;
+  const select = document.getElementById('pj-client-select');
+  const input = document.getElementById('pj-client');
+  if (!select || !input) return;
+  const option = Array.from(select.options).find(opt => opt.value === clientName);
+  if (option) {
+    select.value = clientName;
+    input.value = '';
+  } else {
+    select.value = '__new__';
+    input.value = clientName;
+  }
+  toggleProjectClientFields();
+}
+
+function recurringSeriesBaseProjectName(series) {
+  const value = String(series || '').trim();
+  return value
+    .replace(/\s*月号\s*$/g, '')
+    .replace(/\s*更新\s*$/g, '')
+    .replace(/\s*定期\s*$/g, '')
+    .trim();
+}
+
+function suggestedProjectNameFromRecurring(series, issue) {
+  const base = recurringSeriesBaseProjectName(series);
+  const suffix = String(issue || '').trim();
+  if (!base) return suffix;
+  if (!suffix) return base;
+  if (base.includes(suffix) || suffix.includes(base)) return suffix;
+  return `${base} ${suffix}`;
+}
+
+function suggestRecurringProjectName() {
+  const type = document.getElementById('pj-type')?.value || 'standard';
+  if (type !== 'recurring') return;
+  const series = getRecurringSeriesFromProjectForm(type);
+  const issue = document.getElementById('pj-recurring-issue')?.value || '';
+  const nameEl = document.getElementById('pj-name');
+  if (!nameEl || nameEl.dataset.manualEdited === '1') return;
+  nameEl.value = suggestedProjectNameFromRecurring(series, issue);
+}
+
+function handleRecurringSeriesChange() {
+  toggleRecurringProjectFields();
+  const series = getRecurringSeriesFromProjectForm('recurring');
+  const latest = latestProjectForRecurringSeries(series);
+  if (latest) {
+    setProjectClientFromName(latest.clientName);
+    const ownerEl = document.getElementById('pj-owner');
+    const createdByEl = document.getElementById('pj-created-by');
+    const dealEl = document.getElementById('pj-deal-category');
+    const leadEl = document.getElementById('pj-lead-source');
+    const leadDetailEl = document.getElementById('pj-lead-source-detail');
+    if (ownerEl && latest.ownerMemberId) ownerEl.value = latest.ownerMemberId;
+    if (createdByEl && latest.createdByMemberId) createdByEl.value = latest.createdByMemberId;
+    if (dealEl && latest.dealCategory) dealEl.value = latest.dealCategory;
+    if (leadEl && latest.leadSource) leadEl.value = latest.leadSource;
+    if (leadDetailEl && latest.leadSourceDetail) leadDetailEl.value = latest.leadSourceDetail;
+  }
+  suggestRecurringProjectName();
 }
 
 function recurringSeriesSelectOptions(current = '') {
@@ -4395,8 +4472,7 @@ function createTemplateTasksForProject(project, templateId, fallbackMemberId, ta
 
 async function saveProjectNew() {
   const clientName = getClientNameFromProjectForm();
-  const name       = document.getElementById('pj-name')?.value?.trim();
-  if (!clientName || !name) { showToast('クライアント名とプロジェクト名は必須です', 'error'); return; }
+  let name       = document.getElementById('pj-name')?.value?.trim();
   const createdByMemberId = document.getElementById('pj-created-by')?.value || getDefaultCreatorMemberId();
   const ownerMemberId = document.getElementById('pj-owner')?.value || '';
   if (!createdByMemberId && !ownerMemberId) {
@@ -4406,6 +4482,10 @@ async function saveProjectNew() {
   const deliveryDate = document.getElementById('pj-delivery')?.value || '';
   const projectType = document.getElementById('pj-type')?.value || 'standard';
   const recurringSeries = getRecurringSeriesFromProjectForm(projectType);
+  if (projectType === 'recurring' && !name) {
+    name = suggestedProjectNameFromRecurring(recurringSeries, document.getElementById('pj-recurring-issue')?.value || '');
+  }
+  if (!clientName || !name) { showToast('クライアント名とプロジェクト名は必須です', 'error'); return; }
   if (projectType === 'recurring' && !recurringSeries) {
     showToast('定期プロジェクトは既存の定期案件を選ぶか、新規名を入力してください', 'error');
     return;
@@ -4455,8 +4535,7 @@ async function saveProjectNew() {
 
 function saveProjectEdit(projectId) {
   const clientName = getClientNameFromProjectForm();
-  const name       = document.getElementById('pj-name')?.value?.trim();
-  if (!clientName || !name) { showToast('クライアント名とプロジェクト名は必須です', 'error'); return; }
+  let name       = document.getElementById('pj-name')?.value?.trim();
   const createdByMemberId = document.getElementById('pj-created-by')?.value || getDefaultCreatorMemberId();
   const ownerMemberId = document.getElementById('pj-owner')?.value || '';
   if (!createdByMemberId && !ownerMemberId) {
@@ -4467,6 +4546,10 @@ function saveProjectEdit(projectId) {
   if (!confirmProjectDeliveryDate(deliveryDate)) return;
   const projectType = document.getElementById('pj-type')?.value || 'standard';
   const recurringSeries = getRecurringSeriesFromProjectForm(projectType);
+  if (projectType === 'recurring' && !name) {
+    name = suggestedProjectNameFromRecurring(recurringSeries, document.getElementById('pj-recurring-issue')?.value || '');
+  }
+  if (!clientName || !name) { showToast('クライアント名とプロジェクト名は必須です', 'error'); return; }
   if (projectType === 'recurring' && !recurringSeries) {
     showToast('定期プロジェクトは既存の定期案件を選ぶか、新規名を入力してください', 'error');
     return;
