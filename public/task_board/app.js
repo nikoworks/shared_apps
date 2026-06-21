@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'プロジェクト削除連動版 2026-06-22-02';
+const APP_BUILD_LABEL = '完了仮PJ非表示版 2026-06-22-03';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const JP_HOLIDAYS = new Set([
@@ -4837,8 +4837,10 @@ function analyzeDataIssues() {
   const projectIds = new Set(projects.map(p => p.id));
   const tasks = DB.Tasks.all().filter(task => !_cleanupFilter.memberId || task.memberId === _cleanupFilter.memberId);
 
+  const allTasks = DB.Tasks.all();
   const provisionalProjects = projects
     .filter(p => isCleanupProvisionalProject(p))
+    .filter(p => !cleanupProjectAllTasksDone(p, allTasks))
     .sort((a, b) => cleanupProjectName(a).localeCompare(cleanupProjectName(b), 'ja'));
 
   const missingProjectTasks = groupCleanupMissingProjectTasks(tasks
@@ -4894,6 +4896,11 @@ function isCleanupProvisionalProject(project) {
     project?.name === '仮プロジェクト' ||
     String(project?.name || '').includes('仮プロジェクト')
   );
+}
+
+function cleanupProjectAllTasksDone(project, tasks = DB.Tasks.all()) {
+  const relatedTasks = tasks.filter(task => task.projectId === project?.id);
+  return relatedTasks.length > 0 && relatedTasks.every(task => task.completed === true);
 }
 
 function normalizeCleanupTaskValue(value) {
