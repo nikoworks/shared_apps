@@ -29,20 +29,27 @@ function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
+function toLocalISODate(date = new Date()) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 function today() {
-  return new Date().toISOString().slice(0, 10);
+  return toLocalISODate();
 }
 
 function yesterday() {
   const d = new Date();
   d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
+  return toLocalISODate(d);
 }
 
 function prevDay(dateStr) {
   const d = new Date(dateStr + 'T00:00:00');
   d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
+  return toLocalISODate(d);
 }
 
 function load(key) {
@@ -178,15 +185,132 @@ function daysLeft(dateStr) {
 // 初期テンプレートデータ
 // ============================================================
 const DEFAULT_TEMPLATES = [
-  { id: 'tpl_pamphlet',    name: 'パンフレット・冊子',  phases: ['企画','取材・原稿','デザイン','校正','入稿','納品'] },
-  { id: 'tpl_website_new', name: 'Webサイト制作',       phases: ['企画','ワイヤー','デザイン','コーディング','テスト','公開'] },
-  { id: 'tpl_website_upd', name: 'Webサイト更新',       phases: ['依頼確認','原稿・素材収集','修正・制作','確認','公開'] },
-  { id: 'tpl_proposal',    name: '提案書作成',           phases: ['情報収集','構成','制作','確認','提出'] },
-  { id: 'tpl_video',       name: '動画制作',             phases: ['企画','撮影','編集','確認','納品'] },
-  { id: 'tpl_sns',         name: 'SNS投稿',              phases: ['企画','素材制作','原稿作成','確認','投稿'] },
-  { id: 'tpl_event',       name: 'イベント実施',         phases: ['企画','告知・集客','準備','当日運営','レポート'] },
-  { id: 'tpl_simple',      name: 'シンプル',             phases: ['準備','制作','納品'] },
-  { id: 'tpl_blank',       name: 'ブランク',             phases: [] },
+  {
+    id: 'tpl_present_campaign',
+    name: 'プレゼントキャンペーン更新',
+    category: 'production',
+    phases: ['事前準備','制作・設定','公開前最終準備','公開作業','キャンペーン実施中'],
+    tasks: [
+      { phase: '事前準備', content: 'プレゼント候補のリストアップ', type: '作業', offset: -55, hours: 1 },
+      { phase: '事前準備', content: '数値分析に基づく候補追加・削除', type: '作業', offset: -45, hours: 1 },
+      { phase: '事前準備', content: '商品説明の作成', type: '作業', offset: -40, hours: 1 },
+      { phase: '事前準備', content: 'クライアント確認・商品提供の相談', type: '確認', offset: -40, hours: 1 },
+      { phase: '事前準備', content: 'LP構成作成', type: '作業', offset: -40, hours: 2 },
+      { phase: '事前準備', content: 'チャットボット離脱防止モーダル作成', type: '作業', offset: -35, hours: 1 },
+      { phase: '制作・設定', content: 'LP制作依頼', type: '依頼', offset: -35, hours: 1 },
+      { phase: '制作・設定', content: '抽選プレゼント・全員プレゼントのコンパネ登録', type: '作業', offset: -25, hours: 1 },
+      { phase: '制作・設定', content: '応募完了ページを新規作成', type: '作業', offset: -25, hours: 1 },
+      { phase: '制作・設定', content: '応募完了ページ更新内容確認', type: '確認', offset: -22, hours: 1 },
+      { phase: '制作・設定', content: '応募者への自動配信メール作成・設定', type: '作業', offset: -22, hours: 1 },
+      { phase: '制作・設定', content: '公式用バナー制作', type: '依頼', offset: -20, hours: 1 },
+      { phase: '制作・設定', content: '広告バナー制作依頼', type: '依頼', offset: -20, hours: 1 },
+      { phase: '制作・設定', content: '広告テキスト作成', type: '作業', offset: -18, hours: 1 },
+      { phase: '公開前最終準備', content: 'Googleタグマネージャー計測設定', type: '作業', offset: -7, hours: 1 },
+      { phase: '公開前最終準備', content: 'ミエルカヒートマップにURL登録', type: '作業', offset: -7, hours: 1 },
+      { phase: '公開前最終準備', content: 'テスト応募', type: '確認', offset: -5, hours: 1 },
+      { phase: '公開前最終準備', content: '広告配信依頼', type: '依頼', offset: -3, hours: 1 },
+      { phase: '公開前最終準備', content: 'スマホバー設定', type: '作業', offset: -3, hours: 1 },
+      { phase: '公開前最終準備', content: 'ポップアップ設定', type: '作業', offset: -3, hours: 1 },
+      { phase: '公開作業', content: 'ビルド', type: '作業', offset: -1, hours: 1 },
+      { phase: '公開作業', content: '公式TOP更新', type: '作業', offset: 0, hours: 1 },
+      { phase: '公開作業', content: 'マイページ更新', type: '作業', offset: 0, hours: 1 },
+      { phase: '公開作業', content: 'その他更新', type: '作業', offset: 0, hours: 1 },
+      { phase: 'キャンペーン実施中', content: '広告バナー改善', type: '作業', offset: 5, hours: 1 },
+      { phase: 'キャンペーン実施中', content: '数値確認', type: '確認', offset: 5, hours: 1 },
+      { phase: 'キャンペーン実施中', content: '必要に応じてLP・広告調整', type: '作業', offset: 10, hours: 1 },
+    ],
+  },
+  {
+    id: 'tpl_ad_ops',
+    name: '広告運用',
+    category: 'production',
+    phases: ['配信準備','入稿・設定','配信開始','効果確認','改善'],
+    tasks: [
+      { phase: '配信準備', content: '配信目的・ターゲット確認', type: '確認', offset: -15, hours: 1 },
+      { phase: '配信準備', content: '広告文案作成', type: '作業', offset: -12, hours: 1 },
+      { phase: '配信準備', content: '広告バナー制作依頼', type: '依頼', offset: -12, hours: 1 },
+      { phase: '入稿・設定', content: '広告入稿・配信設定', type: '作業', offset: -5, hours: 1 },
+      { phase: '入稿・設定', content: '計測設定確認', type: '確認', offset: -4, hours: 1 },
+      { phase: '配信開始', content: '配信開始確認', type: '確認', offset: 0, hours: 1 },
+      { phase: '効果確認', content: '初回数値確認', type: '確認', offset: 3, hours: 1 },
+      { phase: '改善', content: '改善案整理・反映', type: '作業', offset: 7, hours: 1 },
+    ],
+  },
+  {
+    id: 'tpl_ad_creative',
+    name: '広告バナー・クリエイティブ制作',
+    category: 'production',
+    phases: ['要件整理','制作依頼','初稿確認','修正','入稿'],
+    tasks: [
+      { phase: '要件整理', content: 'サイズ・訴求・入稿条件確認', type: '確認', offset: -12, hours: 1 },
+      { phase: '要件整理', content: 'コピー・素材準備', type: '作業', offset: -10, hours: 1 },
+      { phase: '制作依頼', content: 'デザイナーへ制作依頼', type: '依頼', offset: -8, hours: 1 },
+      { phase: '初稿確認', content: '初稿確認', type: '確認', offset: -5, hours: 1 },
+      { phase: '修正', content: '修正依頼・戻し反映確認', type: '修正', offset: -3, hours: 1 },
+      { phase: '入稿', content: '入稿データ確認', type: '確認', offset: -1, hours: 1 },
+    ],
+  },
+  {
+    id: 'tpl_lp',
+    name: 'LP制作',
+    category: 'production',
+    phases: ['要件整理','構成・原稿','デザイン','コーディング','確認・公開'],
+    tasks: [
+      { phase: '要件整理', content: '目的・ターゲット・導線確認', type: '確認', offset: -30, hours: 1 },
+      { phase: '構成・原稿', content: 'LP構成作成', type: '作業', offset: -25, hours: 2 },
+      { phase: '構成・原稿', content: '原稿・素材準備', type: '作業', offset: -22, hours: 2 },
+      { phase: 'デザイン', content: 'デザイン制作依頼', type: '依頼', offset: -18, hours: 1 },
+      { phase: 'デザイン', content: 'デザイン初稿確認', type: '確認', offset: -12, hours: 1 },
+      { phase: 'コーディング', content: 'コーディング依頼', type: '依頼', offset: -10, hours: 1 },
+      { phase: '確認・公開', content: '表示・フォーム動作確認', type: '確認', offset: -3, hours: 1 },
+      { phase: '確認・公開', content: '公開作業', type: '作業', offset: 0, hours: 1 },
+    ],
+  },
+  {
+    id: 'tpl_website_upd',
+    name: 'Web更新・保守',
+    category: 'production',
+    phases: ['依頼確認','原稿・素材収集','修正・制作','確認','公開'],
+    tasks: [
+      { phase: '依頼確認', content: '更新内容確認', type: '確認', offset: -7, hours: 1 },
+      { phase: '原稿・素材収集', content: '原稿・素材確認', type: '確認', offset: -5, hours: 1 },
+      { phase: '修正・制作', content: '修正作業', type: '作業', offset: -3, hours: 1 },
+      { phase: '確認', content: '表示確認・先方確認依頼', type: '確認', offset: -1, hours: 1 },
+      { phase: '公開', content: '公開・反映確認', type: '作業', offset: 0, hours: 1 },
+    ],
+  },
+  {
+    id: 'tpl_pamphlet',
+    name: 'パンフレット・冊子制作',
+    category: 'production',
+    phases: ['要件整理','構成','原稿・素材','デザイン','校正','入稿・納品'],
+    tasks: [
+      { phase: '要件整理', content: '仕様・ページ数・納品形態確認', type: '確認', offset: -30, hours: 1 },
+      { phase: '構成', content: 'ページ構成作成', type: '作業', offset: -25, hours: 2 },
+      { phase: '原稿・素材', content: '原稿・素材準備', type: '作業', offset: -20, hours: 2 },
+      { phase: 'デザイン', content: 'デザイン制作依頼', type: '依頼', offset: -15, hours: 1 },
+      { phase: '校正', content: '初校確認・修正整理', type: '確認', offset: -8, hours: 1 },
+      { phase: '校正', content: '最終校正', type: '確認', offset: -3, hours: 1 },
+      { phase: '入稿・納品', content: '入稿データ確認・納品', type: '納品', offset: 0, hours: 1 },
+    ],
+  },
+  {
+    id: 'tpl_flyer',
+    name: 'チラシ・ポスター制作',
+    category: 'production',
+    phases: ['要件整理','原稿・素材','デザイン','校正','入稿・納品'],
+    tasks: [
+      { phase: '要件整理', content: 'サイズ・用途・納品形態確認', type: '確認', offset: -15, hours: 1 },
+      { phase: '原稿・素材', content: '原稿・素材準備', type: '作業', offset: -12, hours: 1 },
+      { phase: 'デザイン', content: 'デザイン制作依頼', type: '依頼', offset: -10, hours: 1 },
+      { phase: '校正', content: '初稿確認・修正整理', type: '確認', offset: -5, hours: 1 },
+      { phase: '校正', content: '最終確認', type: '確認', offset: -2, hours: 1 },
+      { phase: '入稿・納品', content: '入稿・納品', type: '納品', offset: 0, hours: 1 },
+    ],
+  },
+  { id: 'tpl_website_new', name: 'Webサイト制作', category: 'production', phases: ['企画','ワイヤー','デザイン','コーディング','テスト','公開'], tasks: [] },
+  { id: 'tpl_proposal', name: '提案書作成', category: 'sales', phases: ['情報収集','構成','制作','確認','提出'], tasks: [] },
+  { id: 'tpl_blank', name: 'ブランク', category: 'basic', phases: [], tasks: [] },
 ];
 
 // ============================================================
@@ -197,6 +321,8 @@ async function initStore() {
 
   if (!load(KEYS.TEMPLATES)) {
     save(KEYS.TEMPLATES, DEFAULT_TEMPLATES.map(t => ({ ...t, custom: false })));
+  } else {
+    syncDefaultTemplates();
   }
   if (!load(KEYS.MEMBERS))  save(KEYS.MEMBERS,  []);
   if (!load(KEYS.PROJECTS)) save(KEYS.PROJECTS, []);
@@ -205,6 +331,26 @@ async function initStore() {
   if (!load(KEYS.CHATWORK_IMPORTS)) save(KEYS.CHATWORK_IMPORTS, []);
   if (!load(KEYS.PROJECT_REVIEWS)) save(KEYS.PROJECT_REVIEWS, []);
   if (!load(KEYS.META))     save(KEYS.META,     { lastDate: today() });
+}
+
+function syncDefaultTemplates() {
+  const current = load(KEYS.TEMPLATES) ?? [];
+  const defaults = DEFAULT_TEMPLATES.map(t => ({ ...t, custom: false }));
+  const byId = new Map(current.map(t => [t.id, t]));
+  let changed = false;
+  defaults.forEach(tpl => {
+    const existing = byId.get(tpl.id);
+    if (!existing) {
+      current.push(tpl);
+      changed = true;
+      return;
+    }
+    if (!existing.custom) {
+      Object.assign(existing, tpl, { custom: false });
+      changed = true;
+    }
+  });
+  if (changed) save(KEYS.TEMPLATES, current);
 }
 
 // ============================================================
@@ -347,6 +493,9 @@ const Projects = {
   update(id, patch) {
     save(KEYS.PROJECTS, this.all().map(p => p.id === id ? { ...p, ...patch } : p));
   },
+  replaceAll(list) {
+    save(KEYS.PROJECTS, Array.isArray(list) ? list : []);
+  },
   updatePhases(projectId, phases) {
     this.update(projectId, { phases });
   },
@@ -384,14 +533,19 @@ const Tasks = {
     memberId, projectId = null, phaseId = null, content, estimatedHours,
     note = '', date = today(), carriedFromTaskId = null,
     sourceProjectName = '', needsProjectReview = false,
+    taskType = '作業',
+    chatworkRoomId = '', chatworkMessageId = '',
   }) {
     const list = this.all();
     const task = {
       id: genId(), date, memberId, projectId, phaseId,
       content, estimatedHours: parseFloat(estimatedHours),
+      taskType,
       note,
       sourceProjectName,
       needsProjectReview,
+      chatworkRoomId,
+      chatworkMessageId,
       carriedFromTaskId,
       carriedOverToTaskId: null,
       completed: null,        // null=未確認, true=完了, false=未完了
@@ -612,6 +766,9 @@ const Asks = {
   update(id, patch) {
     save(KEYS.ASKS, this.all().map(a => a.id === id ? { ...a, ...patch } : a));
   },
+  replaceAll(list) {
+    save(KEYS.ASKS, Array.isArray(list) ? list : []);
+  },
   remove(id) {
     save(KEYS.ASKS, this.all().filter(a => a.id !== id));
   },
@@ -688,7 +845,7 @@ const Templates = {
   all() { return load(KEYS.TEMPLATES) ?? []; },
   add({ name, phases }) {
     const list = this.all();
-    const tpl = { id: genId(), name, phases, custom: true };
+    const tpl = { id: genId(), name, phases, tasks: [], custom: true };
     list.push(tpl);
     save(KEYS.TEMPLATES, list);
     return tpl;
@@ -710,7 +867,7 @@ function buildPhasesFromTemplate(templateId) {
   if (!tpl) return [];
   return tpl.phases.map((name, i) => ({
     id: genId(),
-    name,
+    name: typeof name === 'string' ? name : name.name,
     status: i === 0 ? 'active' : 'pending',
     startDate: '',
     dueDate: '',

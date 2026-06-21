@@ -2,9 +2,19 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '繰り越し統合版 2026-06-16-02';
+const APP_BUILD_LABEL = '制作テンプレート版 2026-06-20-03';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
+const JP_HOLIDAYS = new Set([
+  '2026-01-01','2026-01-12','2026-02-11','2026-02-23','2026-03-20',
+  '2026-04-29','2026-05-03','2026-05-04','2026-05-05','2026-05-06',
+  '2026-07-20','2026-08-11','2026-09-21','2026-09-22','2026-09-23',
+  '2026-10-12','2026-11-03','2026-11-23',
+  '2027-01-01','2027-01-11','2027-02-11','2027-02-23','2027-03-21',
+  '2027-03-22','2027-04-29','2027-05-03','2027-05-04','2027-05-05',
+  '2027-07-19','2027-08-11','2027-09-20','2027-09-23','2027-10-11',
+  '2027-11-03','2027-11-23',
+]);
 
 function apiUrl(path) {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
@@ -974,6 +984,9 @@ function renderTodayTasks() {
           <button class="btn btn-ghost" onclick="importChatworkTasksDirect()">
             TASK取得
           </button>
+          <button class="btn btn-ghost" onclick="recoverChatworkTasksDirect()">
+            復旧再取得
+          </button>
           <button class="btn btn-ghost" onclick="openBulkTaskModal()">
             一括入力
           </button>
@@ -1798,7 +1811,7 @@ function stepHours(delta) {
   if (disp) disp.textContent = `${_taskFormData.estimatedHours}h`;
 }
 
-function saveTask(editId) {
+async function saveTask(editId) {
   const memberId = document.getElementById('tf-member')?.value;
   const content  = document.getElementById('tf-content')?.value?.trim();
   const note     = document.getElementById('tf-note')?.value?.trim() || '';
@@ -1823,18 +1836,28 @@ function saveTask(editId) {
     needsProjectReview: _taskFormData.projectId ? false : Boolean(_taskFormData.needsProjectReview),
   };
 
+  const before = {
+    tasks: taskSnapshot(),
+    asks: DB.Asks.all().map(ask => ({ ...ask })),
+  };
   let savedTask;
   if (editId) {
     DB.Tasks.update(editId, payload);
     savedTask = DB.Tasks.get(editId);
-    showToast('タスクを更新しました', 'success');
   } else {
     savedTask = DB.Tasks.add(payload);
-    showToast('タスクを追加しました', 'success');
   }
   saveTaskLinkedAsk(savedTask, askPayload);
+  const ok = await DB.syncCloudStore?.();
+  if (ok === false) {
+    restoreTaskSnapshot(before.tasks);
+    if (DB.Asks.replaceAll) DB.Asks.replaceAll(before.asks);
+    showToast('保存できなかったため、追加・更新を元に戻しました。最新に更新してから再度入力してください', 'error');
+    return;
+  }
   closeModal();
   refreshCurrentPage();
+  showToast(editId ? 'タスクを更新しました' : 'タスクを追加しました', 'success');
 }
 
 function readTaskAskForm() {
@@ -2025,13 +2048,23 @@ async function importChatworkMessages() {
 }
 
 async function importChatworkTasksDirect() {
+  return importChatworkTasksFromRoom({ recovery: false });
+}
+
+async function recoverChatworkTasksDirect() {
+  const ok = confirm('ChatworkのTASK投稿を再確認し、現在残っていないタスクだけ復旧します。\n既に同じ内容のタスクがある場合は追加しません。実行しますか？');
+  if (!ok) return;
+  return importChatworkTasksFromRoom({ recovery: true });
+}
+
+async function importChatworkTasksFromRoom({ recovery = false } = {}) {
   let roomId = getSavedChatworkRoomId();
   const importKey = getSavedChatworkImportKey();
   const targetDate = getTaskDefaultDate();
   const ownerMemberId = getDefaultOwnerMemberId();
 
   try {
-    showToast('ChatworkからTASK部屋を確認しています', 'info');
+    showToast(recovery ? 'Chatworkから復旧対象を確認しています' : 'ChatworkからTASK部屋を確認しています', 'info');
     const roomQuery = /^\d+$/.test(roomId) ? `roomId=${encodeURIComponent(roomId)}&` : '';
     const res = await fetch(apiUrl(`/api/chatwork/messages?${roomQuery}force=1`), {
       headers: importKey ? { 'x-taskboard-key': importKey } : {},
@@ -2050,9 +2083,12 @@ async function importChatworkTasksDirect() {
       messages: data.messages || [],
       targetDate,
       ownerMemberId,
+      recovery,
     });
 
-    if (result.importedMessages === 0 && result.skippedDuplicates > 0) {
+    if (recovery && result.taskCount === 0 && result.askCount === 0) {
+      showToast('復旧できる新しいタスクは見つかりませんでした', 'info');
+    } else if (result.importedMessages === 0 && result.skippedDuplicates > 0) {
       showToast('新しく取り込むTASKはありませんでした', 'info');
     } else if (result.importedMessages === 0) {
       showToast('#task / #ask の新規投稿が見つかりませんでした', 'info');
@@ -2078,7 +2114,7 @@ async function importChatworkTasksDirect() {
   }
 }
 
-function importChatworkMessageList({ roomId, messages, targetDate, ownerMemberId }) {
+function importChatworkMessageList({ roomId, messages, targetDate, ownerMemberId, recovery = false }) {
   const result = {
     importedMessages: 0,
     skippedDuplicates: 0,
@@ -2091,7 +2127,7 @@ function importChatworkMessageList({ roomId, messages, targetDate, ownerMemberId
   (messages || []).forEach(message => {
     const messageId = String(message.message_id || '');
     if (!messageId) return;
-    if (DB.ChatworkImports.has(roomId, messageId)) {
+    if (!recovery && DB.ChatworkImports.has(roomId, messageId)) {
       result.skippedDuplicates++;
       return;
     }
@@ -2106,9 +2142,13 @@ function importChatworkMessageList({ roomId, messages, targetDate, ownerMemberId
 
     const normalizedBody = normalizeChatworkBody(message.body || '');
     const parsed = parseBulkInput(normalizedBody);
-    const taskResult = saveParsedChatworkTasks(parsed.tasks, member.id, targetDate, ownerMemberId);
+    const taskResult = saveParsedChatworkTasks(parsed.tasks, member.id, targetDate, ownerMemberId, {
+      roomId,
+      messageId,
+      recovery,
+    });
     const taskCount = taskResult.count;
-    const askCount = saveParsedChatworkAsks(parsed.asks, member.id, targetDate);
+    const askCount = recovery ? 0 : saveParsedChatworkAsks(parsed.asks, member.id, targetDate);
 
     if (taskCount || askCount) {
       DB.ChatworkImports.add({
@@ -2190,23 +2230,53 @@ function getProjectReviewUrl(reviewId) {
   return url.toString();
 }
 
-function saveParsedChatworkTasks(taskParsed, memberId, date, ownerMemberId) {
+function chatworkTaskExists({ memberId, projectId, sourceProjectName, content, estimatedHours, date }) {
+  const normalizedContent = normalizeTaskDisplayValue(content);
+  const normalizedSource = normalizeTaskDisplayValue(sourceProjectName);
+  const hours = Number(estimatedHours) || 0;
+  return DB.Tasks.allIncludingMerged?.().some(task => {
+    if (task.mergedIntoTaskId) return false;
+    if (task.memberId !== memberId) return false;
+    if (normalizeTaskDisplayValue(task.content) !== normalizedContent) return false;
+    if ((Number(task.estimatedHours) || 0) !== hours) return false;
+    if ((task.projectId || '') !== (projectId || '')) return false;
+    if (normalizeTaskDisplayValue(task.sourceProjectName) !== normalizedSource) return false;
+    const taskDates = [task.date, task.originalDate].filter(Boolean);
+    return !date || taskDates.includes(date);
+  }) || false;
+}
+
+function saveParsedChatworkTasks(taskParsed, memberId, date, ownerMemberId, options = {}) {
   const result = { count: 0, reviewGroups: [] };
   (taskParsed.groups || []).forEach(group => {
     const project = resolveInputProject(group.projectName);
     const createdTaskIds = [];
 
     (group.tasks || []).forEach(task => {
+      const taskDate = task.date || date;
+      const sourceProjectName = project ? '' : (group.projectName || '');
+      if (options.recovery && chatworkTaskExists({
+        memberId,
+        projectId: project?.id || null,
+        sourceProjectName,
+        content: task.content,
+        estimatedHours: task.hours,
+        date: taskDate,
+      })) {
+        return;
+      }
       const saved = DB.Tasks.add({
         memberId,
         projectId: project?.id || null,
         phaseId: null,
         content: task.content,
         note: buildInputTaskNote(task.note, group.projectName, project),
-        date: task.date || date,
+        date: taskDate,
         estimatedHours: task.hours,
-        sourceProjectName: project ? '' : (group.projectName || ''),
+        sourceProjectName,
         needsProjectReview: Boolean(group.projectName && !project),
+        chatworkRoomId: options.roomId || '',
+        chatworkMessageId: options.messageId || '',
       });
       createdTaskIds.push(saved.id);
       result.count++;
@@ -2260,7 +2330,7 @@ function normalizeChatworkBody(body) {
     .trim();
 }
 
-function saveBulkTasks() {
+async function saveBulkTasks() {
   const memberId = document.getElementById('bulk-member')?.value || '';
   const ownerMemberId = document.getElementById('bulk-owner')?.value || getDefaultOwnerMemberId();
   const date = document.getElementById('bulk-date')?.value || DB.today();
@@ -2288,6 +2358,11 @@ function saveBulkTasks() {
     ].join('\n'));
     if (!ok) return;
   }
+
+  const before = {
+    tasks: taskSnapshot(),
+    asks: DB.Asks.all().map(ask => ({ ...ask })),
+  };
 
   parsed.tasks.groups.forEach(group => {
     const project = resolveInputProject(group.projectName);
@@ -2327,6 +2402,13 @@ function saveBulkTasks() {
   _taskFilter.startDate = date;
   _taskFilter.endDate = date;
   _bulkTaskData = { memberId, ownerMemberId, date, text: '', preview: null };
+  const ok = await DB.syncCloudStore?.();
+  if (ok === false) {
+    restoreTaskSnapshot(before.tasks);
+    if (DB.Asks.replaceAll) DB.Asks.replaceAll(before.asks);
+    showToast('保存できなかったため、一括入力を元に戻しました。最新に更新してから再度入力してください', 'error');
+    return;
+  }
   closeModal();
   showToast(`${totalTasks}件のタスク、${totalAsks}件の進行確認を登録しました`, 'success');
   renderTodayTasks();
@@ -3354,6 +3436,46 @@ function addDays(dateStr, days) {
   ].join('-');
 }
 
+function isBusinessDay(dateStr) {
+  const safeDate = toISODate(dateStr);
+  if (!safeDate) return false;
+  const [year, month, day] = safeDate.split('-').map(Number);
+  const d = new Date(Date.UTC(year, month - 1, day));
+  const dayOfWeek = d.getUTCDay();
+  return dayOfWeek !== 0 && dayOfWeek !== 6 && !JP_HOLIDAYS.has(safeDate);
+}
+
+function adjustToBusinessDay(dateStr, direction = 'previous') {
+  let date = toISODate(dateStr) || DB.today();
+  const step = direction === 'next' ? 1 : -1;
+  let guard = 0;
+  while (!isBusinessDay(date) && guard < 20) {
+    date = addDays(date, step);
+    guard++;
+  }
+  return date;
+}
+
+function addBusinessDays(dateStr, amount) {
+  let date = toISODate(dateStr) || DB.today();
+  const offset = Number(amount || 0);
+  if (offset === 0) return adjustToBusinessDay(date, 'previous');
+  const step = offset > 0 ? 1 : -1;
+  let remaining = Math.abs(offset);
+  let guard = 0;
+  while (remaining > 0 && guard < 500) {
+    date = addDays(date, step);
+    if (isBusinessDay(date)) remaining--;
+    guard++;
+  }
+  return adjustToBusinessDay(date, step > 0 ? 'next' : 'previous');
+}
+
+function templateTaskDueDate(deliveryDate, offset) {
+  if (!deliveryDate) return '';
+  return addBusinessDays(deliveryDate, Number(offset || 0));
+}
+
 function diffDays(start, end) {
   const safeStart = toISODate(start) || DB.today();
   const safeEnd = toISODate(end) || safeStart;
@@ -3947,7 +4069,7 @@ function savePhaseEditor(projectId) {
 function openProjectModal(editId) {
   const project   = editId ? DB.Projects.get(editId) : null;
   const templates = DB.Templates.all();
-  const tplOpts   = templates.map(t => `<option value="${t.id}">${t.name}</option>`).join('');
+  const tplOpts   = templates.map(t => `<option value="${t.id}">${t.name}${t.tasks?.length ? '（タスク付き）' : ''}</option>`).join('');
   const ownerDefault = project?.ownerMemberId || (!editId ? getDefaultOwnerMemberId() : '');
   const createdByDefault = project?.createdByMemberId || (!editId ? getDefaultCreatorMemberId() : getDefaultCreatorMemberId());
   const members   = DB.Members.all();
@@ -3955,7 +4077,7 @@ function openProjectModal(editId) {
     `<option value="${m.id}" ${ownerDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
   const createdByOpts = members.map(m =>
     `<option value="${m.id}" ${createdByDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
-  const type = project?.projectType === 'recurring' ? 'recurring' : 'standard';
+  const type = ['recurring', 'production'].includes(project?.projectType) ? project.projectType : 'standard';
   const status = project?.projectStatus === 'completed' ? 'active' : (project?.projectStatus || 'active');
   const dealCategory = project?.dealCategory || 'existing';
   const leadSource = project?.leadSource || '';
@@ -4011,6 +4133,7 @@ function openProjectModal(editId) {
       <label class="form-label">プロジェクト種別</label>
       <select class="form-select" id="pj-type" onchange="toggleRecurringProjectFields()">
         <option value="standard" ${type === 'standard' ? 'selected' : ''}>通常プロジェクト</option>
+        <option value="production" ${project?.projectType === 'production' ? 'selected' : ''}>制作プロジェクト</option>
         <option value="recurring" ${type === 'recurring' ? 'selected' : ''}>定期プロジェクト</option>
       </select>
     </div>
@@ -4051,7 +4174,7 @@ function openProjectModal(editId) {
     </div>
     <div class="form-group">
       <label class="form-label">納品日 *</label>
-      <input type="date" class="form-input" id="pj-delivery" value="${project?.deliveryDate||''}">
+      <input type="date" class="form-input" id="pj-delivery" value="${project?.deliveryDate||''}" onchange="renderProjectTemplatePreview()">
     </div>
     <details style="margin:14px 0;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-glass)" ${project ? 'open' : ''}>
       <summary style="cursor:pointer;font-weight:800;color:var(--text-1)">任意項目（必要になったら入力）</summary>
@@ -4091,9 +4214,11 @@ function openProjectModal(editId) {
     ${!editId ? `
       <div class="form-group">
         <label class="form-label">フェーズテンプレート</label>
-        <select class="form-select" id="pj-template">
+        <select class="form-select" id="pj-template" onchange="onProjectTemplateChange()">
           <option value="">テンプレートを選択...</option>${tplOpts}
         </select>
+        <div class="form-help">タスク付きテンプレートは、納品日から土日祝を避けて仮締切を自動作成します。</div>
+        <div id="pj-template-preview" class="template-preview"></div>
       </div>` : ''}
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal()">キャンセル</button>
@@ -4104,6 +4229,7 @@ function openProjectModal(editId) {
   `, editId ? 'プロジェクトを編集' : 'プロジェクトを追加');
   toggleRecurringProjectFields();
   toggleProjectClientFields();
+  renderProjectTemplatePreview();
 }
 
 function toggleRecurringProjectFields() {
@@ -4162,7 +4288,112 @@ function getClientNameFromProjectForm() {
   return document.getElementById('pj-client')?.value?.trim() || '';
 }
 
-function saveProjectNew() {
+function onProjectTemplateChange() {
+  const templateId = document.getElementById('pj-template')?.value || '';
+  const tpl = DB.Templates.get(templateId);
+  if (tpl?.tasks?.length) {
+    const typeEl = document.getElementById('pj-type');
+    if (typeEl && typeEl.value === 'standard') typeEl.value = 'production';
+  }
+  renderProjectTemplatePreview();
+}
+
+function templateScheduleRows(templateId, deliveryDate) {
+  const tpl = DB.Templates.get(templateId);
+  if (!tpl) return [];
+  return (tpl.tasks || []).map(task => ({
+    ...task,
+    dueDate: templateTaskDueDate(deliveryDate, task.offset),
+  }));
+}
+
+function renderProjectTemplatePreview() {
+  const el = document.getElementById('pj-template-preview');
+  if (!el) return;
+  const templateId = document.getElementById('pj-template')?.value || '';
+  const deliveryDate = document.getElementById('pj-delivery')?.value || '';
+  const tpl = DB.Templates.get(templateId);
+  if (!tpl) {
+    el.innerHTML = '';
+    return;
+  }
+  const rows = templateScheduleRows(templateId, deliveryDate);
+  const phasePills = (tpl.phases || []).map(phase => `<span class="tag">${escHtml(typeof phase === 'string' ? phase : phase.name)}</span>`).join('');
+  if (!rows.length) {
+    el.innerHTML = `
+      <div class="template-preview-head">
+        <strong>${escHtml(tpl.name)}</strong>
+        <span>${tpl.phases?.length || 0}フェーズ</span>
+      </div>
+      <div class="template-preview-phases">${phasePills || '<span class="form-help">フェーズなし</span>'}</div>
+      <div class="form-help">このテンプレートはフェーズのみ作成します。</div>`;
+    return;
+  }
+
+  const previewRows = rows.map((task, index) => `
+    <div class="template-preview-row template-task-draft" data-index="${index}" data-phase="${escHtml(task.phase || '')}">
+      <label class="template-preview-check">
+        <input type="checkbox" class="tpl-task-enabled" checked>
+      </label>
+      <input class="form-input tpl-task-content" value="${escHtml(task.content)}" aria-label="タスク名">
+      <select class="form-select tpl-task-type" aria-label="種別">
+        ${['作業','依頼','確認','待ち','修正','連絡','納品'].map(type =>
+          `<option value="${type}" ${(task.type || '作業') === type ? 'selected' : ''}>${type}</option>`).join('')}
+      </select>
+      <input type="date" class="form-input tpl-task-date" value="${deliveryDate ? escHtml(task.dueDate) : ''}" aria-label="仮締切">
+      <input type="number" class="form-input tpl-task-hours" min="0.25" step="0.25" value="${Number(task.hours || 1)}" aria-label="工数">
+      <small>${escHtml(task.phase || 'フェーズなし')}</small>
+    </div>`).join('');
+  el.innerHTML = `
+    <div class="template-preview-head">
+      <strong>${escHtml(tpl.name)}</strong>
+      <span>${rows.length}タスクを自動作成</span>
+    </div>
+    <div class="template-preview-phases">${phasePills}</div>
+    ${deliveryDate ? '' : '<div class="form-help">納品日を入れると仮締切日を表示します。</div>'}
+    <div class="template-preview-list">${previewRows}</div>
+    <div class="form-help">不要なタスクはチェックを外せます。タスク名・種別・仮締切・工数は登録前に修正できます。</div>`;
+}
+
+function readTemplateTaskDrafts(templateId, deliveryDate) {
+  const rows = Array.from(document.querySelectorAll('#pj-template-preview .template-task-draft'));
+  if (!rows.length) return templateScheduleRows(templateId, deliveryDate);
+  return rows
+    .filter(row => row.querySelector('.tpl-task-enabled')?.checked)
+    .map(row => ({
+      phase: row.dataset.phase || '',
+      content: row.querySelector('.tpl-task-content')?.value?.trim() || '',
+      type: row.querySelector('.tpl-task-type')?.value || '作業',
+      dueDate: row.querySelector('.tpl-task-date')?.value || '',
+      hours: Number(row.querySelector('.tpl-task-hours')?.value || 1) || 1,
+    }))
+    .filter(task => task.content);
+}
+
+function createTemplateTasksForProject(project, templateId, fallbackMemberId, taskDrafts = null) {
+  const tpl = DB.Templates.get(templateId);
+  if (!project || !tpl?.tasks?.length) return 0;
+  const phaseByName = new Map((project.phases || []).map(phase => [phase.name, phase]));
+  let count = 0;
+  const tasks = taskDrafts || templateScheduleRows(templateId, project.deliveryDate);
+  tasks.forEach(task => {
+    const phase = phaseByName.get(task.phase);
+    DB.Tasks.add({
+      memberId: fallbackMemberId,
+      projectId: project.id,
+      phaseId: phase?.id || null,
+      content: task.content,
+      estimatedHours: task.hours || 1,
+      date: task.dueDate || templateTaskDueDate(project.deliveryDate, task.offset) || project.deliveryDate || DB.today(),
+      taskType: task.type || '作業',
+      note: `テンプレート：${tpl.name}`,
+    });
+    count++;
+  });
+  return count;
+}
+
+async function saveProjectNew() {
   const clientName = getClientNameFromProjectForm();
   const name       = document.getElementById('pj-name')?.value?.trim();
   if (!clientName || !name) { showToast('クライアント名とプロジェクト名は必須です', 'error'); return; }
@@ -4173,18 +4404,29 @@ function saveProjectNew() {
     return;
   }
   const deliveryDate = document.getElementById('pj-delivery')?.value || '';
-  if (!confirmProjectDeliveryDate(deliveryDate)) return;
   const projectType = document.getElementById('pj-type')?.value || 'standard';
   const recurringSeries = getRecurringSeriesFromProjectForm(projectType);
   if (projectType === 'recurring' && !recurringSeries) {
     showToast('定期プロジェクトは既存の定期案件を選ぶか、新規名を入力してください', 'error');
     return;
   }
-  DB.Projects.add({
+  const templateId = document.getElementById('pj-template')?.value || '';
+  const selectedTemplate = DB.Templates.get(templateId);
+  if (selectedTemplate?.tasks?.length && !deliveryDate) {
+    showToast('タスク付きテンプレートは納品日を入力してください', 'error');
+    return;
+  }
+  if (!confirmProjectDeliveryDate(deliveryDate)) return;
+  const taskDrafts = readTemplateTaskDrafts(templateId, deliveryDate);
+  const before = {
+    projects: DB.Projects.all().map(project => ({ ...project })),
+    tasks: taskSnapshot(),
+  };
+  const project = DB.Projects.add({
     clientName, name,
     deliveryDate,
     budget:       document.getElementById('pj-budget')?.value   || '',
-    templateId:   document.getElementById('pj-template')?.value || '',
+    templateId,
     projectType,
     recurringSeries,
     dealCategory:    document.getElementById('pj-deal-category')?.value || 'existing',
@@ -4198,8 +4440,16 @@ function saveProjectNew() {
     projectStatus:   document.getElementById('pj-status')?.value || 'active',
     note:            document.getElementById('pj-note')?.value?.trim() || '',
   });
+  const taskCount = createTemplateTasksForProject(project, templateId, ownerMemberId || createdByMemberId, taskDrafts);
+  const ok = await DB.syncCloudStore?.();
+  if (ok === false) {
+    DB.Projects.replaceAll?.(before.projects);
+    restoreTaskSnapshot(before.tasks);
+    showToast('保存できなかったため、プロジェクト作成を元に戻しました。最新に更新してから再度入力してください', 'error');
+    return;
+  }
   closeModal();
-  showToast('プロジェクトを作成しました', 'success');
+  showToast(taskCount ? `プロジェクトと標準タスク${taskCount}件を作成しました` : 'プロジェクトを作成しました', 'success');
   refreshCurrentPage();
 }
 
@@ -5367,13 +5617,14 @@ function templatesTabHTML(templates) {
     ? `<div class="empty-state"><div class="icon">📄</div><div class="title">テンプレートがありません</div></div>`
     : templates.map(t => {
         const phasePills = t.phases.map((ph, i) =>
-          `<span style="font-size:11px;padding:2px 8px;background:var(--bg-glass);border:1px solid var(--border);border-radius:4px;color:var(--text-2)">${i+1}.${ph}</span>`
+          `<span style="font-size:11px;padding:2px 8px;background:var(--bg-glass);border:1px solid var(--border);border-radius:4px;color:var(--text-2)">${i+1}.${escHtml(typeof ph === 'string' ? ph : ph.name)}</span>`
         ).join('<span style="color:var(--text-3);font-size:10px">›</span>');
         return `
           <div class="card" style="margin-bottom:8px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
               <div style="display:flex;align-items:center;gap:8px">
                 <span style="font-weight:700;font-size:14px">${escHtml(t.name)}</span>
+                ${t.tasks?.length ? `<span class="tag">${t.tasks.length}タスク</span>` : ''}
                 ${t.custom ? '<span class="tag tag-custom">カスタム</span>' : ''}
               </div>
               <div style="display:flex;gap:5px">

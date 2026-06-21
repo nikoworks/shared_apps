@@ -1791,6 +1791,79 @@ body {
   font-weight: 700;
 }
 
+.template-preview {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-glass);
+  padding: 10px;
+}
+.template-preview:empty {
+  display: none;
+}
+.template-preview-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+  color: var(--text-1);
+}
+.template-preview-head strong {
+  font-size: 13px;
+}
+.template-preview-head span {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+.template-preview-phases {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.template-preview-list {
+  display: grid;
+  gap: 6px;
+}
+.template-preview-row {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr) 92px 145px 72px minmax(90px, auto);
+  gap: 8px;
+  align-items: center;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+.template-preview-row span {
+  min-width: 0;
+  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 700;
+}
+.template-preview-row input,
+.template-preview-row select {
+  min-width: 0;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.template-preview-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.template-preview-row small {
+  color: var(--text-3);
+  font-size: 11px;
+}
+.template-preview-row strong {
+  color: var(--primary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 /* ─── Trend Table ────────────────────────────────────────── */
 .trend-table { width: 100%; border-collapse: collapse; }
 .trend-table th, .trend-table td {
