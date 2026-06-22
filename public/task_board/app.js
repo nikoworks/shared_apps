@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '担当負荷ガント版 2026-06-22-09';
+const APP_BUILD_LABEL = 'テンプレート行操作改善版 2026-06-23-01';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const JP_HOLIDAYS = new Set([
@@ -6551,11 +6551,14 @@ function openTemplateModal(editId) {
           <span></span>
           <span></span>
           <span></span>
+          <span></span>
+          <span></span>
         </div>
         ${tasks.map((task, i) => tplTaskRow(task, i, phases)).join('')}
       </div>
       <button class="btn btn-ghost" style="width:100%;margin-top:6px"
-              onclick="addTplTaskRow()">＋ 標準タスクを追加</button>
+              onclick="addTplTaskRow()">＋ 選択行の下に標準タスクを追加</button>
+      <div class="form-help">行をクリックして選択すると、追加先になります。行を選択した状態でDeleteキーを押すと削除できます。</div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal()">キャンセル</button>
@@ -6651,7 +6654,7 @@ function tplTaskRow(task = {}, i = 0, phases = getTemplatePhases()) {
   const phase = task.phase || (phases[0] ? (typeof phases[0] === 'string' ? phases[0] : phases[0].name) : '');
   const type = task.type || '作業';
   return `
-    <div class="tpl-task-row" data-index="${i}">
+    <div class="tpl-task-row" data-index="${i}" tabindex="0" onclick="selectTplTaskRow(this)" onkeydown="handleTplTaskRowKeydown(event)">
       <span class="tpl-task-number">${i + 1}</span>
       <input class="form-input tpl-task-content-edit" placeholder="タスク名" value="${escHtml(task.content || '')}">
       <select class="form-select tpl-task-phase-edit">${templatePhaseOptionsHTML(phase, phases)}</select>
@@ -6663,9 +6666,11 @@ function tplTaskRow(task = {}, i = 0, phases = getTemplatePhases()) {
       <input type="number" class="form-input tpl-task-offset-edit" value="${Number(task.offset || 0)}" title="納品日からの営業日" aria-label="営業日前" placeholder="営業日前" step="1">
       <input type="number" class="form-input tpl-task-duration-edit" value="${Number(task.durationDays || 1)}" min="1" step="1" title="遂行期間（日）" aria-label="遂行期間（日）" placeholder="遂行">
       <input type="number" class="form-input tpl-task-hours-edit" value="${Number(task.hours || 1)}" min="0.25" step="0.25" title="工数" aria-label="工数" placeholder="工数">
+      <button class="btn btn-ghost btn-sm btn-icon" onclick="insertTplTaskAfter(this);event.stopPropagation()" title="下に追加">＋</button>
+      <button class="btn btn-ghost btn-sm btn-icon" onclick="duplicateTplTaskRow(this);event.stopPropagation()" title="複製">⧉</button>
       <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplTaskRow(this, -1)" title="上へ">↑</button>
       <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplTaskRow(this, 1)" title="下へ">↓</button>
-      <button class="btn btn-danger btn-sm btn-icon" onclick="this.closest('.tpl-task-row').remove();renumberTplTasks()">✕</button>
+      <button class="btn btn-danger btn-sm btn-icon" onclick="deleteTplTaskRow(this);event.stopPropagation()" title="削除">✕</button>
     </div>`;
 }
 
@@ -6673,11 +6678,96 @@ let _tplTaskRowCount = 0;
 function addTplTaskRow() {
   const list = document.getElementById('tpl-tasks-list');
   if (!list) return;
+  const selected = getSelectedTplTaskRow();
+  if (selected) {
+    insertTplTaskAfter(selected);
+    return;
+  }
   _tplTaskRowCount++;
-  const div = document.createElement('div');
-  div.innerHTML = tplTaskRow({}, list.querySelectorAll('.tpl-task-row').length, getTemplatePhases());
-  list.appendChild(div.firstElementChild);
+  const row = createTplTaskRowElement({}, list.querySelectorAll('.tpl-task-row').length);
+  list.appendChild(row);
+  selectTplTaskRow(row);
   renumberTplTasks();
+}
+
+function createTplTaskRowElement(task = {}, index = 0) {
+  const div = document.createElement('div');
+  div.innerHTML = tplTaskRow(task, index, getTemplatePhases());
+  return div.firstElementChild;
+}
+
+function getSelectedTplTaskRow() {
+  return document.querySelector('#tpl-tasks-list .tpl-task-row.selected');
+}
+
+function selectTplTaskRow(row) {
+  if (!row) return;
+  document.querySelectorAll('#tpl-tasks-list .tpl-task-row.selected').forEach(item => {
+    if (item !== row) item.classList.remove('selected');
+  });
+  row.classList.add('selected');
+}
+
+function readTplTaskRow(row) {
+  if (!row) return {};
+  return {
+    content: row.querySelector('.tpl-task-content-edit')?.value?.trim() || '',
+    phase: row.querySelector('.tpl-task-phase-edit')?.value || '',
+    type: row.querySelector('.tpl-task-type-edit')?.value || '作業',
+    defaultMemberId: row.querySelector('.tpl-task-member-edit')?.value || '',
+    offset: Number(row.querySelector('.tpl-task-offset-edit')?.value || 0) || 0,
+    durationDays: Math.max(1, Number(row.querySelector('.tpl-task-duration-edit')?.value || 1) || 1),
+    hours: Number(row.querySelector('.tpl-task-hours-edit')?.value || 1) || 1,
+  };
+}
+
+function insertTplTaskAfter(target) {
+  const row = target?.closest?.('.tpl-task-row') || target;
+  const list = document.getElementById('tpl-tasks-list');
+  if (!list) return;
+  const newRow = createTplTaskRowElement({}, list.querySelectorAll('.tpl-task-row').length);
+  if (row?.classList?.contains('tpl-task-row')) {
+    row.after(newRow);
+  } else {
+    list.appendChild(newRow);
+  }
+  selectTplTaskRow(newRow);
+  renumberTplTasks();
+  newRow.querySelector('.tpl-task-content-edit')?.focus();
+}
+
+function duplicateTplTaskRow(button) {
+  const row = button?.closest?.('.tpl-task-row');
+  if (!row) return;
+  const newRow = createTplTaskRowElement(readTplTaskRow(row), row.dataset.index || 0);
+  row.after(newRow);
+  selectTplTaskRow(newRow);
+  renumberTplTasks();
+  newRow.querySelector('.tpl-task-content-edit')?.focus();
+}
+
+function deleteTplTaskRow(target) {
+  const row = target?.closest?.('.tpl-task-row') || target;
+  if (!row?.classList?.contains('tpl-task-row')) return;
+  const nextFocus = row.nextElementSibling?.classList?.contains('tpl-task-row')
+    ? row.nextElementSibling
+    : row.previousElementSibling?.classList?.contains('tpl-task-row')
+    ? row.previousElementSibling
+    : null;
+  row.remove();
+  if (nextFocus) {
+    selectTplTaskRow(nextFocus);
+    nextFocus.focus();
+  }
+  renumberTplTasks();
+}
+
+function handleTplTaskRowKeydown(event) {
+  if (event.key !== 'Delete') return;
+  const tag = event.target?.tagName;
+  if (['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(tag)) return;
+  event.preventDefault();
+  deleteTplTaskRow(event.currentTarget);
 }
 
 function moveTplTaskRow(button, direction) {
@@ -6690,6 +6780,8 @@ function moveTplTaskRow(button, direction) {
   if (direction > 0 && row.nextElementSibling) {
     list.insertBefore(row.nextElementSibling, row);
   }
+  selectTplTaskRow(row);
+  row.focus();
   renumberTplTasks();
 }
 

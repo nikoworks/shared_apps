@@ -440,6 +440,19 @@ body {
   background: rgba(99,102,241,.06);
   box-shadow: 0 0 0 3px rgba(99,102,241,.12);
 }
+.readonly-field {
+  width: 100%;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  background: var(--bg-glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 11px;
+  color: var(--text-1);
+  font-size: 13.5px;
+  font-weight: 700;
+}
 .form-select {
   cursor: pointer;
   appearance: none;
@@ -597,10 +610,10 @@ body {
 }
 .tpl-task-header {
   display: grid;
-  grid-template-columns: 28px minmax(180px, 1fr) 130px 82px 130px 86px 68px 32px 32px 32px;
+  grid-template-columns: 28px minmax(180px, 1fr) 130px 82px 130px 86px 68px 68px 32px 32px 32px 32px 32px;
   gap: 6px;
   align-items: center;
-  min-width: 980px;
+  min-width: 1120px;
   padding: 0 7px 2px;
   color: var(--text-3);
   font-size: 11px;
@@ -612,14 +625,23 @@ body {
 }
 .tpl-task-row {
   display: grid;
-  grid-template-columns: 28px minmax(180px, 1fr) 130px 82px 130px 86px 68px 32px 32px 32px;
+  grid-template-columns: 28px minmax(180px, 1fr) 130px 82px 130px 86px 68px 68px 32px 32px 32px 32px 32px;
   gap: 6px;
   align-items: center;
-  min-width: 980px;
+  min-width: 1120px;
   padding: 7px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-glass);
+}
+.tpl-task-row.selected {
+  border-color: var(--primary);
+  background: rgba(99,102,241,.11);
+  box-shadow: 0 0 0 2px rgba(99,102,241,.12);
+}
+.tpl-task-row:focus {
+  outline: none;
+  border-color: var(--primary);
 }
 .tpl-task-number {
   color: var(--text-3);
@@ -841,6 +863,95 @@ body {
   grid-template-columns: repeat(4, minmax(120px, 1fr));
   gap: 12px;
   margin-bottom: 14px;
+}
+.gantt-load-panel {
+  padding: 14px;
+  margin-bottom: 14px;
+  overflow-x: auto;
+}
+.gantt-load-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.gantt-load-head h3 {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 15px;
+}
+.gantt-load-head p {
+  margin: 4px 0 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.gantt-load-cap {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--primary-lite);
+  color: var(--primary);
+  font-size: 12px;
+  font-weight: 800;
+}
+.gantt-load-table {
+  display: grid;
+  gap: 7px;
+  min-width: 760px;
+}
+.gantt-load-row {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+.gantt-load-member {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.gantt-load-member strong {
+  display: block;
+  color: var(--text-1);
+  font-size: 12px;
+}
+.gantt-load-member span {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.gantt-load-days {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(24px, 24px));
+  gap: 2px;
+}
+.gantt-load-cell {
+  width: 24px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: rgba(148,163,184,.12);
+  color: var(--text-3);
+  font-size: 9px;
+  font-weight: 800;
+}
+.gantt-load-cell.light {
+  background: rgba(16,185,129,.18);
+  color: #a7f3d0;
+}
+.gantt-load-cell.busy {
+  background: rgba(245,158,11,.24);
+  color: #fde68a;
+}
+.gantt-load-cell.over {
+  background: rgba(239,68,68,.30);
+  color: #fecaca;
 }
 .gantt-shell {
   display: grid;
@@ -1103,6 +1214,23 @@ body {
 }
 .gantt-bar-phase.done {
   background: #10b981;
+}
+.gantt-bar-task {
+  height: 5px;
+  transform: none;
+  border-radius: 999px;
+  background: rgba(255,255,255,.78);
+  border-color: rgba(255,255,255,.35);
+  box-shadow: 0 3px 8px rgba(0,0,0,.18);
+}
+.gantt-bar-task.active {
+  background: rgba(56,189,248,.95);
+}
+.gantt-bar-task.done {
+  background: rgba(16,185,129,.92);
+}
+.gantt-bar-task.pending {
+  background: rgba(203,213,225,.8);
 }
 .gantt-bar.is-late {
   background: #ef4444;
@@ -1435,6 +1563,7 @@ body {
 }
 .ask-card + .ask-card { margin-top: 8px; }
 .ask-card.confirm { border-left-color: var(--warning); }
+.ask-card.approval { border-left-color: var(--primary); }
 .ask-card.request { border-left-color: var(--danger); }
 .ask-card.share { border-left-color: var(--success); }
 .ask-main { min-width: 0; }
@@ -1996,7 +2125,7 @@ body {
 }
 .template-preview-row {
   display: grid;
-  grid-template-columns: auto minmax(180px, 1fr) 92px 130px 145px 72px minmax(90px, auto);
+  grid-template-columns: auto minmax(180px, 1fr) 92px 130px 145px 68px 72px minmax(90px, auto);
   gap: 8px;
   align-items: center;
   padding: 7px 8px;
