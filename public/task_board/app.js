@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'タスク期間・確認整理版 2026-06-22-08';
+const APP_BUILD_LABEL = '担当負荷ガント版 2026-06-22-09';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const JP_HOLIDAYS = new Set([
@@ -1531,6 +1531,7 @@ function openTaskModal(editId) {
       content: '',
       estimatedHours: 1,
       durationDays: 1,
+      startDate: '',
       reviewConfigMode: 'inherit',
       reviewerMemberIds: [],
       approvalMemberIds: [],
@@ -1560,12 +1561,15 @@ function openTaskModal(editId) {
   const taskReviewSummary = taskReviewSummaryText(_taskFormData);
   const carryOrigin = editId && _taskFormData.carriedFromTaskId ? getCarryOriginTask(_taskFormData) : null;
   const carryOriginDate = carryOrigin?.date && carryOrigin.id !== _taskFormData.id ? carryOrigin.date : '';
+  if (!_taskFormData.startDate && _taskFormData.date) {
+    _taskFormData.startDate = taskStartDateFromDueDate(_taskFormData.date, _taskFormData.durationDays || 1);
+  }
   const workDateHelp = carryOriginDate
     ? `<div class="form-help" style="margin-top:8px">
         このタスクは <strong>${escHtml(DB.fmtDate(carryOriginDate))}</strong> から繰り越されています。
-        上の作業日は「このタスクを処理する日」です。
+        締切日は「この日までに終わらせる日」です。
       </div>`
-    : `<div class="form-help" style="margin-top:8px">この日に表示されるタスクとして保存します。</div>`;
+    : `<div class="form-help" style="margin-top:8px">この日までに終わらせるタスクとして保存します。</div>`;
 
   openModal(`
     <div class="form-group">
@@ -1600,11 +1604,18 @@ function openTaskModal(editId) {
       </select>
     </div>
     <div class="form-group">
-      <label class="form-label">作業日（この日に表示） *</label>
+      <label class="form-label">締切日（この日までに完了） *</label>
       <input type="date" class="form-input" id="tf-date"
              value="${_taskFormData.date || DB.today()}"
-             onchange="_taskFormData.date=this.value">
+             onchange="_taskFormData.date=this.value;syncTaskStartDateFromDue()">
       ${workDateHelp}
+    </div>
+    <div class="form-group">
+      <label class="form-label">開始日</label>
+      <input type="date" class="form-input" id="tf-start-date"
+             value="${_taskFormData.startDate || ''}"
+             onchange="_taskFormData.startDate=this.value">
+      <div class="form-help">締切日と遂行期間から自動計算されます。必要なら手で修正できます。</div>
     </div>
     <div class="form-group">
       <label class="form-label">タスク内容 *</label>
@@ -1627,11 +1638,11 @@ function openTaskModal(editId) {
       </div>
     </div>
     <div class="form-group">
-      <label class="form-label">ガント期間（日）</label>
+      <label class="form-label">遂行期間（日）</label>
       <input type="number" class="form-input" id="tf-duration-days" min="1" step="1"
              value="${Number(_taskFormData.durationDays || 1)}"
-             onchange="_taskFormData.durationDays=Math.max(1, Number(this.value || 1) || 1)">
-      <div class="form-help">ガント上でこのタスクを何日分の幅として表示するかです。作業量は上の時間で管理します。</div>
+             onchange="_taskFormData.durationDays=Math.max(1, Number(this.value || 1) || 1);syncTaskStartDateFromDue()">
+      <div class="form-help">締切日までに遂行するための営業日数です。負荷計算では、予定時間をこの期間に按分します。</div>
     </div>
     <div class="task-ask-box">
       <div class="task-ask-title">進行に関わる確認</div>
@@ -1966,6 +1977,17 @@ function stepHours(delta) {
   if (disp) disp.textContent = `${_taskFormData.estimatedHours}h`;
 }
 
+function syncTaskStartDateFromDue() {
+  const due = document.getElementById('tf-date')?.value || _taskFormData.date || DB.today();
+  const durationDays = Math.max(1, Number(document.getElementById('tf-duration-days')?.value || _taskFormData.durationDays || 1) || 1);
+  const start = taskStartDateFromDueDate(due, durationDays);
+  _taskFormData.date = due;
+  _taskFormData.durationDays = durationDays;
+  _taskFormData.startDate = start;
+  const startEl = document.getElementById('tf-start-date');
+  if (startEl) startEl.value = start;
+}
+
 function toggleTaskReviewCustom() {
   const checked = Boolean(document.getElementById('tf-review-custom')?.checked);
   const box = document.getElementById('tf-review-custom-box');
@@ -2041,6 +2063,7 @@ async function saveTask(editId) {
     content,
     note,
     date: taskDate,
+    startDate: document.getElementById('tf-start-date')?.value || taskStartDateFromDueDate(taskDate, document.getElementById('tf-duration-days')?.value || _taskFormData.durationDays || 1),
     estimatedHours: _taskFormData.estimatedHours || 1,
     durationDays: Math.max(1, Number(document.getElementById('tf-duration-days')?.value || _taskFormData.durationDays || 1) || 1),
     ...reviewPayload,
@@ -3411,7 +3434,7 @@ function renderGantt() {
       </div>
 
       ${projects.length
-        ? ganttChartHTML(projects, tasks, members, days, timelineWidth)
+        ? `${ganttWorkloadHTML(projects, tasks, members, days)}${ganttChartHTML(projects, tasks, members, days, timelineWidth)}`
         : `<div class="empty-state">
             <div class="icon">📊</div>
             <div class="title">表示できるプロジェクトがありません</div>
@@ -3448,6 +3471,63 @@ function ganttChartHTML(projects, tasks, members, days, timelineWidth) {
       ${projects.map((project, index) => ganttProjectBlockHTML(project, tasks, members, days, timelineWidth, index)).join('')}
     </div>
   `;
+}
+
+function ganttWorkloadHTML(projects, tasks, members, days) {
+  const projectIds = new Set(projects.map(project => project.id));
+  const visibleTasks = tasks.filter(task => projectIds.has(task.projectId) && (!_ganttFilter.memberId || task.memberId === _ganttFilter.memberId));
+  const memberIds = uniqueSorted(visibleTasks.map(task => task.memberId).filter(Boolean));
+  if (!memberIds.length || !days.length) return '';
+  const byMember = new Map(memberIds.map(memberId => [memberId, new Map(days.map(day => [day, 0]))]));
+  visibleTasks.forEach(task => {
+    const bounds = taskScheduleBounds(task);
+    const workDays = businessDatesBetween(bounds.start, bounds.end);
+    const hoursPerDay = (Number(task.estimatedHours) || 0) / Math.max(workDays.length, 1);
+    const memberMap = byMember.get(task.memberId);
+    if (!memberMap) return;
+    workDays.forEach(day => {
+      if (!memberMap.has(day)) return;
+      memberMap.set(day, (memberMap.get(day) || 0) + hoursPerDay);
+    });
+  });
+
+  const rows = memberIds.map(memberId => {
+    const member = DB.Members.get(memberId);
+    const dayMap = byMember.get(memberId);
+    const loads = days.map(day => dayMap.get(day) || 0);
+    const max = Math.max(...loads, 0);
+    const overDays = loads.filter(hours => hours > 8).length;
+    const lowDays = loads.filter(hours => hours > 0 && hours < 4).length;
+    return `
+      <div class="gantt-load-row">
+        <div class="gantt-load-member">
+          ${member ? avatarHTML(member, 24) : ''}
+          <div>
+            <strong>${member ? escHtml(member.name) : '担当未設定'}</strong>
+            <span>最大 ${max.toFixed(1)}h / 超過 ${overDays}日 / 余力 ${lowDays}日</span>
+          </div>
+        </div>
+        <div class="gantt-load-days" style="grid-template-columns:repeat(${days.length},24px)">
+          ${days.map(day => {
+            const hours = dayMap.get(day) || 0;
+            const level = hours > 8 ? 'over' : hours >= 6 ? 'busy' : hours > 0 ? 'light' : 'empty';
+            return `<span class="gantt-load-cell ${level}" title="${escHtml(DB.fmtDate(day))}：${hours.toFixed(1)}h">${hours ? hours.toFixed(hours >= 10 ? 0 : 1) : ''}</span>`;
+          }).join('')}
+        </div>
+      </div>`;
+  }).join('');
+
+  return `
+    <section class="gantt-load-panel card">
+      <div class="gantt-load-head">
+        <div>
+          <h3>担当者別の混み具合</h3>
+          <p>各タスクの予定時間を、開始日から締切日までの営業日に按分しています。8h超過は赤、6h以上は黄です。</p>
+        </div>
+        <span class="gantt-load-cap">1日8h基準</span>
+      </div>
+      <div class="gantt-load-table">${rows}</div>
+    </section>`;
 }
 
 function ganttProjectBlockHTML(project, tasks, members, days, timelineWidth, groupIndex = 0) {
@@ -3537,12 +3617,13 @@ function ganttPhaseTaskListHTML(tasks, members) {
       const member = members.find(m => m.id === task.memberId) || DB.Members.get(task.memberId);
       const status = task.completed === true ? '完了' : task.completed === false ? '未完了' : '未確認';
       const note = visibleTaskNote(task);
-      const durationDays = Math.max(1, Number(task.durationDays || 1) || 1);
+      const bounds = taskScheduleBounds(task);
+      const durationDays = Math.max(1, businessDatesBetween(bounds.start, bounds.end).length);
       return `
         <button type="button" class="gantt-phase-task" onclick="openTaskModal('${task.id}')">
           <span class="gantt-phase-task-title">${escHtml(task.content || '未入力タスク')}</span>
           <span class="gantt-phase-task-meta">
-            ${task.date ? escHtml(DB.fmtDate(task.date)) : '日付未設定'}
+            ${bounds.start && bounds.end ? `${escHtml(DB.fmtDate(bounds.start))}〜${escHtml(DB.fmtDate(bounds.end))}` : '日付未設定'}
             / ${member ? escHtml(member.name) : '担当未設定'}
             / ${Number(task.estimatedHours) || 0}h
             / ${durationDays}日
@@ -3562,13 +3643,12 @@ function ganttTaskBarsHTML(tasks, days) {
   return tasks
     .filter(task => task.date)
     .map((task, index) => {
-      const start = task.date;
-      const end = addDays(start, Math.max(1, Number(task.durationDays || 1) || 1) - 1);
+      const { start, end } = taskScheduleBounds(task);
       const style = ganttBarStyle(start, end, days);
       if (!style) return '';
       const doneClass = task.completed === true ? 'done' : task.completed === false ? 'active' : 'pending';
       const lane = index % 3;
-      return `<div class="gantt-bar gantt-bar-task ${doneClass}" style="${style};top:${11 + lane * 9}px" title="${escHtml(task.content || '未入力タスク')} / ${Number(task.durationDays || 1)}日"></div>`;
+      return `<div class="gantt-bar gantt-bar-task ${doneClass}" style="${style};top:${11 + lane * 9}px" title="${escHtml(task.content || '未入力タスク')} / ${escHtml(DB.fmtDate(start))}〜${escHtml(DB.fmtDate(end))}"></div>`;
     })
     .join('');
 }
@@ -3647,25 +3727,27 @@ function ganttProjectIntersectsRange(project, start, end, tasks) {
 }
 
 function ganttProjectBounds(project, projectTasks = []) {
-  const taskDates = projectTasks.map(t => toISODate(t.date)).filter(Boolean).sort();
+  const taskStarts = projectTasks.map(t => taskScheduleBounds(t).start).filter(Boolean).sort();
+  const taskEnds = projectTasks.map(t => taskScheduleBounds(t).end).filter(Boolean).sort();
   const phaseStartDates = (project.phases || []).map(ph => toISODate(ph.startDate)).filter(Boolean).sort();
   const phaseDueDates = (project.phases || []).map(ph => toISODate(ph.dueDate)).filter(Boolean).sort();
   const projectStart = toISODate(project.startDate);
   const deliveryDate = toISODate(project.deliveryDate);
   const createdAt = toISODate(project.createdAt);
-  const start = projectStart || phaseStartDates[0] || taskDates[0] || (deliveryDate ? addDays(deliveryDate, -30) : createdAt || DB.today());
-  const end = deliveryDate || phaseDueDates.slice(-1)[0] || taskDates.slice(-1)[0] || addDays(start, 14);
+  const start = projectStart || phaseStartDates[0] || taskStarts[0] || (deliveryDate ? addDays(deliveryDate, -30) : createdAt || DB.today());
+  const end = deliveryDate || phaseDueDates.slice(-1)[0] || taskEnds.slice(-1)[0] || addDays(start, 14);
   return normalizeDateRange(start, end);
 }
 
 function ganttPhaseBounds(project, phase, index, phases, projectTasks = []) {
   const phaseTasks = projectTasks.filter(t => t.phaseId === phase.id);
-  const taskDates = phaseTasks.map(t => toISODate(t.date)).filter(Boolean).sort();
+  const taskStarts = phaseTasks.map(t => taskScheduleBounds(t).start).filter(Boolean).sort();
+  const taskEnds = phaseTasks.map(t => taskScheduleBounds(t).end).filter(Boolean).sort();
   const phaseStart = toISODate(phase.startDate);
   const phaseDue = toISODate(phase.dueDate);
-  if (phaseStart || phaseDue || taskDates.length) {
-    const start = phaseStart || taskDates[0] || phaseDue || '';
-    const end = phaseDue || taskDates.slice(-1)[0] || start;
+  if (phaseStart || phaseDue || taskStarts.length || taskEnds.length) {
+    const start = phaseStart || taskStarts[0] || phaseDue || '';
+    const end = phaseDue || taskEnds.slice(-1)[0] || start;
     return normalizeDateRange(start, end);
   }
 
@@ -3737,6 +3819,34 @@ function addBusinessDays(dateStr, amount) {
 function templateTaskDueDate(deliveryDate, offset) {
   if (!deliveryDate) return '';
   return addBusinessDays(deliveryDate, Number(offset || 0));
+}
+
+function taskStartDateFromDueDate(dueDate, durationDays = 1) {
+  const safeDue = toISODate(dueDate);
+  if (!safeDue) return '';
+  const days = Math.max(1, Number(durationDays || 1) || 1);
+  return addBusinessDays(safeDue, -(days - 1));
+}
+
+function taskScheduleBounds(task) {
+  const due = toISODate(task?.date);
+  const durationDays = Math.max(1, Number(task?.durationDays || 1) || 1);
+  const start = toISODate(task?.startDate) || taskStartDateFromDueDate(due, durationDays) || due;
+  if (!start && !due) return { start: '', end: '' };
+  return normalizeDateRange(start, due || start);
+}
+
+function businessDatesBetween(startDate, endDate) {
+  const range = normalizeDateRange(startDate, endDate);
+  const dates = [];
+  let current = range.start;
+  let guard = 0;
+  while (current <= range.end && guard < 500) {
+    if (isBusinessDay(current)) dates.push(current);
+    current = addDays(current, 1);
+    guard++;
+  }
+  return dates.length ? dates : dateList(range.start, range.end);
 }
 
 function diffDays(start, end) {
@@ -4691,7 +4801,7 @@ function openProjectModal(editId) {
         <select class="form-select" id="pj-template" onchange="onProjectTemplateChange()">
           <option value="">テンプレートを選択...</option>${tplOpts}
         </select>
-        <div class="form-help">タスク付きテンプレートは、納品日から土日祝を避けて仮締切を自動作成します。</div>
+        <div class="form-help">タスク付きテンプレートは、納品日から土日祝を避けて各タスクの締切日と開始日を自動作成します。</div>
         <div id="pj-template-preview" class="template-preview"></div>
       </div>` : ''}
     <div class="modal-actions">
@@ -4850,6 +4960,7 @@ function templateScheduleRows(templateId, deliveryDate) {
     ...task,
     dueDate: templateTaskDueDate(deliveryDate, task.offset),
     durationDays: Math.max(1, Number(task.durationDays || 1) || 1),
+    startDate: taskStartDateFromDueDate(templateTaskDueDate(deliveryDate, task.offset), task.durationDays || 1),
   }));
 }
 
@@ -4889,8 +5000,8 @@ function renderProjectTemplatePreview() {
       <select class="form-select tpl-task-member" aria-label="担当">
         ${memberOptionsHTML(task.defaultMemberId || '', true)}
       </select>
-      <input type="date" class="form-input tpl-task-date" value="${deliveryDate ? escHtml(task.dueDate) : ''}" aria-label="仮締切">
-      <input type="number" class="form-input tpl-task-duration" min="1" step="1" value="${Number(task.durationDays || 1)}" aria-label="ガント期間（日）">
+      <input type="date" class="form-input tpl-task-date" value="${deliveryDate ? escHtml(task.dueDate) : ''}" aria-label="締切日">
+      <input type="number" class="form-input tpl-task-duration" min="1" step="1" value="${Number(task.durationDays || 1)}" aria-label="遂行期間（日）">
       <input type="number" class="form-input tpl-task-hours" min="0.25" step="0.25" value="${Number(task.hours || 1)}" aria-label="工数">
       <small>${escHtml(task.phase || 'フェーズなし')}</small>
     </div>`).join('');
@@ -4900,9 +5011,9 @@ function renderProjectTemplatePreview() {
       <span>${rows.length}タスクを自動作成</span>
     </div>
     <div class="template-preview-phases">${phasePills}</div>
-    ${deliveryDate ? '' : '<div class="form-help">納品日を入れると仮締切日を表示します。</div>'}
+    ${deliveryDate ? '' : '<div class="form-help">納品日を入れると締切日を表示します。</div>'}
     <div class="template-preview-list">${previewRows}</div>
-    <div class="form-help">不要なタスクはチェックを外せます。タスク名・種別・仮締切・ガント期間・工数は登録前に修正できます。</div>`;
+    <div class="form-help">不要なタスクはチェックを外せます。タスク名・種別・締切日・遂行期間・工数は登録前に修正できます。</div>`;
 }
 
 function readTemplateTaskDrafts(templateId, deliveryDate) {
@@ -4917,6 +5028,7 @@ function readTemplateTaskDrafts(templateId, deliveryDate) {
       defaultMemberId: row.querySelector('.tpl-task-member')?.value || '',
       dueDate: row.querySelector('.tpl-task-date')?.value || '',
       durationDays: Math.max(1, Number(row.querySelector('.tpl-task-duration')?.value || 1) || 1),
+      startDate: taskStartDateFromDueDate(row.querySelector('.tpl-task-date')?.value || '', row.querySelector('.tpl-task-duration')?.value || 1),
       hours: Number(row.querySelector('.tpl-task-hours')?.value || 1) || 1,
     }))
     .filter(task => task.content);
@@ -4937,6 +5049,7 @@ function createTemplateTasksForProject(project, templateId, fallbackMemberId, ta
       content: task.content,
       estimatedHours: task.hours || 1,
       durationDays: task.durationDays || 1,
+      startDate: task.startDate || taskStartDateFromDueDate(task.dueDate || templateTaskDueDate(project.deliveryDate, task.offset), task.durationDays || 1),
       date: task.dueDate || templateTaskDueDate(project.deliveryDate, task.offset) || project.deliveryDate || DB.today(),
       taskType: task.type || '作業',
       reviewConfigMode: task.reviewConfigMode === 'custom' ? 'custom' : 'inherit',
@@ -6424,7 +6537,7 @@ function openTemplateModal(editId) {
     </div>
     <div class="form-group">
       <label class="form-label">標準タスク</label>
-      <div class="form-help">担当の右は「営業日前」「期間（日）」「工数」です。営業日前は納品日から何営業日前に仮締切を置くか、期間はガント上の幅、工数は予定時間です。担当未設定の場合は、プロジェクトの窓口担当が入ります。</div>
+      <div class="form-help">担当の右は「営業日前」「遂行期間（日）」「工数」です。営業日前は納品日から何営業日前を締切にするか、遂行期間は開始日から締切日までの営業日数、工数は予定時間です。担当未設定の場合は、プロジェクトの窓口担当が入ります。</div>
       <div id="tpl-tasks-list" class="tpl-task-list">
         <div class="tpl-task-header" aria-hidden="true">
           <span>No.</span>
@@ -6433,7 +6546,7 @@ function openTemplateModal(editId) {
           <span>種別</span>
           <span>担当</span>
           <span>営業日前</span>
-          <span>期間(日)</span>
+          <span>遂行(日)</span>
           <span>工数</span>
           <span></span>
           <span></span>
@@ -6548,7 +6661,7 @@ function tplTaskRow(task = {}, i = 0, phases = getTemplatePhases()) {
       </select>
       <select class="form-select tpl-task-member-edit">${memberOptionsHTML(task.defaultMemberId || '', true)}</select>
       <input type="number" class="form-input tpl-task-offset-edit" value="${Number(task.offset || 0)}" title="納品日からの営業日" aria-label="営業日前" placeholder="営業日前" step="1">
-      <input type="number" class="form-input tpl-task-duration-edit" value="${Number(task.durationDays || 1)}" min="1" step="1" title="ガント期間（日）" aria-label="期間（日）" placeholder="期間">
+      <input type="number" class="form-input tpl-task-duration-edit" value="${Number(task.durationDays || 1)}" min="1" step="1" title="遂行期間（日）" aria-label="遂行期間（日）" placeholder="遂行">
       <input type="number" class="form-input tpl-task-hours-edit" value="${Number(task.hours || 1)}" min="0.25" step="0.25" title="工数" aria-label="工数" placeholder="工数">
       <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplTaskRow(this, -1)" title="上へ">↑</button>
       <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplTaskRow(this, 1)" title="下へ">↓</button>
