@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '進行確認体制版 2026-06-22-05';
+const APP_BUILD_LABEL = '進行確認体制版 2026-06-22-06';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const JP_HOLIDAYS = new Set([
@@ -6308,6 +6308,7 @@ function openTemplateModal(editId) {
       </button>
     </div>
   `, editId ? 'テンプレートを編集' : 'テンプレートを追加', { wide: true });
+  refreshTplTaskPhaseOptions();
 }
 
 function tplPhaseRow(value, i) {
@@ -6377,8 +6378,12 @@ function memberOptionsHTML(selectedId = '', includeEmpty = true) {
   ].join('');
 }
 
-function templatePhaseOptionsHTML(selectedPhase = '') {
-  const phases = getTemplatePhases();
+function templatePhaseOptionsHTML(selectedPhase = '', sourcePhases = getTemplatePhases()) {
+  const phases = sourcePhases
+    .map(phase => typeof phase === 'string' ? phase : phase?.name || '')
+    .map(phase => String(phase || '').trim())
+    .filter(Boolean);
+  if (selectedPhase && !phases.includes(selectedPhase)) phases.push(selectedPhase);
   return [
     `<option value="" ${!selectedPhase ? 'selected' : ''}>フェーズなし</option>`,
     ...phases.map(phase =>
@@ -6393,7 +6398,7 @@ function tplTaskRow(task = {}, i = 0, phases = getTemplatePhases()) {
     <div class="tpl-task-row" data-index="${i}">
       <span class="tpl-task-number">${i + 1}</span>
       <input class="form-input tpl-task-content-edit" placeholder="タスク名" value="${escHtml(task.content || '')}">
-      <select class="form-select tpl-task-phase-edit">${templatePhaseOptionsHTML(phase)}</select>
+      <select class="form-select tpl-task-phase-edit">${templatePhaseOptionsHTML(phase, phases)}</select>
       <select class="form-select tpl-task-type-edit">
         ${['作業','依頼','確認','待ち','修正','連絡','納品'].map(item =>
           `<option value="${item}" ${type === item ? 'selected' : ''}>${item}</option>`).join('')}
