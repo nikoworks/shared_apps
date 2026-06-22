@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '進行確認体制版 2026-06-22-06';
+const APP_BUILD_LABEL = 'タスク期間・確認整理版 2026-06-22-08';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const JP_HOLIDAYS = new Set([
@@ -1464,6 +1464,7 @@ function askCardHTML(ask, selectedDate = DB.today()) {
 
 function normalizeAskType(type) {
   if (/確認/.test(type)) return 'confirm';
+  if (/許可/.test(type)) return 'approval';
   if (/依頼|お願い/.test(type)) return 'request';
   if (/共有/.test(type)) return 'share';
   return 'question';
@@ -1529,6 +1530,13 @@ function openTaskModal(editId) {
       phaseId: '',
       content: '',
       estimatedHours: 1,
+      durationDays: 1,
+      reviewConfigMode: 'inherit',
+      reviewerMemberIds: [],
+      approvalMemberIds: [],
+      reviewRule: 'inherit',
+      reviewDueDays: null,
+      notifyProgressManager: true,
       note: '',
       date: getTaskDefaultDate(),
     };
@@ -1548,6 +1556,8 @@ function openTaskModal(editId) {
   const linkedAsk = editId ? getTaskLinkedAsk(editId) : null;
   const askMemberOpts = `<option value="">宛先を選択...</option>` + members.map(m =>
     `<option value="${m.id}" ${linkedAsk?.toMemberId === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
+  const taskReviewMode = _taskFormData.reviewConfigMode === 'custom' ? 'custom' : 'inherit';
+  const taskReviewSummary = taskReviewSummaryText(_taskFormData);
   const carryOrigin = editId && _taskFormData.carriedFromTaskId ? getCarryOriginTask(_taskFormData) : null;
   const carryOriginDate = carryOrigin?.date && carryOrigin.id !== _taskFormData.id ? carryOrigin.date : '';
   const workDateHelp = carryOriginDate
@@ -1616,9 +1626,56 @@ function openTaskModal(editId) {
         <button class="hours-btn" onclick="stepHours(0.25)" type="button">＋</button>
       </div>
     </div>
+    <div class="form-group">
+      <label class="form-label">ガント期間（日）</label>
+      <input type="number" class="form-input" id="tf-duration-days" min="1" step="1"
+             value="${Number(_taskFormData.durationDays || 1)}"
+             onchange="_taskFormData.durationDays=Math.max(1, Number(this.value || 1) || 1)">
+      <div class="form-help">ガント上でこのタスクを何日分の幅として表示するかです。作業量は上の時間で管理します。</div>
+    </div>
     <div class="task-ask-box">
       <div class="task-ask-title">進行に関わる確認</div>
       <div class="form-help">次の工程・納期・判断に影響する確認だけを入れます。個人的な作業相談はここに残さず、直接確認してください。</div>
+      <div class="task-review-summary">${escHtml(taskReviewSummary)}</div>
+      <label class="checkline" style="margin:10px 0">
+        <input type="checkbox" id="tf-review-custom" ${taskReviewMode === 'custom' ? 'checked' : ''} onchange="toggleTaskReviewCustom()">
+        <span>このタスクだけ確認者・許可者を変更する</span>
+      </label>
+      <div id="tf-review-custom-box" style="${taskReviewMode === 'custom' ? '' : 'display:none'}">
+        <div class="task-ask-grid">
+          <div class="form-group">
+            <label class="form-label">確認者（複数選択可）</label>
+            <select class="form-select member-multi-select" id="tf-reviewers" multiple size="4">
+              ${memberMultiOptionsHTML(_taskFormData.reviewerMemberIds || [])}
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">進行許可者（複数選択可）</label>
+            <select class="form-select member-multi-select" id="tf-approvers" multiple size="4">
+              ${memberMultiOptionsHTML(_taskFormData.approvalMemberIds || [])}
+            </select>
+          </div>
+        </div>
+        <div class="task-ask-grid">
+          <div class="form-group">
+            <label class="form-label">確認ルール</label>
+            <select class="form-select" id="tf-review-rule">
+              <option value="inherit" ${(_taskFormData.reviewRule || 'inherit') === 'inherit' ? 'selected' : ''}>プロジェクト設定を使用</option>
+              <option value="all" ${_taskFormData.reviewRule === 'all' ? 'selected' : ''}>全員確認</option>
+              <option value="any" ${_taskFormData.reviewRule === 'any' ? 'selected' : ''}>誰か1人でOK</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">確認期限（日）</label>
+            <input type="number" class="form-input" id="tf-review-due-days" min="0" step="1" value="${_taskFormData.reviewDueDays ?? ''}" placeholder="未入力ならプロジェクト設定">
+          </div>
+        </div>
+        <label class="checkline">
+          <input type="checkbox" id="tf-notify-progress-manager" ${_taskFormData.notifyProgressManager === false ? '' : 'checked'}>
+          <span>確認待ちを進行管理役にも通知する</span>
+        </label>
+      </div>
+      <div class="form-help" style="margin-top:10px">下の欄は、登録時点で個別の確認依頼を残したい場合だけ使います。</div>
       <div class="task-ask-grid">
         <div class="form-group">
           <label class="form-label">誰に</label>
@@ -1909,12 +1966,67 @@ function stepHours(delta) {
   if (disp) disp.textContent = `${_taskFormData.estimatedHours}h`;
 }
 
+function toggleTaskReviewCustom() {
+  const checked = Boolean(document.getElementById('tf-review-custom')?.checked);
+  const box = document.getElementById('tf-review-custom-box');
+  if (box) box.style.display = checked ? '' : 'none';
+}
+
+function readTaskReviewForm() {
+  const custom = Boolean(document.getElementById('tf-review-custom')?.checked);
+  const dueText = document.getElementById('tf-review-due-days')?.value || '';
+  return {
+    reviewConfigMode: custom ? 'custom' : 'inherit',
+    reviewerMemberIds: custom ? readMultiSelectValues('tf-reviewers') : [],
+    approvalMemberIds: custom ? readMultiSelectValues('tf-approvers') : [],
+    reviewRule: custom ? (document.getElementById('tf-review-rule')?.value || 'inherit') : 'inherit',
+    reviewDueDays: custom && dueText !== '' ? Number(dueText) : null,
+    notifyProgressManager: custom ? Boolean(document.getElementById('tf-notify-progress-manager')?.checked) : true,
+  };
+}
+
+function getTaskBaseReviewConfig(task) {
+  if (!task?.projectId) return null;
+  const project = DB.Projects.get(task.projectId);
+  if (!project) return null;
+  const phase = task.phaseId ? (project.phases || []).find(item => item.id === task.phaseId) : null;
+  return getPhaseReviewConfig(project, phase);
+}
+
+function getTaskReviewConfig(task) {
+  const base = getTaskBaseReviewConfig(task);
+  if (!base) return {
+    reviewerMemberIds: asArray(task?.reviewerMemberIds),
+    approvalMemberIds: asArray(task?.approvalMemberIds),
+    reviewRule: task?.reviewRule === 'any' ? 'any' : 'all',
+    reviewDueDays: task?.reviewDueDays ?? 1,
+    notifyProgressManager: task?.notifyProgressManager !== false,
+    progressManagerMemberId: '',
+  };
+  if (task?.reviewConfigMode !== 'custom') return base;
+  return {
+    ...base,
+    reviewerMemberIds: asArray(task.reviewerMemberIds),
+    approvalMemberIds: asArray(task.approvalMemberIds),
+    reviewRule: task.reviewRule === 'inherit' ? base.reviewRule : (task.reviewRule || base.reviewRule),
+    reviewDueDays: task.reviewDueDays ?? base.reviewDueDays,
+    notifyProgressManager: task.notifyProgressManager !== false,
+  };
+}
+
+function taskReviewSummaryText(task) {
+  const config = getTaskReviewConfig(task);
+  const source = task?.reviewConfigMode === 'custom' ? 'このタスク専用' : 'プロジェクト・フェーズ設定を使用';
+  return `${source}：確認者 ${memberNames(config.reviewerMemberIds)} / 許可者 ${memberNames(config.approvalMemberIds)} / ${reviewRuleLabel(config.reviewRule)} / ${Number(config.reviewDueDays) || 1}日以内`;
+}
+
 async function saveTask(editId) {
   const memberId = document.getElementById('tf-member')?.value;
   const content  = document.getElementById('tf-content')?.value?.trim();
   const note     = document.getElementById('tf-note')?.value?.trim() || '';
   const taskDate = document.getElementById('tf-date')?.value || DB.today();
   const askPayload = readTaskAskForm();
+  const reviewPayload = readTaskReviewForm();
   if (!memberId) { showToast('担当者を選択してください', 'error'); return; }
   if (!content)  { showToast('タスク内容を入力してください', 'error'); return; }
   if (askPayload.hasAny && (!askPayload.toMemberId || !askPayload.dueText || !askPayload.content)) {
@@ -1930,6 +2042,8 @@ async function saveTask(editId) {
     note,
     date: taskDate,
     estimatedHours: _taskFormData.estimatedHours || 1,
+    durationDays: Math.max(1, Number(document.getElementById('tf-duration-days')?.value || _taskFormData.durationDays || 1) || 1),
+    ...reviewPayload,
     sourceProjectName: _taskFormData.projectId ? '' : (_taskFormData.sourceProjectName || ''),
     needsProjectReview: _taskFormData.projectId ? false : Boolean(_taskFormData.needsProjectReview),
   };
@@ -2314,7 +2428,7 @@ function projectReviewChatworkMessage(review) {
     ...lines,
     '',
     '下記URLから、正しいプロジェクトを選んでください。',
-    '新規プロジェクト作成は、佐久間さん・窓口担当・発起人だけが使います。',
+    '新規プロジェクト作成は、佐久間さん・窓口担当・登録する本人だけが使います。',
     reviewUrl,
     '[/info]',
   ].filter(Boolean).join('\n');
@@ -2449,7 +2563,7 @@ async function saveBulkTasks() {
       '',
       names,
       '',
-      '新規プロジェクトは佐久間さん・窓口担当・発起人だけが作成します。',
+      '新規プロジェクトは佐久間さん・窓口担当・登録する本人だけが作成します。',
       '通常メンバー分なら、既存プロジェクト名へ直すか、先頭を「?」にして備考へ「新規案件かも」と書いてください。',
       '',
       'このまま登録すると「プロジェクト確認待ち」として残ります。登録しますか？',
@@ -2943,7 +3057,7 @@ function bulkPreviewHTML(parsed) {
         <div class="bulk-alert danger">
           <div>
             <strong>既存プロジェクトに一致しない名前が ${unresolvedGroups.length}件あります。</strong>
-            <p>新規プロジェクトは佐久間さん・窓口担当・発起人だけが作成します。通常メンバー分なら既存名に直すか、「?」で新規案件かもとして登録してください。</p>
+            <p>新規プロジェクトは佐久間さん・窓口担当・登録する本人だけが作成します。通常メンバー分なら既存名に直すか、「?」で新規案件かもとして登録してください。</p>
           </div>
         </div>
       ` : ''}
@@ -3023,7 +3137,7 @@ function getNoProjectTasks(parsed) {
 function projectCandidateHintHTML(projectName) {
   const candidates = findSimilarProjects(projectName).slice(0, 3);
   if (!candidates.length) {
-    return '<div class="bulk-project-candidates">類似プロジェクトは見つかりません。発起人・窓口でなければ「?」にして確認待ちにしてください。</div>';
+    return '<div class="bulk-project-candidates">類似プロジェクトは見つかりません。登録する本人・窓口でなければ「?」にして確認待ちにしてください。</div>';
   }
   return `
     <div class="bulk-project-candidates">
@@ -3142,10 +3256,10 @@ function projectReviewGroupHTML(group, index) {
         <label class="form-label">紐付け先</label>
         <select class="form-select" id="project-review-select-${index}">
           ${suggestionOptions}
-          <option value="__new__">発起人・窓口として新規作成</option>
+          <option value="__new__">登録する本人・窓口として新規作成</option>
           <option value="__admin__">佐久間確認に回す</option>
         </select>
-        <div class="form-help">通常は類似プロジェクトを選んでください。新規作成は、佐久間さん・窓口担当・発起人だけが使います。</div>
+        <div class="form-help">通常は類似プロジェクトを選んでください。新規作成は、佐久間さん・窓口担当・登録する本人だけが使います。</div>
       </div>
     </div>`;
 }
@@ -3164,7 +3278,7 @@ function saveProjectReview(reviewId) {
 
     let projectId = selected;
     if (selected === '__new__') {
-      const ok = window.confirm('新規プロジェクトを作成します。これは佐久間さん・窓口担当・発起人だけが使う操作です。続けますか？');
+      const ok = window.confirm('新規プロジェクトを作成します。これは佐久間さん・窓口担当・登録する本人だけが使う操作です。続けますか？');
       if (!ok) {
         unresolved++;
         return;
@@ -3403,6 +3517,7 @@ function ganttPhaseRowHTML(project, phase, index, projectTasks, members, days, p
     <div class="gantt-scroll ${groupEndClass} ${groupClass} ${timingClass}">
       <div class="gantt-row-line" style="width:${days.length * 36}px">
         ${barStyle ? `<div class="gantt-bar gantt-bar-phase ${statusClass} ${timingClass}" style="${barStyle}" title="${escHtml(project.name)}：${escHtml(phase.name)}"></div>` : ''}
+        ${ganttTaskBarsHTML(phaseTasks, days)}
         ${ganttTodayMarkerHTML(days)}
       </div>
     </div>
@@ -3422,6 +3537,7 @@ function ganttPhaseTaskListHTML(tasks, members) {
       const member = members.find(m => m.id === task.memberId) || DB.Members.get(task.memberId);
       const status = task.completed === true ? '完了' : task.completed === false ? '未完了' : '未確認';
       const note = visibleTaskNote(task);
+      const durationDays = Math.max(1, Number(task.durationDays || 1) || 1);
       return `
         <button type="button" class="gantt-phase-task" onclick="openTaskModal('${task.id}')">
           <span class="gantt-phase-task-title">${escHtml(task.content || '未入力タスク')}</span>
@@ -3429,6 +3545,7 @@ function ganttPhaseTaskListHTML(tasks, members) {
             ${task.date ? escHtml(DB.fmtDate(task.date)) : '日付未設定'}
             / ${member ? escHtml(member.name) : '担当未設定'}
             / ${Number(task.estimatedHours) || 0}h
+            / ${durationDays}日
             / ${status}
           </span>
           ${note ? `<span class="gantt-phase-task-note">${escHtml(note)}</span>` : ''}
@@ -3439,6 +3556,21 @@ function ganttPhaseTaskListHTML(tasks, members) {
       <summary>タスクを見る (${tasks.length})</summary>
       <div class="gantt-phase-task-list">${rows}</div>
     </details>`;
+}
+
+function ganttTaskBarsHTML(tasks, days) {
+  return tasks
+    .filter(task => task.date)
+    .map((task, index) => {
+      const start = task.date;
+      const end = addDays(start, Math.max(1, Number(task.durationDays || 1) || 1) - 1);
+      const style = ganttBarStyle(start, end, days);
+      if (!style) return '';
+      const doneClass = task.completed === true ? 'done' : task.completed === false ? 'active' : 'pending';
+      const lane = index % 3;
+      return `<div class="gantt-bar gantt-bar-task ${doneClass}" style="${style};top:${11 + lane * 9}px" title="${escHtml(task.content || '未入力タスク')} / ${Number(task.durationDays || 1)}日"></div>`;
+    })
+    .join('');
 }
 
 function ganttDayHeaderHTML(dateStr) {
@@ -3944,7 +4076,7 @@ function projectCard(project) {
             </span>
             ${project.budget ? `<span class="project-meta-item"><strong>予算</strong>¥${Number(project.budget).toLocaleString()}</span>` : ''}
             ${project.projectType === 'recurring' && project.recurringSeries ? `<span class="project-meta-item"><strong>定期案件</strong>${escHtml(project.recurringSeries)}</span>` : ''}
-            <span class="project-meta-item ${createdBy ? '' : 'missing'}"><strong>発起人</strong>${createdBy ? escHtml(createdBy.name) : '未設定'}</span>
+            <span class="project-meta-item ${createdBy ? '' : 'missing'}"><strong>登録者</strong>${createdBy ? escHtml(createdBy.name) : '未設定'}</span>
             <span class="project-meta-item ${owner ? '' : 'missing'}"><strong>窓口</strong>${owner ? escHtml(owner.name) : '未設定'}</span>
             <span class="project-meta-item ${progressManager ? '' : 'missing'}"><strong>進行管理</strong>${progressManager ? escHtml(progressManager.name) : '未設定'}</span>
             <span class="project-meta-item"><strong>確認者</strong>${escHtml(memberNames(reviewConfig.reviewerMemberIds))}</span>
@@ -4012,7 +4144,7 @@ function projectCompletionCandidateHTML(project, tasks = []) {
     <div class="project-warning project-completion-candidate">
       完了候補：${reason}
       <button class="btn btn-ghost btn-sm" onclick="copyProjectCompletionRequest('${project.id}')">完了依頼文をコピー</button>
-      <button class="btn btn-ghost btn-sm" onclick="sendProjectCompletionRequest('${project.id}')">発起人へ送信</button>
+      <button class="btn btn-ghost btn-sm" onclick="sendProjectCompletionRequest('${project.id}')">登録者へ送信</button>
       <button class="btn btn-success btn-sm" onclick="completeProject('${project.id}')">完了にする</button>
       ${doneCount ? `<span>${doneCount}/${tasks.length}件完了</span>` : ''}
     </div>`;
@@ -4021,7 +4153,7 @@ function projectCompletionCandidateHTML(project, tasks = []) {
 function projectMissingInfo(project) {
   const missing = [];
   if (!project.ownerMemberId) missing.push({ key: 'ownerMemberId', label: '窓口担当' });
-  if (!project.createdByMemberId && !project.ownerMemberId) missing.push({ key: 'createdByMemberId', label: '発起人' });
+  if (!project.createdByMemberId && !project.ownerMemberId) missing.push({ key: 'createdByMemberId', label: '登録者' });
   if (!project.deliveryDate) missing.push({ key: 'deliveryDate', label: '納品日' });
   if (!project.leadSource) missing.push({ key: 'leadSource', label: '案件流入元' });
   const reviewConfig = getProjectReviewConfig(project);
@@ -4120,31 +4252,32 @@ function createReviewAsksForCompletedTask(task) {
   if (!task?.projectId) return 0;
   const project = DB.Projects.get(task.projectId);
   if (!project) return 0;
-  const phase = task.phaseId ? (project.phases || []).find(item => item.id === task.phaseId) : null;
-  const config = getPhaseReviewConfig(project, phase);
-  const recipientIds = new Set(asArray(config.reviewerMemberIds));
-  if (config.notifyProgressManager && config.progressManagerMemberId) recipientIds.add(config.progressManagerMemberId);
-  recipientIds.delete(task.memberId);
-  if (!recipientIds.size) return 0;
+  const config = getTaskReviewConfig(task);
+  const reviewRecipientIds = new Set(asArray(config.reviewerMemberIds));
+  const approvalRecipientIds = new Set(asArray(config.approvalMemberIds));
+  if (config.notifyProgressManager && config.progressManagerMemberId) reviewRecipientIds.add(config.progressManagerMemberId);
+  reviewRecipientIds.delete(task.memberId);
+  approvalRecipientIds.delete(task.memberId);
+  if (!reviewRecipientIds.size && !approvalRecipientIds.size) return 0;
 
   const existing = DB.Asks.all();
   let count = 0;
-  recipientIds.forEach(memberId => {
+  const addTaskFlowAsk = (memberId, type, contentPrefix) => {
     const member = DB.Members.get(memberId);
     if (!member) return;
     const alreadyExists = existing.some(ask =>
       ask.taskId === task.id &&
       ask.toMemberId === memberId &&
       ask.status === 'open' &&
-      /確認/.test(ask.type || '')
+      ask.type === type
     );
     if (alreadyExists) return;
     DB.Asks.add({
-      type: '確認',
+      type,
       fromMemberId: task.memberId || project.ownerMemberId || '',
       toMemberId: memberId,
       toName: member.name,
-      content: `完了タスクの確認：${task.content || '未入力タスク'}`,
+      content: `${contentPrefix}：${task.content || '未入力タスク'}`,
       projectId: project.id,
       projectName: `${project.clientName || ''} / ${project.name || ''}`,
       dueText: `${Number(config.reviewDueDays) || 1}日以内`,
@@ -4152,7 +4285,9 @@ function createReviewAsksForCompletedTask(task) {
       date: DB.today(),
     });
     count++;
-  });
+  };
+  reviewRecipientIds.forEach(memberId => addTaskFlowAsk(memberId, '確認', '完了タスクの確認'));
+  approvalRecipientIds.forEach(memberId => addTaskFlowAsk(memberId, '進行許可', '次工程へ進めてよいか確認'));
   return count;
 }
 
@@ -4361,8 +4496,7 @@ function openProjectModal(editId) {
   const members   = DB.Members.all();
   const memberOpts = members.map(m =>
     `<option value="${m.id}" ${ownerDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
-  const createdByOpts = members.map(m =>
-    `<option value="${m.id}" ${createdByDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
+  const createdByMember = createdByDefault ? DB.Members.get(createdByDefault) : null;
   const progressManagerDefault = project?.progressManagerMemberId || ownerDefault || createdByDefault || '';
   const progressManagerOpts = members.map(m =>
     `<option value="${m.id}" ${progressManagerDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
@@ -4457,11 +4591,10 @@ function openProjectModal(editId) {
              oninput="this.dataset.manualEdited='1'">
     </div>
     <div class="form-group">
-      <label class="form-label">発起人</label>
-      <select class="form-select" id="pj-created-by">
-        ${createdByOpts}
-      </select>
-      <div class="form-help">プロジェクトを作成した人です。新規作成時は自動で入ります。</div>
+      <label class="form-label">登録者</label>
+      <div class="readonly-field">${createdByMember ? escHtml(createdByMember.name) : '未設定'}</div>
+      <input type="hidden" id="pj-created-by" value="${escHtml(createdByDefault || '')}">
+      <div class="form-help">プロジェクトを登録した人として自動で記録します。</div>
     </div>
     <div class="form-group">
       <label class="form-label">窓口担当</label>
@@ -4642,12 +4775,10 @@ function handleRecurringSeriesChange() {
   if (latest) {
     setProjectClientFromName(latest.clientName);
     const ownerEl = document.getElementById('pj-owner');
-    const createdByEl = document.getElementById('pj-created-by');
     const dealEl = document.getElementById('pj-deal-category');
     const leadEl = document.getElementById('pj-lead-source');
     const leadDetailEl = document.getElementById('pj-lead-source-detail');
     if (ownerEl && latest.ownerMemberId) ownerEl.value = latest.ownerMemberId;
-    if (createdByEl && latest.createdByMemberId) createdByEl.value = latest.createdByMemberId;
     if (dealEl && latest.dealCategory) dealEl.value = latest.dealCategory;
     if (leadEl && latest.leadSource) leadEl.value = latest.leadSource;
     if (leadDetailEl && latest.leadSourceDetail) leadDetailEl.value = latest.leadSourceDetail;
@@ -4718,6 +4849,7 @@ function templateScheduleRows(templateId, deliveryDate) {
   return (tpl.tasks || []).map(task => ({
     ...task,
     dueDate: templateTaskDueDate(deliveryDate, task.offset),
+    durationDays: Math.max(1, Number(task.durationDays || 1) || 1),
   }));
 }
 
@@ -4758,6 +4890,7 @@ function renderProjectTemplatePreview() {
         ${memberOptionsHTML(task.defaultMemberId || '', true)}
       </select>
       <input type="date" class="form-input tpl-task-date" value="${deliveryDate ? escHtml(task.dueDate) : ''}" aria-label="仮締切">
+      <input type="number" class="form-input tpl-task-duration" min="1" step="1" value="${Number(task.durationDays || 1)}" aria-label="ガント期間（日）">
       <input type="number" class="form-input tpl-task-hours" min="0.25" step="0.25" value="${Number(task.hours || 1)}" aria-label="工数">
       <small>${escHtml(task.phase || 'フェーズなし')}</small>
     </div>`).join('');
@@ -4769,7 +4902,7 @@ function renderProjectTemplatePreview() {
     <div class="template-preview-phases">${phasePills}</div>
     ${deliveryDate ? '' : '<div class="form-help">納品日を入れると仮締切日を表示します。</div>'}
     <div class="template-preview-list">${previewRows}</div>
-    <div class="form-help">不要なタスクはチェックを外せます。タスク名・種別・仮締切・工数は登録前に修正できます。</div>`;
+    <div class="form-help">不要なタスクはチェックを外せます。タスク名・種別・仮締切・ガント期間・工数は登録前に修正できます。</div>`;
 }
 
 function readTemplateTaskDrafts(templateId, deliveryDate) {
@@ -4783,6 +4916,7 @@ function readTemplateTaskDrafts(templateId, deliveryDate) {
       type: row.querySelector('.tpl-task-type')?.value || '作業',
       defaultMemberId: row.querySelector('.tpl-task-member')?.value || '',
       dueDate: row.querySelector('.tpl-task-date')?.value || '',
+      durationDays: Math.max(1, Number(row.querySelector('.tpl-task-duration')?.value || 1) || 1),
       hours: Number(row.querySelector('.tpl-task-hours')?.value || 1) || 1,
     }))
     .filter(task => task.content);
@@ -4802,8 +4936,15 @@ function createTemplateTasksForProject(project, templateId, fallbackMemberId, ta
       phaseId: phase?.id || null,
       content: task.content,
       estimatedHours: task.hours || 1,
+      durationDays: task.durationDays || 1,
       date: task.dueDate || templateTaskDueDate(project.deliveryDate, task.offset) || project.deliveryDate || DB.today(),
       taskType: task.type || '作業',
+      reviewConfigMode: task.reviewConfigMode === 'custom' ? 'custom' : 'inherit',
+      reviewerMemberIds: asArray(task.reviewerMemberIds),
+      approvalMemberIds: asArray(task.approvalMemberIds),
+      reviewRule: task.reviewRule || 'inherit',
+      reviewDueDays: task.reviewDueDays ?? null,
+      notifyProgressManager: task.notifyProgressManager !== false,
       note: `テンプレート：${tpl.name}`,
     });
     count++;
@@ -4816,8 +4957,8 @@ async function saveProjectNew() {
   let name       = document.getElementById('pj-name')?.value?.trim();
   const createdByMemberId = document.getElementById('pj-created-by')?.value || getDefaultCreatorMemberId();
   const ownerMemberId = document.getElementById('pj-owner')?.value || '';
-  if (!createdByMemberId && !ownerMemberId) {
-    showToast('発起人または窓口担当のどちらかを選んでください', 'error');
+  if (!createdByMemberId) {
+    showToast('登録者を特定できません。個人URLから開いて登録してください', 'error');
     return;
   }
   const deliveryDate = document.getElementById('pj-delivery')?.value || '';
@@ -4881,12 +5022,13 @@ async function saveProjectNew() {
 }
 
 function saveProjectEdit(projectId) {
+  const existingProject = DB.Projects.get(projectId);
   const clientName = getClientNameFromProjectForm();
   let name       = document.getElementById('pj-name')?.value?.trim();
-  const createdByMemberId = document.getElementById('pj-created-by')?.value || getDefaultCreatorMemberId();
+  const createdByMemberId = existingProject?.createdByMemberId || document.getElementById('pj-created-by')?.value || getDefaultCreatorMemberId();
   const ownerMemberId = document.getElementById('pj-owner')?.value || '';
-  if (!createdByMemberId && !ownerMemberId) {
-    showToast('発起人または窓口担当のどちらかを選んでください', 'error');
+  if (!createdByMemberId) {
+    showToast('登録者を特定できません。個人URLから開いて更新してください', 'error');
     return;
   }
   const deliveryDate = document.getElementById('pj-delivery')?.value || '';
@@ -4998,7 +5140,7 @@ async function sendProjectInfoRequest(projectId) {
   if (!project) return;
   const recipients = projectInfoRequestRecipients(project);
   if (!recipients.length) {
-    showToast('発起人と窓口担当が未設定です。先にどちらかを選んでください', 'error');
+    showToast('登録者と窓口担当が未設定です。先にどちらかを選んでください', 'error');
     return;
   }
   const missingChatworkMembers = recipients.filter(member => !member.chatworkAccountId);
@@ -5096,7 +5238,7 @@ async function sendProjectCompletionRequest(projectId) {
   if (!project) return;
   const recipients = projectCompletionRequestRecipients(project);
   if (!recipients.length) {
-    showToast('発起人・窓口・進行管理役が未設定です', 'error');
+    showToast('登録者・窓口・進行管理役が未設定です', 'error');
     return;
   }
   const missingChatworkMembers = recipients.filter(member => !member.chatworkAccountId);
@@ -5254,7 +5396,7 @@ function renderDataCleanup() {
         ${cleanupSummaryCard('完了候補PJ', issues.completionCandidateProjects.length, 'タスクなし・全タスク完了')}
         ${cleanupSummaryCard('クライアント名', issues.clientStats.length, '表記ゆれ・重複の整理')}
         ${cleanupSummaryCard('繰り越し不整合', issues.carryoverIssues.length, '完了・持ち越しリンクの確認')}
-        ${cleanupSummaryCard('不足情報PJ', issues.missingInfoProjects.length, '発起人・窓口・納品日など')}
+        ${cleanupSummaryCard('不足情報PJ', issues.missingInfoProjects.length, '登録者・窓口・納品日など')}
       </div>
 
       ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'tasks' ? cleanupTaskSection(issues.missingProjectTasks) : ''}
@@ -5644,7 +5786,7 @@ function cleanupCompletionCandidateSection(projects) {
       <div class="cleanup-section-head">
         <div>
           <h3>完了候補プロジェクト</h3>
-          <p>タスクがない、または全タスクが完了している進行中プロジェクトです。発起人へ確認し、完了なら完了ボタンを押してもらいます。</p>
+          <p>タスクがない、または全タスクが完了している進行中プロジェクトです。登録者へ確認し、完了なら完了ボタンを押してもらいます。</p>
         </div>
         <span class="cleanup-pill">${projects.length}件</span>
       </div>
@@ -5663,14 +5805,14 @@ function cleanupCompletionCandidateRow(project) {
         <div class="cleanup-title">${escHtml(cleanupProjectName(project))}</div>
         <div class="cleanup-meta">
           <span class="cleanup-warning">${relatedTasks.length ? `全タスク完了 ${doneCount}/${relatedTasks.length}件` : 'タスクなし'}</span>
-          <span>発起人：${createdBy ? escHtml(createdBy.name) : '未設定'}</span>
+          <span>登録者：${createdBy ? escHtml(createdBy.name) : '未設定'}</span>
           <span>窓口：${owner ? escHtml(owner.name) : '未設定'}</span>
           <span>納品：${project.deliveryDate ? escHtml(DB.fmtDate(project.deliveryDate)) : '未設定'}</span>
         </div>
       </div>
       <div class="cleanup-actions">
         <button class="btn btn-secondary btn-sm" onclick="copyProjectCompletionRequest('${project.id}')">依頼文コピー</button>
-        <button class="btn btn-secondary btn-sm" onclick="sendProjectCompletionRequest('${project.id}')">発起人へ送信</button>
+        <button class="btn btn-secondary btn-sm" onclick="sendProjectCompletionRequest('${project.id}')">登録者へ送信</button>
         <button class="btn btn-ghost btn-sm" onclick="openProjectTasksModal('${project.id}')">タスク確認</button>
         <button class="btn btn-success btn-sm" onclick="completeProject('${project.id}')">完了にする</button>
       </div>
@@ -6282,7 +6424,7 @@ function openTemplateModal(editId) {
     </div>
     <div class="form-group">
       <label class="form-label">標準タスク</label>
-      <div class="form-help">担当の右は「営業日前」と「工数」です。営業日前は納品日から何営業日前に仮締切を置くか、工数は予定時間です。担当未設定の場合は、プロジェクトの窓口担当が入ります。</div>
+      <div class="form-help">担当の右は「営業日前」「期間（日）」「工数」です。営業日前は納品日から何営業日前に仮締切を置くか、期間はガント上の幅、工数は予定時間です。担当未設定の場合は、プロジェクトの窓口担当が入ります。</div>
       <div id="tpl-tasks-list" class="tpl-task-list">
         <div class="tpl-task-header" aria-hidden="true">
           <span>No.</span>
@@ -6291,6 +6433,7 @@ function openTemplateModal(editId) {
           <span>種別</span>
           <span>担当</span>
           <span>営業日前</span>
+          <span>期間(日)</span>
           <span>工数</span>
           <span></span>
           <span></span>
@@ -6405,6 +6548,7 @@ function tplTaskRow(task = {}, i = 0, phases = getTemplatePhases()) {
       </select>
       <select class="form-select tpl-task-member-edit">${memberOptionsHTML(task.defaultMemberId || '', true)}</select>
       <input type="number" class="form-input tpl-task-offset-edit" value="${Number(task.offset || 0)}" title="納品日からの営業日" aria-label="営業日前" placeholder="営業日前" step="1">
+      <input type="number" class="form-input tpl-task-duration-edit" value="${Number(task.durationDays || 1)}" min="1" step="1" title="ガント期間（日）" aria-label="期間（日）" placeholder="期間">
       <input type="number" class="form-input tpl-task-hours-edit" value="${Number(task.hours || 1)}" min="0.25" step="0.25" title="工数" aria-label="工数" placeholder="工数">
       <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplTaskRow(this, -1)" title="上へ">↑</button>
       <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplTaskRow(this, 1)" title="下へ">↓</button>
@@ -6458,6 +6602,7 @@ function getTemplateTasks() {
       type: row.querySelector('.tpl-task-type-edit')?.value || '作業',
       defaultMemberId: row.querySelector('.tpl-task-member-edit')?.value || '',
       offset: Number(row.querySelector('.tpl-task-offset-edit')?.value || 0) || 0,
+      durationDays: Math.max(1, Number(row.querySelector('.tpl-task-duration-edit')?.value || 1) || 1),
       hours: Number(row.querySelector('.tpl-task-hours-edit')?.value || 1) || 1,
     }))
     .filter(task => task.content);
