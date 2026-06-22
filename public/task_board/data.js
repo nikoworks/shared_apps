@@ -473,6 +473,8 @@ const Projects = {
     projectType = 'standard', recurringSeries = '', ownerMemberId = '',
     createdByMemberId = '',
     dealCategory = 'existing', startDate = '',
+    progressManagerMemberId = '', reviewerMemberIds = [], approvalMemberIds = [],
+    reviewRule = 'all', reviewDueDays = 1, notifyProgressManager = true,
     leadSource = '', leadSourceDetail = '',
     isProvisional = false, detailsDueAt = '', projectStatus = 'active', note = '',
   }) {
@@ -481,6 +483,8 @@ const Projects = {
     const project = {
       id: genId(), clientName, name, deliveryDate, budget,
       projectType, recurringSeries, ownerMemberId, createdByMemberId, dealCategory, startDate,
+      progressManagerMemberId, reviewerMemberIds, approvalMemberIds,
+      reviewRule, reviewDueDays, notifyProgressManager,
       leadSource, leadSourceDetail,
       isProvisional, detailsDueAt,
       projectStatus, note,
@@ -886,6 +890,12 @@ function buildPhasesFromTemplate(templateId) {
     status: i === 0 ? 'active' : 'pending',
     startDate: '',
     dueDate: '',
+    reviewConfigMode: 'inherit',
+    reviewerMemberIds: [],
+    approvalMemberIds: [],
+    reviewRule: 'inherit',
+    reviewDueDays: null,
+    requiredBeforeNextPhase: true,
     order: i,
   }));
 }

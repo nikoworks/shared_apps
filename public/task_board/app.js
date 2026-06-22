@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '完了仮PJ非表示版 2026-06-22-03';
+const APP_BUILD_LABEL = '進行確認体制版 2026-06-22-05';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const JP_HOLIDAYS = new Set([
@@ -196,6 +196,63 @@ function projectOptionsHTML(projects, selectedId = '', includeType = false) {
   return sortProjectsForPicker(projects).map(project =>
     `<option value="${project.id}" ${selectedId === project.id ? 'selected' : ''}>${escHtml(projectOptionLabel(project, includeType))}</option>`
   ).join('');
+}
+
+function asArray(value) {
+  return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
+function memberMultiOptionsHTML(selectedIds = []) {
+  const selected = new Set(asArray(selectedIds));
+  return DB.Members.all().map(member =>
+    `<option value="${member.id}" ${selected.has(member.id) ? 'selected' : ''}>${escHtml(member.name)}</option>`
+  ).join('');
+}
+
+function readMultiSelectValues(id) {
+  const el = document.getElementById(id);
+  return el ? Array.from(el.selectedOptions).map(option => option.value).filter(Boolean) : [];
+}
+
+function memberNames(ids = []) {
+  const names = asArray(ids)
+    .map(id => DB.Members.get(id)?.name)
+    .filter(Boolean);
+  return names.length ? names.join('、') : '未設定';
+}
+
+function reviewRuleLabel(value) {
+  if (value === 'any') return '誰か1人でOK';
+  if (value === 'inherit') return 'プロジェクト設定を使用';
+  return '全員確認';
+}
+
+function getProjectReviewConfig(project) {
+  return {
+    progressManagerMemberId: project?.progressManagerMemberId || project?.ownerMemberId || '',
+    reviewerMemberIds: asArray(project?.reviewerMemberIds),
+    approvalMemberIds: asArray(project?.approvalMemberIds),
+    reviewRule: project?.reviewRule || 'all',
+    reviewDueDays: project?.reviewDueDays ?? 1,
+    notifyProgressManager: project?.notifyProgressManager !== false,
+  };
+}
+
+function getPhaseReviewConfig(project, phase) {
+  const base = getProjectReviewConfig(project);
+  if (!phase || phase.reviewConfigMode !== 'custom') {
+    return { ...base, reviewConfigMode: 'inherit', requiredBeforeNextPhase: phase?.requiredBeforeNextPhase !== false };
+  }
+  return {
+    progressManagerMemberId: base.progressManagerMemberId,
+    reviewerMemberIds: asArray(phase.reviewerMemberIds),
+    approvalMemberIds: asArray(phase.approvalMemberIds),
+    reviewRule: phase.reviewRule === 'inherit' ? base.reviewRule : (phase.reviewRule || base.reviewRule),
+    reviewDueDays: phase.reviewDueDays ?? base.reviewDueDays,
+    notifyProgressManager: base.notifyProgressManager,
+    reviewConfigMode: 'custom',
+    requiredBeforeNextPhase: phase.requiredBeforeNextPhase !== false,
+  };
 }
 
 /** タスク担当者名 */
@@ -833,9 +890,14 @@ function morningTaskRow(task) {
 
 async function markTaskComplete(taskId) {
   const before = taskSnapshot();
+  const beforeAsks = DB.Asks.all().map(ask => ({ ...ask }));
   DB.Tasks.setCompletion(taskId, true, '');
+  createReviewAsksForCompletedTasks([taskId]);
   const ok = await DB.syncCloudStore?.();
-  if (ok === false) restoreTaskSnapshot(before);
+  if (ok === false) {
+    restoreTaskSnapshot(before);
+    DB.Asks.replaceAll?.(beforeAsks);
+  }
   renderMorningCheck();
   showToast(ok === false ? '保存できなかったため、チェックを元に戻しました。最新に更新してから再度実行してください' : '完了としてマークしました', ok === false ? 'error' : 'success');
 }
@@ -1264,11 +1326,14 @@ async function toggleTodayTaskCompleteGroup(taskIdsText) {
   const mainTask = DB.Tasks.get(taskIds[0]);
   if (!mainTask) return;
   const before = taskSnapshot();
+  const beforeAsks = DB.Asks.all().map(ask => ({ ...ask }));
   const nextCompleted = mainTask.completed === true ? null : true;
   taskIds.forEach(taskId => DB.Tasks.setCompletion(taskId, nextCompleted, ''));
+  if (nextCompleted === true) createReviewAsksForCompletedTasks(taskIds);
   const ok = await DB.syncCloudStore?.();
   if (ok === false) {
     restoreTaskSnapshot(before);
+    DB.Asks.replaceAll?.(beforeAsks);
     showToast('保存できなかったため、チェックを元に戻しました。最新に更新してから再度実行してください', 'error');
   } else {
     taskIds.forEach(taskId => {
@@ -3811,16 +3876,21 @@ function sortProjectsByDelivery(projects) {
 function projectCard(project) {
   const phases    = project.phases || [];
   const allTasks  = DB.Tasks.all();
+  const projectTasks = allTasks.filter(task => task.projectId === project.id);
   const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
   const createdBy = project.createdByMemberId ? DB.Members.get(project.createdByMemberId) : null;
+  const reviewConfig = getProjectReviewConfig(project);
+  const progressManager = reviewConfig.progressManagerMemberId ? DB.Members.get(reviewConfig.progressManagerMemberId) : null;
   const missingInfo = projectMissingInfo(project);
   const effectiveStart = projectEffectiveStartDate(project);
+  const completionCandidate = isProjectCompletionCandidate(project, projectTasks);
   const statusBadges = [
     `<span class="status-badge ${(project.dealCategory || 'existing') === 'proposal' ? 'provisional' : 'personal'}">${dealCategoryLabel(project.dealCategory)}</span>`,
     project.projectType === 'recurring' ? '<span class="status-badge recurring">定期案件</span>' : '',
     project.isProvisional ? '<span class="status-badge provisional">仮登録</span>' : '',
     project.projectStatus === 'paused' ? '<span class="status-badge personal">保留</span>' : '',
     project.projectStatus === 'completed' ? '<span class="status-badge personal">完了</span>' : '',
+    completionCandidate ? '<span class="status-badge missing">完了候補</span>' : '',
     missingInfo.length ? '<span class="status-badge missing">情報不足</span>' : '',
   ].filter(Boolean).join('');
 
@@ -3876,6 +3946,10 @@ function projectCard(project) {
             ${project.projectType === 'recurring' && project.recurringSeries ? `<span class="project-meta-item"><strong>定期案件</strong>${escHtml(project.recurringSeries)}</span>` : ''}
             <span class="project-meta-item ${createdBy ? '' : 'missing'}"><strong>発起人</strong>${createdBy ? escHtml(createdBy.name) : '未設定'}</span>
             <span class="project-meta-item ${owner ? '' : 'missing'}"><strong>窓口</strong>${owner ? escHtml(owner.name) : '未設定'}</span>
+            <span class="project-meta-item ${progressManager ? '' : 'missing'}"><strong>進行管理</strong>${progressManager ? escHtml(progressManager.name) : '未設定'}</span>
+            <span class="project-meta-item"><strong>確認者</strong>${escHtml(memberNames(reviewConfig.reviewerMemberIds))}</span>
+            <span class="project-meta-item"><strong>許可者</strong>${escHtml(memberNames(reviewConfig.approvalMemberIds))}</span>
+            <span class="project-meta-item"><strong>確認ルール</strong>${escHtml(reviewRuleLabel(reviewConfig.reviewRule))} / ${Number(reviewConfig.reviewDueDays) || 1}日以内</span>
             <span class="project-meta-item ${project.leadSource ? '' : 'missing'}">
               <strong>流入元</strong>${escHtml(leadSourceLabel(project.leadSource))}
               ${project.leadSourceDetail ? ` / ${escHtml(project.leadSourceDetail)}` : ''}
@@ -3890,6 +3964,7 @@ function projectCard(project) {
               <button class="btn btn-ghost btn-sm" onclick="sendProjectInfoRequest('${project.id}')">Chatworkへ送信</button>
             </div>
           ` : ''}
+          ${completionCandidate ? projectCompletionCandidateHTML(project, projectTasks) : ''}
           ${project.note ? `<div class="form-help" style="margin-top:8px">${escHtml(project.note)}</div>` : ''}
         </div>
         <div style="display:flex;gap:5px;flex-shrink:0;flex-wrap:wrap">
@@ -3921,12 +3996,36 @@ function dealCategoryLabel(value) {
   return value === 'proposal' ? '提案ベース' : '既存クライアント';
 }
 
+function isProjectCompletionCandidate(project, tasks = DB.Tasks.all().filter(task => task.projectId === project?.id)) {
+  if (!project || project.archived || project.projectStatus === 'completed') return false;
+  if (tasks.length > 0) return tasks.every(task => task.completed === true);
+  const referenceDate = toISODate(project.deliveryDate) || toISODate(project.createdAt);
+  return Boolean(referenceDate && diffDays(referenceDate, DB.today()) >= 7);
+}
+
+function projectCompletionCandidateHTML(project, tasks = []) {
+  const doneCount = tasks.filter(task => task.completed === true).length;
+  const reason = tasks.length
+    ? `関連タスク ${tasks.length}件がすべて完了しています。`
+    : '関連タスクがありません。';
+  return `
+    <div class="project-warning project-completion-candidate">
+      完了候補：${reason}
+      <button class="btn btn-ghost btn-sm" onclick="copyProjectCompletionRequest('${project.id}')">完了依頼文をコピー</button>
+      <button class="btn btn-ghost btn-sm" onclick="sendProjectCompletionRequest('${project.id}')">発起人へ送信</button>
+      <button class="btn btn-success btn-sm" onclick="completeProject('${project.id}')">完了にする</button>
+      ${doneCount ? `<span>${doneCount}/${tasks.length}件完了</span>` : ''}
+    </div>`;
+}
+
 function projectMissingInfo(project) {
   const missing = [];
   if (!project.ownerMemberId) missing.push({ key: 'ownerMemberId', label: '窓口担当' });
   if (!project.createdByMemberId && !project.ownerMemberId) missing.push({ key: 'createdByMemberId', label: '発起人' });
   if (!project.deliveryDate) missing.push({ key: 'deliveryDate', label: '納品日' });
   if (!project.leadSource) missing.push({ key: 'leadSource', label: '案件流入元' });
+  const reviewConfig = getProjectReviewConfig(project);
+  if (!reviewConfig.progressManagerMemberId) missing.push({ key: 'progressManagerMemberId', label: '進行管理役' });
   if (project.projectType === 'recurring' && !project.recurringSeries) {
     missing.push({ key: 'recurringSeries', label: '定期案件名' });
   }
@@ -4017,6 +4116,53 @@ function projectTaskListRow(task) {
     </div>`;
 }
 
+function createReviewAsksForCompletedTask(task) {
+  if (!task?.projectId) return 0;
+  const project = DB.Projects.get(task.projectId);
+  if (!project) return 0;
+  const phase = task.phaseId ? (project.phases || []).find(item => item.id === task.phaseId) : null;
+  const config = getPhaseReviewConfig(project, phase);
+  const recipientIds = new Set(asArray(config.reviewerMemberIds));
+  if (config.notifyProgressManager && config.progressManagerMemberId) recipientIds.add(config.progressManagerMemberId);
+  recipientIds.delete(task.memberId);
+  if (!recipientIds.size) return 0;
+
+  const existing = DB.Asks.all();
+  let count = 0;
+  recipientIds.forEach(memberId => {
+    const member = DB.Members.get(memberId);
+    if (!member) return;
+    const alreadyExists = existing.some(ask =>
+      ask.taskId === task.id &&
+      ask.toMemberId === memberId &&
+      ask.status === 'open' &&
+      /確認/.test(ask.type || '')
+    );
+    if (alreadyExists) return;
+    DB.Asks.add({
+      type: '確認',
+      fromMemberId: task.memberId || project.ownerMemberId || '',
+      toMemberId: memberId,
+      toName: member.name,
+      content: `完了タスクの確認：${task.content || '未入力タスク'}`,
+      projectId: project.id,
+      projectName: `${project.clientName || ''} / ${project.name || ''}`,
+      dueText: `${Number(config.reviewDueDays) || 1}日以内`,
+      taskId: task.id,
+      date: DB.today(),
+    });
+    count++;
+  });
+  return count;
+}
+
+function createReviewAsksForCompletedTasks(taskIds = []) {
+  return taskIds
+    .map(id => DB.Tasks.get(id))
+    .filter(task => task?.completed === true)
+    .reduce((sum, task) => sum + createReviewAsksForCompletedTask(task), 0);
+}
+
 async function toggleProjectTaskComplete(taskIdsText) {
   const taskIds = String(taskIdsText || '').split(',').map(id => id.trim()).filter(Boolean);
   if (!taskIds.length) return;
@@ -4024,11 +4170,14 @@ async function toggleProjectTaskComplete(taskIdsText) {
   if (!task) return;
   const projectId = task.projectId;
   const before = taskSnapshot();
+  const beforeAsks = DB.Asks.all().map(ask => ({ ...ask }));
   const nextCompleted = task.completed === true ? null : true;
   taskIds.forEach(taskId => DB.Tasks.setCompletion(taskId, nextCompleted, ''));
+  if (nextCompleted === true) createReviewAsksForCompletedTasks(taskIds);
   const ok = await DB.syncCloudStore?.();
   if (ok === false) {
     restoreTaskSnapshot(before);
+    DB.Asks.replaceAll?.(beforeAsks);
     showToast('保存できなかったため、チェックを元に戻しました。最新に更新してから再度実行してください', 'error');
   }
   if (projectId) openProjectTasksModal(projectId);
@@ -4063,37 +4212,100 @@ function openPhaseEditor(projectId) {
       <button class="btn btn-ghost" onclick="closeModal()">キャンセル</button>
       <button class="btn btn-primary" onclick="savePhaseEditor('${projectId}')">保存する</button>
     </div>
-  `, 'フェーズ編集');
+  `, 'フェーズ編集', { wide: true });
+}
+
+function phaseReviewConfigSummary(project, phase) {
+  const config = getPhaseReviewConfig(project, phase);
+  const source = config.reviewConfigMode === 'custom' ? '個別設定' : 'プロジェクト設定を使用';
+  return `${source} / 確認者：${memberNames(config.reviewerMemberIds)} / 許可者：${memberNames(config.approvalMemberIds)} / ${reviewRuleLabel(config.reviewRule)} / ${Number(config.reviewDueDays) || 1}日以内`;
 }
 
 function phaseEditorRow(projectId, ph, i) {
+  const project = DB.Projects.get(projectId);
+  const mode = ph.reviewConfigMode === 'custom' ? 'custom' : 'inherit';
+  const customStyle = mode === 'custom' ? '' : 'display:none';
   return `
-    <div class="phase-editor-row" id="ph-row-${ph.id}">
-      <span style="color:var(--text-3);font-size:11px;min-width:18px;text-align:right">${i+1}</span>
-      <input type="text" value="${escHtml(ph.name)}" id="ph-name-${ph.id}" placeholder="フェーズ名">
-      <select class="form-select" style="width:105px;font-size:12px;padding:5px 8px" id="ph-status-${ph.id}">
-        <option value="pending" ${ph.status==='pending' ? 'selected' : ''}>未着手</option>
-        <option value="active"  ${ph.status==='active'  ? 'selected' : ''}>進行中</option>
-        <option value="done"    ${ph.status==='done'    ? 'selected' : ''}>完了</option>
-      </select>
-      <input type="date" id="ph-start-${ph.id}" value="${ph.startDate || ''}"
-             title="フェーズ開始日"
-             style="background:var(--field-bg);border:1px solid var(--border);border-radius:6px;
-                    padding:5px 8px;color:var(--text-1);font-size:12px;font-family:inherit;outline:none;width:140px;color-scheme:var(--color-scheme)">
-      <input type="date" id="ph-due-${ph.id}" value="${ph.dueDate || ''}"
-             title="フェーズ締切日"
-             style="background:var(--field-bg);border:1px solid var(--border);border-radius:6px;
-                    padding:5px 8px;color:var(--text-1);font-size:12px;font-family:inherit;outline:none;width:140px;color-scheme:var(--color-scheme)">
-      <button class="btn btn-danger btn-sm btn-icon"
-              onclick="removePhaseFromEditor('${projectId}','${ph.id}')">✕</button>
+    <div class="phase-editor-card" id="ph-row-${ph.id}">
+      <div class="phase-editor-row">
+        <span style="color:var(--text-3);font-size:11px;min-width:18px;text-align:right">${i+1}</span>
+        <input type="text" value="${escHtml(ph.name)}" id="ph-name-${ph.id}" placeholder="フェーズ名">
+        <select class="form-select" style="width:105px;font-size:12px;padding:5px 8px" id="ph-status-${ph.id}">
+          <option value="pending" ${ph.status==='pending' ? 'selected' : ''}>未着手</option>
+          <option value="active"  ${ph.status==='active'  ? 'selected' : ''}>進行中</option>
+          <option value="done"    ${ph.status==='done'    ? 'selected' : ''}>完了</option>
+        </select>
+        <input type="date" id="ph-start-${ph.id}" value="${ph.startDate || ''}"
+               title="フェーズ開始日"
+               style="background:var(--field-bg);border:1px solid var(--border);border-radius:6px;
+                      padding:5px 8px;color:var(--text-1);font-size:12px;font-family:inherit;outline:none;width:140px;color-scheme:var(--color-scheme)">
+        <input type="date" id="ph-due-${ph.id}" value="${ph.dueDate || ''}"
+               title="フェーズ締切日"
+               style="background:var(--field-bg);border:1px solid var(--border);border-radius:6px;
+                      padding:5px 8px;color:var(--text-1);font-size:12px;font-family:inherit;outline:none;width:140px;color-scheme:var(--color-scheme)">
+        <button class="btn btn-danger btn-sm btn-icon"
+                onclick="removePhaseFromEditor('${projectId}','${ph.id}')">✕</button>
+      </div>
+      <div class="phase-review-summary">${escHtml(phaseReviewConfigSummary(project, ph))}</div>
+      <div class="phase-review-controls">
+        <select class="form-select" id="ph-review-mode-${ph.id}" onchange="togglePhaseReviewConfig('${ph.id}')">
+          <option value="inherit" ${mode === 'inherit' ? 'selected' : ''}>プロジェクト設定を使用</option>
+          <option value="custom" ${mode === 'custom' ? 'selected' : ''}>このフェーズだけ変更</option>
+        </select>
+        <label class="checkline compact">
+          <input type="checkbox" id="ph-required-${ph.id}" ${ph.requiredBeforeNextPhase === false ? '' : 'checked'}>
+          <span>次フェーズ進行前に確認必須</span>
+        </label>
+      </div>
+      <div class="phase-review-custom" id="ph-review-custom-${ph.id}" style="${customStyle}">
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label">確認者</label>
+            <select class="form-select member-multi-select" id="ph-reviewers-${ph.id}" multiple size="3">
+              ${memberMultiOptionsHTML(ph.reviewerMemberIds || [])}
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">許可者</label>
+            <select class="form-select member-multi-select" id="ph-approvers-${ph.id}" multiple size="3">
+              ${memberMultiOptionsHTML(ph.approvalMemberIds || [])}
+            </select>
+          </div>
+        </div>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label class="form-label">確認ルール</label>
+            <select class="form-select" id="ph-review-rule-${ph.id}">
+              <option value="inherit" ${(ph.reviewRule || 'inherit') === 'inherit' ? 'selected' : ''}>プロジェクト設定を使用</option>
+              <option value="all" ${ph.reviewRule === 'all' ? 'selected' : ''}>全員確認</option>
+              <option value="any" ${ph.reviewRule === 'any' ? 'selected' : ''}>誰か1人でOK</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">確認期限（日）</label>
+            <input type="number" class="form-input" id="ph-review-due-${ph.id}" min="0" step="1" value="${ph.reviewDueDays ?? ''}" placeholder="プロジェクト設定">
+          </div>
+        </div>
+      </div>
     </div>`;
+}
+
+function togglePhaseReviewConfig(phaseId) {
+  const mode = document.getElementById(`ph-review-mode-${phaseId}`)?.value || 'inherit';
+  const custom = document.getElementById(`ph-review-custom-${phaseId}`);
+  if (custom) custom.style.display = mode === 'custom' ? '' : 'none';
 }
 
 function addPhaseToProject(projectId) {
   const p = DB.Projects.get(projectId);
   if (!p) return;
   const currentPhases = readPhaseEditorValues(p);
-  const newPh = { id: DB.genId(), name: '新フェーズ', status: 'pending', startDate: '', dueDate: '', order: currentPhases.length };
+  const newPh = {
+    id: DB.genId(), name: '新フェーズ', status: 'pending', startDate: '', dueDate: '',
+    reviewConfigMode: 'inherit', reviewerMemberIds: [], approvalMemberIds: [],
+    reviewRule: 'inherit', reviewDueDays: null, requiredBeforeNextPhase: true,
+    order: currentPhases.length,
+  };
   DB.Projects.updatePhases(projectId, [...currentPhases, newPh]);
   openPhaseEditor(projectId);
 }
@@ -4111,12 +4323,20 @@ function readPhaseEditorValues(project) {
     const statusEl = document.getElementById(`ph-status-${ph.id}`);
     const startEl  = document.getElementById(`ph-start-${ph.id}`);
     const dueEl    = document.getElementById(`ph-due-${ph.id}`);
+    const mode = document.getElementById(`ph-review-mode-${ph.id}`)?.value || 'inherit';
+    const reviewDueText = document.getElementById(`ph-review-due-${ph.id}`)?.value || '';
     return {
       ...ph,
       name:    nameEl   ? nameEl.value.trim() || ph.name : ph.name,
       status:  statusEl ? statusEl.value : ph.status,
       startDate: startEl ? startEl.value : ph.startDate,
       dueDate: dueEl    ? dueEl.value : ph.dueDate,
+      reviewConfigMode: mode === 'custom' ? 'custom' : 'inherit',
+      reviewerMemberIds: mode === 'custom' ? readMultiSelectValues(`ph-reviewers-${ph.id}`) : [],
+      approvalMemberIds: mode === 'custom' ? readMultiSelectValues(`ph-approvers-${ph.id}`) : [],
+      reviewRule: mode === 'custom' ? (document.getElementById(`ph-review-rule-${ph.id}`)?.value || 'inherit') : 'inherit',
+      reviewDueDays: mode === 'custom' && reviewDueText !== '' ? Number(reviewDueText) : null,
+      requiredBeforeNextPhase: document.getElementById(`ph-required-${ph.id}`)?.checked !== false,
     };
   });
 }
@@ -4143,6 +4363,13 @@ function openProjectModal(editId) {
     `<option value="${m.id}" ${ownerDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
   const createdByOpts = members.map(m =>
     `<option value="${m.id}" ${createdByDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
+  const progressManagerDefault = project?.progressManagerMemberId || ownerDefault || createdByDefault || '';
+  const progressManagerOpts = members.map(m =>
+    `<option value="${m.id}" ${progressManagerDefault === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
+  const reviewerIds = asArray(project?.reviewerMemberIds);
+  const approvalIds = asArray(project?.approvalMemberIds);
+  const reviewRule = project?.reviewRule || 'all';
+  const reviewDueDays = project?.reviewDueDays ?? 1;
   const type = ['recurring', 'production'].includes(project?.projectType) ? project.projectType : 'standard';
   const status = project?.projectStatus === 'completed' ? 'active' : (project?.projectStatus || 'active');
   const dealCategory = project?.dealCategory || 'existing';
@@ -4241,6 +4468,50 @@ function openProjectModal(editId) {
       <select class="form-select" id="pj-owner">
         <option value="">未設定</option>${memberOpts}
       </select>
+    </div>
+    <div class="project-form-section">
+      <div class="project-form-section-title">進行確認体制</div>
+      <div class="form-help" style="margin-bottom:10px">
+        タスク完了後の確認・許可・監視に使う体制です。フェーズごとの設定は、ここを踏襲してから必要な箇所だけ変更できます。
+      </div>
+      <div class="form-group">
+        <label class="form-label">進行管理役</label>
+        <select class="form-select" id="pj-progress-manager">
+          <option value="">未設定</option>${progressManagerOpts}
+        </select>
+        <div class="form-help">確認待ちや許可待ちが止まっていないかを見る人です。未設定の場合は窓口担当を目安にします。</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">確認義務者（複数選択可）</label>
+        <select class="form-select member-multi-select" id="pj-reviewers" multiple size="4">
+          ${memberMultiOptionsHTML(reviewerIds)}
+        </select>
+        <div class="form-help">タスク完了後に確認作業を行う人です。Macはcommand、WindowsはCtrlで複数選択できます。</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">進行許可者（複数選択可）</label>
+        <select class="form-select member-multi-select" id="pj-approvers" multiple size="4">
+          ${memberMultiOptionsHTML(approvalIds)}
+        </select>
+        <div class="form-help">次フェーズや次作業へ進めてよいか判断する人です。</div>
+      </div>
+      <div class="form-row-2">
+        <div class="form-group">
+          <label class="form-label">確認ルール</label>
+          <select class="form-select" id="pj-review-rule">
+            <option value="all" ${reviewRule === 'all' ? 'selected' : ''}>全員確認</option>
+            <option value="any" ${reviewRule === 'any' ? 'selected' : ''}>誰か1人でOK</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">確認期限（日）</label>
+          <input type="number" class="form-input" id="pj-review-due-days" min="0" step="1" value="${Number(reviewDueDays) || 1}">
+        </div>
+      </div>
+      <label class="checkline">
+        <input type="checkbox" id="pj-notify-progress-manager" ${project?.notifyProgressManager === false ? '' : 'checked'}>
+        <span>確認待ち・期限超過を進行管理役にも通知する</span>
+      </label>
     </div>
     <div class="form-group">
       <label class="form-label">納品日 *</label>
@@ -4583,6 +4854,12 @@ async function saveProjectNew() {
     leadSource:      document.getElementById('pj-lead-source')?.value || '',
     leadSourceDetail: document.getElementById('pj-lead-source-detail')?.value?.trim() || '',
     startDate:       document.getElementById('pj-start')?.value || '',
+    progressManagerMemberId: document.getElementById('pj-progress-manager')?.value || '',
+    reviewerMemberIds: readMultiSelectValues('pj-reviewers'),
+    approvalMemberIds: readMultiSelectValues('pj-approvers'),
+    reviewRule: document.getElementById('pj-review-rule')?.value || 'all',
+    reviewDueDays: Number(document.getElementById('pj-review-due-days')?.value || 1) || 1,
+    notifyProgressManager: Boolean(document.getElementById('pj-notify-progress-manager')?.checked),
     createdByMemberId,
     ownerMemberId:   ownerMemberId || getDefaultOwnerMemberId(),
     isProvisional:   false,
@@ -4634,6 +4911,12 @@ function saveProjectEdit(projectId) {
     leadSource:      document.getElementById('pj-lead-source')?.value || '',
     leadSourceDetail: document.getElementById('pj-lead-source-detail')?.value?.trim() || '',
     startDate:       document.getElementById('pj-start')?.value || '',
+    progressManagerMemberId: document.getElementById('pj-progress-manager')?.value || '',
+    reviewerMemberIds: readMultiSelectValues('pj-reviewers'),
+    approvalMemberIds: readMultiSelectValues('pj-approvers'),
+    reviewRule: document.getElementById('pj-review-rule')?.value || 'all',
+    reviewDueDays: Number(document.getElementById('pj-review-due-days')?.value || 1) || 1,
+    notifyProgressManager: Boolean(document.getElementById('pj-notify-progress-manager')?.checked),
     createdByMemberId,
     ownerMemberId,
     isProvisional:   false,
@@ -4760,6 +5043,102 @@ async function sendProjectInfoRequest(projectId) {
   }
 }
 
+function projectCompletionRequestRecipients(project) {
+  const createdBy = project.createdByMemberId ? DB.Members.get(project.createdByMemberId) : null;
+  const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
+  const manager = project.progressManagerMemberId ? DB.Members.get(project.progressManagerMemberId) : null;
+  const sakuma = findSakumaMember();
+  return uniqueMembers([createdBy, owner, manager, sakuma]);
+}
+
+function buildProjectCompletionRequestMessage(project, recipients, withMention = false) {
+  const recipientList = Array.isArray(recipients) ? recipients : [recipients].filter(Boolean);
+  const primaryRecipient = recipientList[0] || null;
+  const tasks = DB.Tasks.all().filter(task => task.projectId === project.id);
+  const doneCount = tasks.filter(task => task.completed === true).length;
+  const url = getMemberProjectEditUrl(primaryRecipient?.id || '', project.id);
+  const projectName = `${project.clientName || '未設定'} / ${project.name || '名称未設定'}`;
+  const mention = withMention
+    ? recipientList
+        .filter(member => member.chatworkAccountId)
+        .map(member => `[To:${member.chatworkAccountId}] ${member.name}さん`)
+        .join('\n')
+    : '';
+  return [
+    `${mention ? `${mention}\n` : ''}[info][title]プロジェクト完了確認[/title]`,
+    `${projectName} は未完了タスクがありません。`,
+    '',
+    tasks.length ? `タスク：${doneCount}/${tasks.length}件完了` : 'タスク：0件',
+    '',
+    '完了してよければ、TaskBoardのプロジェクト画面から「完了」ボタンを押してください。',
+    'まだ続く場合は、新しいタスクを追加してください。',
+    '',
+    `確認URL：${url}`,
+    '[/info]',
+  ].join('\n');
+}
+
+async function copyProjectCompletionRequest(projectId) {
+  const project = DB.Projects.get(projectId);
+  if (!project) return;
+  const recipients = projectCompletionRequestRecipients(project);
+  const message = buildProjectCompletionRequestMessage(project, recipients, true);
+  try {
+    await navigator.clipboard.writeText(message);
+    showToast('完了確認依頼文をコピーしました', 'success');
+  } catch {
+    window.prompt('この文章をコピーしてください', message);
+  }
+}
+
+async function sendProjectCompletionRequest(projectId) {
+  const project = DB.Projects.get(projectId);
+  if (!project) return;
+  const recipients = projectCompletionRequestRecipients(project);
+  if (!recipients.length) {
+    showToast('発起人・窓口・進行管理役が未設定です', 'error');
+    return;
+  }
+  const missingChatworkMembers = recipients.filter(member => !member.chatworkAccountId);
+  if (missingChatworkMembers.length) {
+    showToast(`${missingChatworkMembers.map(member => member.name).join('、')}さんのChatworkアカウントIDが未設定です。設定 > メンバーから登録してください`, 'error');
+    return;
+  }
+
+  const body = buildProjectCompletionRequestMessage(project, recipients, true);
+  let importKey = getSavedChatworkImportKey();
+  try {
+    let res = await fetch(apiUrl('/api/chatwork/reply'), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(importKey ? { 'x-taskboard-key': importKey } : {}),
+      },
+      body: JSON.stringify({ body }),
+    });
+    let data = await res.json().catch(() => ({}));
+    if (res.status === 401 && String(data.error || '').includes('取り込みキー')) {
+      const inputKey = window.prompt('TASKBOARD_IMPORT_KEYを入力してください');
+      if (!inputKey) throw new Error('TASKBOARD_IMPORT_KEYが未入力です');
+      importKey = inputKey.trim();
+      localStorage.setItem(CHATWORK_IMPORT_KEY, importKey);
+      res = await fetch(apiUrl('/api/chatwork/reply'), {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-taskboard-key': importKey,
+        },
+        body: JSON.stringify({ body }),
+      });
+      data = await res.json().catch(() => ({}));
+    }
+    if (!res.ok) throw new Error(data.error || 'Chatwork送信に失敗しました');
+    showToast(`${recipients.map(member => member.name).join('、')}さん宛に完了確認を送信しました`, 'success');
+  } catch (error) {
+    showToast(error.message || 'Chatwork送信に失敗しました', 'error');
+  }
+}
+
 function buildDeliveryDateRequestMessage(project, owner, withMention = false) {
   return buildProjectInfoRequestMessage(project, owner, withMention);
 }
@@ -4862,6 +5241,7 @@ function renderDataCleanup() {
           <option value="tasks" ${_cleanupFilter.issue === 'tasks' ? 'selected' : ''}>未紐付けタスク</option>
           <option value="duplicates" ${_cleanupFilter.issue === 'duplicates' ? 'selected' : ''}>重複タスク</option>
           <option value="projects" ${_cleanupFilter.issue === 'projects' ? 'selected' : ''}>仮プロジェクト</option>
+          <option value="completeCandidates" ${_cleanupFilter.issue === 'completeCandidates' ? 'selected' : ''}>完了候補PJ</option>
           <option value="clients" ${_cleanupFilter.issue === 'clients' ? 'selected' : ''}>クライアント整理</option>
           <option value="carry" ${_cleanupFilter.issue === 'carry' ? 'selected' : ''}>繰り越し不整合</option>
         </select>
@@ -4871,6 +5251,7 @@ function renderDataCleanup() {
         ${cleanupSummaryCard('未紐付けタスク', issues.missingProjectTasks.length, missingProjectTaskSub)}
         ${cleanupSummaryCard('重複タスク', issues.duplicateTaskGroups.length, '同じ内容・日付違いの整理')}
         ${cleanupSummaryCard('仮プロジェクト', issues.provisionalProjects.length, '古い取り込み仕様の名残')}
+        ${cleanupSummaryCard('完了候補PJ', issues.completionCandidateProjects.length, 'タスクなし・全タスク完了')}
         ${cleanupSummaryCard('クライアント名', issues.clientStats.length, '表記ゆれ・重複の整理')}
         ${cleanupSummaryCard('繰り越し不整合', issues.carryoverIssues.length, '完了・持ち越しリンクの確認')}
         ${cleanupSummaryCard('不足情報PJ', issues.missingInfoProjects.length, '発起人・窓口・納品日など')}
@@ -4879,6 +5260,7 @@ function renderDataCleanup() {
       ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'tasks' ? cleanupTaskSection(issues.missingProjectTasks) : ''}
       ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'duplicates' ? cleanupDuplicateTaskSection(issues.duplicateTaskGroups) : ''}
       ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'projects' ? cleanupProjectSection(issues.provisionalProjects) : ''}
+      ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'completeCandidates' ? cleanupCompletionCandidateSection(issues.completionCandidateProjects) : ''}
       ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'clients' ? cleanupClientSection(issues.clientStats) : ''}
       ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'carry' ? cleanupCarryoverSection(issues.carryoverIssues) : ''}
       ${_cleanupFilter.issue === 'all' ? cleanupMissingInfoSection(issues.missingInfoProjects) : ''}
@@ -4943,11 +5325,15 @@ function analyzeDataIssues() {
     .filter(p => !p.archived && p.projectStatus !== 'completed' && projectMissingInfo(p).length > 0)
     .sort((a, b) => String(a.deliveryDate || '9999-99-99').localeCompare(String(b.deliveryDate || '9999-99-99')));
   const duplicateTaskGroups = findCleanupDuplicateTaskGroups(tasks);
+  const completionCandidateProjects = projects
+    .filter(project => isProjectCompletionCandidate(project, allTasks.filter(task => task.projectId === project.id)))
+    .sort((a, b) => String(a.deliveryDate || '9999-99-99').localeCompare(String(b.deliveryDate || '9999-99-99')));
 
   return {
     provisionalProjects,
     missingProjectTasks,
     duplicateTaskGroups,
+    completionCandidateProjects,
     clientStats: cleanupClientStats(projects),
     carryoverIssues: [...carryoverIssues, ...orphanPhaseTasks, ...missingMemberTasks],
     missingInfoProjects,
@@ -5250,6 +5636,45 @@ function cleanupProjectSection(projects) {
       </div>
       ${projects.length ? projects.map(cleanupProjectRow).join('') : cleanupEmpty('仮プロジェクトはありません')}
     </section>`;
+}
+
+function cleanupCompletionCandidateSection(projects) {
+  return `
+    <section class="cleanup-section card">
+      <div class="cleanup-section-head">
+        <div>
+          <h3>完了候補プロジェクト</h3>
+          <p>タスクがない、または全タスクが完了している進行中プロジェクトです。発起人へ確認し、完了なら完了ボタンを押してもらいます。</p>
+        </div>
+        <span class="cleanup-pill">${projects.length}件</span>
+      </div>
+      ${projects.length ? projects.map(cleanupCompletionCandidateRow).join('') : cleanupEmpty('完了候補プロジェクトはありません')}
+    </section>`;
+}
+
+function cleanupCompletionCandidateRow(project) {
+  const relatedTasks = DB.Tasks.all().filter(task => task.projectId === project.id);
+  const doneCount = relatedTasks.filter(task => task.completed === true).length;
+  const createdBy = project.createdByMemberId ? DB.Members.get(project.createdByMemberId) : null;
+  const owner = project.ownerMemberId ? DB.Members.get(project.ownerMemberId) : null;
+  return `
+    <div class="cleanup-row">
+      <div class="cleanup-main">
+        <div class="cleanup-title">${escHtml(cleanupProjectName(project))}</div>
+        <div class="cleanup-meta">
+          <span class="cleanup-warning">${relatedTasks.length ? `全タスク完了 ${doneCount}/${relatedTasks.length}件` : 'タスクなし'}</span>
+          <span>発起人：${createdBy ? escHtml(createdBy.name) : '未設定'}</span>
+          <span>窓口：${owner ? escHtml(owner.name) : '未設定'}</span>
+          <span>納品：${project.deliveryDate ? escHtml(DB.fmtDate(project.deliveryDate)) : '未設定'}</span>
+        </div>
+      </div>
+      <div class="cleanup-actions">
+        <button class="btn btn-secondary btn-sm" onclick="copyProjectCompletionRequest('${project.id}')">依頼文コピー</button>
+        <button class="btn btn-secondary btn-sm" onclick="sendProjectCompletionRequest('${project.id}')">発起人へ送信</button>
+        <button class="btn btn-ghost btn-sm" onclick="openProjectTasksModal('${project.id}')">タスク確認</button>
+        <button class="btn btn-success btn-sm" onclick="completeProject('${project.id}')">完了にする</button>
+      </div>
+    </div>`;
 }
 
 function cleanupClientSection(clients) {
