@@ -517,14 +517,16 @@ const Projects = {
 const Tasks = {
   all()            { return (load(KEYS.TASKS) ?? []).filter(t => !t.mergedIntoTaskId); },
   allIncludingMerged() { return load(KEYS.TASKS) ?? []; },
-  byDate(date)     { return this.all().filter(t => t.date === date); },
+  dueDateOf(task) { return task?.dueDate || task?.date || ''; },
+  displayDateOf(task) { return task?.displayDate || task?.date || task?.dueDate || ''; },
+  byDate(date)     { return this.all().filter(t => this.displayDateOf(t) === date); },
   byDateRange(startDate, endDate) {
     const start = startDate || today();
     const end = endDate || start;
     const from = start <= end ? start : end;
     const to = start <= end ? end : start;
     return this.all().filter(t => {
-      const taskDate = t.date || '';
+      const taskDate = this.displayDateOf(t);
       const originalDate = t.originalDate || '';
       return (taskDate >= from && taskDate <= to) ||
         (originalDate >= from && originalDate <= to);
@@ -535,16 +537,34 @@ const Tasks = {
 
   add({
     memberId, projectId = null, phaseId = null, content, estimatedHours,
-    note = '', date = today(), carriedFromTaskId = null,
+    durationDays = 1,
+    note = '', date = today(), dueDate = '', displayDate = '', startDate = '',
+    carriedFromTaskId = null,
     sourceProjectName = '', needsProjectReview = false,
     taskType = '作業',
+    reviewConfigMode = 'inherit', reviewerMemberIds = [], approvalMemberIds = [],
+    reviewRule = 'inherit', reviewDueDays = null, notifyProgressManager = true,
     chatworkRoomId = '', chatworkMessageId = '',
   }) {
     const list = this.all();
+    const resolvedDueDate = dueDate || date || today();
+    const resolvedDisplayDate = displayDate || date || resolvedDueDate;
     const task = {
-      id: genId(), date, memberId, projectId, phaseId,
+      id: genId(),
+      date: resolvedDueDate, // 旧データ互換用。新しい画面では dueDate / displayDate を正本にする。
+      dueDate: resolvedDueDate,
+      displayDate: resolvedDisplayDate,
+      memberId, projectId, phaseId,
+      startDate,
       content, estimatedHours: parseFloat(estimatedHours),
+      durationDays: Math.max(1, parseInt(durationDays, 10) || 1),
       taskType,
+      reviewConfigMode,
+      reviewerMemberIds,
+      approvalMemberIds,
+      reviewRule,
+      reviewDueDays,
+      notifyProgressManager,
       note,
       sourceProjectName,
       needsProjectReview,
@@ -612,10 +632,11 @@ const Tasks = {
 
   carryOverTask(taskId, targetDate = today()) {
     const source = this.get(taskId);
-    if (!source || source.completed === true || source.date >= targetDate) return null;
-    const originDate = source.originalDate || source.date;
+    const sourceDisplayDate = this.displayDateOf(source);
+    if (!source || source.completed === true || sourceDisplayDate >= targetDate) return null;
+    const originDate = source.originalDate || sourceDisplayDate;
     this.update(source.id, {
-      date: targetDate,
+      displayDate: targetDate,
       originalDate: originDate,
       carriedFromTaskId: null,
       carriedOverToTaskId: null,
@@ -625,7 +646,7 @@ const Tasks = {
 
   carryOverOpenTasks(targetDate = today()) {
     const candidates = this.all().filter(t =>
-      t.date < targetDate &&
+      this.displayDateOf(t) < targetDate &&
       t.completed !== true
     );
     let count = 0;
@@ -666,17 +687,17 @@ const Tasks = {
       const openTasks = group.filter(task => task.completed !== true);
       const candidates = openTasks.length ? openTasks : group;
       const target = candidates.slice().sort((a, b) => {
-        const dateCompare = String(b.date || '').localeCompare(String(a.date || ''));
+        const dateCompare = String(this.displayDateOf(b)).localeCompare(String(this.displayDateOf(a)));
         if (dateCompare) return dateCompare;
         return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
       })[0];
       if (!target) return;
 
       const dates = group
-        .flatMap(task => [task.originalDate, task.date])
+        .flatMap(task => [task.originalDate, this.displayDateOf(task)])
         .filter(Boolean)
         .sort();
-      const originalDate = dates[0] || target.originalDate || target.date || '';
+      const originalDate = dates[0] || target.originalDate || this.displayDateOf(target) || '';
       const targetIndex = updated.findIndex(task => task.id === target.id);
       if (targetIndex >= 0) {
         updated[targetIndex] = {
@@ -723,8 +744,9 @@ const Tasks = {
     this.all()
       .filter(t => t.memberId === memberId && t.completed !== null)
       .forEach(t => {
-        if (!byDate[t.date]) byDate[t.date] = [];
-        byDate[t.date].push(t);
+        const taskDate = this.displayDateOf(t);
+        if (!byDate[taskDate]) byDate[taskDate] = [];
+        byDate[taskDate].push(t);
       });
 
     let days = 0;

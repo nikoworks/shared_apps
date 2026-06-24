@@ -1,6 +1,6 @@
 # TaskBoard データベース定義書
 
-更新日: 2026-06-09
+更新日: 2026-06-24
 
 ## 全体像
 
@@ -26,6 +26,7 @@ erDiagram
   PROJECT ||--o{ PHASE : embeds
   PHASE ||--o{ TASK : assigned_phase
   TASK ||--o| TASK : carried_over
+  TASK ||--o{ TASK : follow_up
   PROJECT_REVIEW ||--o{ TASK : resolves_project
 ```
 
@@ -67,6 +68,27 @@ create table if not exists public.taskboard_data (
   "meta": {}
 }
 ```
+
+## 項目一元管理の方針
+
+同じ意味の情報を、画面ごとに別名で保存しない方針にします。
+
+| 意味 | 正本 | 補足 |
+|---|---|---|
+| クライアント名 | `projects.clientName` | クライアント選択・プロジェクト表示で共通利用 |
+| プロジェクト名 | `projects.name` | タスク側にはコピーせず、`projectId` から参照する |
+| 納品日 | `projects.deliveryDate` | プロジェクト全体の最終納品日 |
+| 登録者 | `projects.createdByMemberId` | プロジェクトを登録した人 |
+| 窓口担当 | `projects.ownerMemberId` | 進行責任者・未担当タスクの初期担当候補 |
+| フェーズ | `projects.phases[]` と `tasks.phaseId` | タスクはフェーズIDだけを持つ |
+| タスク締切日 | `tasks.dueDate` | その日までに完了する日 |
+| 日別表示日 | `tasks.displayDate` | 今日のタスク画面に出す日。繰り越しではこの値だけを移動する |
+| タスク開始日 | `tasks.startDate` | 未設定時は締切日と遂行期間から補う |
+| 遂行期間 | `tasks.durationDays` | 開始日から締切日までの営業日数 |
+| 工数 | `tasks.estimatedHours` | 予定時間。日別負荷では期間内の営業日に按分する |
+| テンプレート締切計算 | `templates.tasks[].offset` | 納品日から何営業日前に締切を置くか |
+
+`tasks.date` は旧データ互換のため残します。新規保存では `tasks.dueDate` と同じ値を入れ、日別タスクの表示・繰り越し判断には `tasks.displayDate` を使います。
 
 ## members
 
@@ -127,9 +149,11 @@ create table if not exists public.taskboard_data (
 | 項目 | 内容 |
 |---|---|
 | `id` | タスクID |
-| `date` | タスク締切日。この日までに完了する |
+| `dueDate` | タスク締切日。この日までに完了する |
+| `displayDate` | 日別タスク画面に表示する日。繰り越し時はこの値だけを今日へ移動する |
+| `date` | 旧データ互換用。新規保存では `dueDate` と同じ値を持つ |
 | `startDate` | タスク開始日。未設定の場合は締切日と遂行期間から補う |
-| `originalDate` | 未完了で日を跨いだ場合の元の作業日 |
+| `originalDate` | 未完了で日を跨いだ場合の元の表示日 |
 | `memberId` | 担当者メンバーID |
 | `projectId` | 紐付くプロジェクトID |
 | `phaseId` | 紐付くフェーズID |
@@ -149,6 +173,9 @@ create table if not exists public.taskboard_data (
 | `carriedOverToTaskId` | 旧仕様の繰り越し先タスクID |
 | `completed` | `null` 未確認 / `true` 完了 / `false` 未完了 |
 | `incompleteReason` | 未完了理由 |
+| `parentTaskId` | 今後追加候補。確認・修正・再確認などの元タスクID |
+| `resultStatus` | 今後追加候補。`ok` / `rejected` / `pending` など |
+| `rejectionReason` | 今後追加候補。差し戻し理由 |
 | `mergedIntoTaskId` | 重複整理で統合先になったタスクID。設定済みのタスクは通常表示から外す |
 | `mergedAt` | 重複整理で統合した日時 |
 | `createdAt` | 作成日時 |
@@ -157,10 +184,12 @@ create table if not exists public.taskboard_data (
 
 進行に関わる確認・お願いです。個人的な作業相談ではなく、進行に影響する確認を残すためのデータです。
 
+現段階では `asks` として独立管理していますが、今後は確認・進行許可・修正・再確認を `tasks` の一種として扱う方向を検討します。
+
 | 項目 | 内容 |
 |---|---|
 | `id` | 確認ID |
-| `type` | 種別。例: 質問、お願い |
+| `type` | 種別。例: 質問、お願い、確認、進行許可 |
 | `fromMemberId` | 依頼元メンバーID |
 | `toMemberId` | 依頼先メンバーID |
 | `toName` | 依頼先名。全員など |
@@ -169,7 +198,7 @@ create table if not exists public.taskboard_data (
 | `projectName` | 関連プロジェクト名 |
 | `taskId` | 関連タスクID |
 | `dueText` | 期限テキスト |
-| `status` | `open` / `done` |
+| `status` | `open` / `done` / 今後候補: `rejected` |
 | `date` | 登録日 |
 | `createdAt` | 作成日時 |
 
@@ -235,9 +264,26 @@ Chatworkから来たタスクのプロジェクト名が既存プロジェクト
 
 - 実DBは1テーブルなので、Supabaseの画面だけを見ると `taskboard_data` しか見えません。
 - `projects.phases` はプロジェクト内に埋め込まれています。
+- `tasks.date` は旧データ互換用です。新しい正本は `tasks.dueDate` と `tasks.displayDate` です。
 - `tasks.projectId` が空、または `needsProjectReview: true` のタスクは、プロジェクト確認待ちです。
 - 過去の運用で作られた `isProvisional: true` のプロジェクトがあるため、プロジェクト一覧に「仮プロジェクト」が多く表示されることがあります。
 - 今後データ量や権限管理が増える場合は、`members`、`projects`、`tasks` などをSupabaseの個別テーブルに分ける設計も検討できます。
+
+## 今後のデータ設計候補
+
+制作進行・負荷管理を新アプリとして切り出す場合は、次のようなデータを追加・分離する候補があります。
+
+| 候補 | 内容 |
+|---|---|
+| `taskKind` | `work` / `review` / `approval` / `revision` / `recheck` |
+| `startDate` | 着手開始日 |
+| `dueDate` | 締切日 |
+| `displayDate` | 日々の個人タスク画面に出す日 |
+| `parentTaskId` | 確認・修正・再確認の元タスク |
+| `resultStatus` | `ok` / `rejected` / `pending` |
+| `rejectionReason` | 差し戻し理由 |
+| `capacityHoursByMember` | メンバーごとの1日稼働上限 |
+| `unavailableDates` | 休み、外出、固定業務など |
 
 ## データ整理で確認する状態
 

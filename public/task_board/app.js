@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'テンプレート行操作改善版 2026-06-23-01';
+const APP_BUILD_LABEL = '項目一元管理整理版 2026-06-24-02';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const JP_HOLIDAYS = new Set([
@@ -200,6 +200,25 @@ function projectOptionsHTML(projects, selectedId = '', includeType = false) {
 
 function asArray(value) {
   return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
+function taskDueDateValue(task) {
+  return task?.dueDate || task?.date || '';
+}
+
+function taskDisplayDateValue(task) {
+  return task?.displayDate || task?.date || task?.dueDate || '';
+}
+
+function normalizeTaskDateFields(task = {}) {
+  const dueDate = taskDueDateValue(task);
+  const displayDate = taskDisplayDateValue(task) || dueDate || DB.today();
+  return {
+    ...task,
+    date: dueDate || displayDate,
+    dueDate: dueDate || displayDate,
+    displayDate,
+  };
 }
 
 function memberMultiOptionsHTML(selectedIds = []) {
@@ -1133,8 +1152,8 @@ function sortTasksForWorkday(tasks) {
     const projectCompare = aProject.localeCompare(bProject, 'ja');
     if (projectCompare !== 0) return projectCompare;
 
-    const aDate = sourceDateForTask(a) || a.date || '9999-99-99';
-    const bDate = sourceDateForTask(b) || b.date || '9999-99-99';
+    const aDate = sourceDateForTask(a) || taskDisplayDateValue(a) || '9999-99-99';
+    const bDate = sourceDateForTask(b) || taskDisplayDateValue(b) || '9999-99-99';
     const dateCompare = String(aDate).localeCompare(String(bDate));
     if (dateCompare !== 0) return dateCompare;
 
@@ -1173,7 +1192,7 @@ function shortDateLabel(dateStr) {
 
 function taskDisplayDates(tasks) {
   return [...new Set(tasks
-    .flatMap(task => [task.originalDate, sourceDateForTask(task), task.date])
+    .flatMap(task => [task.originalDate, sourceDateForTask(task), taskDisplayDateValue(task)])
     .filter(Boolean))]
     .sort();
 }
@@ -1191,7 +1210,7 @@ function chooseTaskDisplayRepresentative(tasks) {
   return candidates
     .slice()
     .sort((a, b) => {
-      const dateCompare = String(b.date || '').localeCompare(String(a.date || ''));
+      const dateCompare = String(taskDisplayDateValue(b)).localeCompare(String(taskDisplayDateValue(a)));
       if (dateCompare) return dateCompare;
       const aCarry = a.carriedFromTaskId ? 0 : 1;
       const bCarry = b.carriedFromTaskId ? 0 : 1;
@@ -1353,8 +1372,9 @@ function taskDateTagHTML(dateStr, options = {}) {
 
 function sourceDateForTask(task) {
   if (task?.originalDate) return task.originalDate;
-  if (!task?.carriedFromTaskId) return task?.date || '';
-  return getCarryOriginTask(task)?.date || task.date;
+  if (!task?.carriedFromTaskId) return taskDisplayDateValue(task);
+  const originTask = getCarryOriginTask(task);
+  return taskDisplayDateValue(originTask) || taskDisplayDateValue(task);
 }
 
 function getCarryOriginTask(task) {
@@ -1522,7 +1542,7 @@ function openTaskModal(editId) {
 
   if (editId) {
     const t = DB.Tasks.get(editId);
-    if (t) _taskFormData = { ...t };
+    if (t) _taskFormData = normalizeTaskDateFields(t);
   } else {
     _taskFormData = {
       memberId: _taskFilter.memberId || _personalMemberId || '',
@@ -1540,6 +1560,8 @@ function openTaskModal(editId) {
       notifyProgressManager: true,
       note: '',
       date: getTaskDefaultDate(),
+      dueDate: getTaskDefaultDate(),
+      displayDate: getTaskDefaultDate(),
     };
   }
   if (!_taskFormData.projectKindFilter) {
@@ -1560,9 +1582,10 @@ function openTaskModal(editId) {
   const taskReviewMode = _taskFormData.reviewConfigMode === 'custom' ? 'custom' : 'inherit';
   const taskReviewSummary = taskReviewSummaryText(_taskFormData);
   const carryOrigin = editId && _taskFormData.carriedFromTaskId ? getCarryOriginTask(_taskFormData) : null;
-  const carryOriginDate = carryOrigin?.date && carryOrigin.id !== _taskFormData.id ? carryOrigin.date : '';
-  if (!_taskFormData.startDate && _taskFormData.date) {
-    _taskFormData.startDate = taskStartDateFromDueDate(_taskFormData.date, _taskFormData.durationDays || 1);
+  const carryOriginDate = carryOrigin && carryOrigin.id !== _taskFormData.id ? taskDisplayDateValue(carryOrigin) : '';
+  const formDueDate = taskDueDateValue(_taskFormData) || DB.today();
+  if (!_taskFormData.startDate && formDueDate) {
+    _taskFormData.startDate = taskStartDateFromDueDate(formDueDate, _taskFormData.durationDays || 1);
   }
   const workDateHelp = carryOriginDate
     ? `<div class="form-help" style="margin-top:8px">
@@ -1606,7 +1629,7 @@ function openTaskModal(editId) {
     <div class="form-group">
       <label class="form-label">締切日（この日までに完了） *</label>
       <input type="date" class="form-input" id="tf-date"
-             value="${_taskFormData.date || DB.today()}"
+             value="${formDueDate}"
              onchange="_taskFormData.date=this.value;syncTaskStartDateFromDue()">
       ${workDateHelp}
     </div>
@@ -1807,6 +1830,10 @@ function buildTaskProjectCreatePanel() {
   const clientInputDisplay = clientSelectValue === '__new__' ? '' : 'display:none';
   const recurringInputDisplay = recurringSelectValue === '__new__' ? '' : 'display:none';
   const recurringGroupDisplay = draft.projectType === 'recurring' ? '' : 'display:none';
+  const templates = DB.Templates.all();
+  const templateOpts = templates.map(t =>
+    `<option value="${t.id}">${escHtml(t.name)}${t.tasks?.length ? '（タスク付き）' : ''}</option>`
+  ).join('');
   const draftHelp = draft.sourceName
     ? `元プロジェクト名「${escHtml(draft.sourceName)}」から候補を入れています。違う場合はこの画面で直せます。`
     : 'タスク内容から候補を入れています。違う場合はこの画面で直せます。';
@@ -1834,6 +1861,7 @@ function buildTaskProjectCreatePanel() {
         <label class="form-label">プロジェクト種別</label>
         <select class="form-select" id="qpj-type" onchange="toggleTaskProjectCreateFields()">
           <option value="standard" ${draft.projectType === 'standard' ? 'selected' : ''}>通常プロジェクト</option>
+          <option value="production" ${draft.projectType === 'production' ? 'selected' : ''}>制作プロジェクト</option>
           <option value="recurring" ${draft.projectType === 'recurring' ? 'selected' : ''}>定期プロジェクト</option>
         </select>
       </div>
@@ -1870,7 +1898,15 @@ function buildTaskProjectCreatePanel() {
       </div>
       <div class="form-group">
         <label class="form-label">納品日 *</label>
-        <input type="date" class="form-input" id="qpj-delivery">
+        <input type="date" class="form-input" id="qpj-delivery" onchange="renderTaskProjectTemplatePreview()">
+      </div>
+      <div class="form-group">
+        <label class="form-label">フェーズテンプレート</label>
+        <select class="form-select" id="qpj-template" onchange="onTaskProjectTemplateChange()">
+          <option value="">テンプレートなし</option>${templateOpts}
+        </select>
+        <div class="form-help">選ぶと、このプロジェクト用のフェーズと標準タスクも一緒に作成します。</div>
+        <div id="qpj-template-preview" class="template-preview"></div>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
         <button class="btn btn-ghost" type="button" onclick="toggleTaskProjectCreateBox(false)">閉じる</button>
@@ -1902,6 +1938,17 @@ function toggleTaskProjectCreateFields() {
   if (clientInput) clientInput.style.display = clientSelect?.value === '__new__' ? '' : 'none';
 }
 
+function onTaskProjectTemplateChange() {
+  const templateId = document.getElementById('qpj-template')?.value || '';
+  const tpl = DB.Templates.get(templateId);
+  if (tpl?.tasks?.length) {
+    const typeEl = document.getElementById('qpj-type');
+    if (typeEl && typeEl.value === 'standard') typeEl.value = 'production';
+  }
+  toggleTaskProjectCreateFields();
+  renderTaskProjectTemplatePreview();
+}
+
 function getTaskProjectCreateClientName() {
   const selected = document.getElementById('qpj-client-select')?.value || '';
   if (selected && selected !== '__new__') return selected.trim();
@@ -1922,6 +1969,8 @@ async function createProjectFromTaskInline() {
   const deliveryDate = document.getElementById('qpj-delivery')?.value || '';
   const projectType = document.getElementById('qpj-type')?.value || 'standard';
   const recurringSeries = getTaskProjectCreateRecurringSeries(projectType);
+  const templateId = document.getElementById('qpj-template')?.value || '';
+  const selectedTemplate = DB.Templates.get(templateId);
 
   if (!clientName) { showToast('クライアント名を選ぶか、新規入力してください', 'error'); return; }
   if (!projectName) { showToast('プロジェクト名を入力してください', 'error'); return; }
@@ -1931,25 +1980,31 @@ async function createProjectFromTaskInline() {
     showToast('定期プロジェクトは定期案件名を選ぶか、新規入力してください', 'error');
     return;
   }
+  if (selectedTemplate?.tasks?.length && !deliveryDate) {
+    showToast('タスク付きテンプレートは納品日を入力してください', 'error');
+    return;
+  }
+  const taskDrafts = readTemplateTaskDrafts(templateId, deliveryDate, '#qpj-template-preview');
 
   const project = DB.Projects.add({
     clientName,
     name: projectName,
     deliveryDate,
     budget: '',
-    templateId: 'tpl_blank',
+    templateId: templateId || 'tpl_blank',
     projectType,
     recurringSeries,
     dealCategory: document.getElementById('qpj-deal-category')?.value || 'existing',
     leadSource: document.getElementById('qpj-lead-source')?.value || '',
     leadSourceDetail: document.getElementById('qpj-lead-source-detail')?.value?.trim() || '',
-    startDate: _taskFormData.date || DB.today(),
+    startDate: taskDueDateValue(_taskFormData) || DB.today(),
     createdByMemberId: _personalMemberId || ownerMemberId || getDefaultCreatorMemberId(),
     ownerMemberId,
     isProvisional: false,
     projectStatus: 'active',
     note: '',
   });
+  const taskCount = createTemplateTasksForProject(project, templateId, ownerMemberId || _taskFormData.memberId || getDefaultCreatorMemberId(), taskDrafts);
 
   _taskFormData.projectId = project.id;
   _taskFormData.phaseId = '';
@@ -1966,7 +2021,7 @@ async function createProjectFromTaskInline() {
     showToast('プロジェクトを作成しました。保存状態は「最新に更新」で確認してください', 'info');
     return;
   }
-  showToast('プロジェクトを作成し、このタスクに紐付けました', 'success');
+  showToast(taskCount ? `プロジェクトを作成し、標準タスク${taskCount}件も作成しました` : 'プロジェクトを作成し、このタスクに紐付けました', 'success');
 }
 
 function stepHours(delta) {
@@ -1978,10 +2033,12 @@ function stepHours(delta) {
 }
 
 function syncTaskStartDateFromDue() {
-  const due = document.getElementById('tf-date')?.value || _taskFormData.date || DB.today();
+  const due = document.getElementById('tf-date')?.value || taskDueDateValue(_taskFormData) || DB.today();
   const durationDays = Math.max(1, Number(document.getElementById('tf-duration-days')?.value || _taskFormData.durationDays || 1) || 1);
   const start = taskStartDateFromDueDate(due, durationDays);
   _taskFormData.date = due;
+  _taskFormData.dueDate = due;
+  _taskFormData.displayDate = _taskFormData.displayDate || due;
   _taskFormData.durationDays = durationDays;
   _taskFormData.startDate = start;
   const startEl = document.getElementById('tf-start-date');
@@ -2047,6 +2104,7 @@ async function saveTask(editId) {
   const content  = document.getElementById('tf-content')?.value?.trim();
   const note     = document.getElementById('tf-note')?.value?.trim() || '';
   const taskDate = document.getElementById('tf-date')?.value || DB.today();
+  const displayDate = _taskFormData.displayDate || taskDisplayDateValue(_taskFormData) || taskDate;
   const askPayload = readTaskAskForm();
   const reviewPayload = readTaskReviewForm();
   if (!memberId) { showToast('担当者を選択してください', 'error'); return; }
@@ -2063,6 +2121,8 @@ async function saveTask(editId) {
     content,
     note,
     date: taskDate,
+    dueDate: taskDate,
+    displayDate,
     startDate: document.getElementById('tf-start-date')?.value || taskStartDateFromDueDate(taskDate, document.getElementById('tf-duration-days')?.value || _taskFormData.durationDays || 1),
     estimatedHours: _taskFormData.estimatedHours || 1,
     durationDays: Math.max(1, Number(document.getElementById('tf-duration-days')?.value || _taskFormData.durationDays || 1) || 1),
@@ -2126,7 +2186,7 @@ function saveTaskLinkedAsk(task, askPayload) {
     projectName: project ? `${project.clientName} / ${project.name}` : '',
     dueText: askPayload.dueText,
     status: 'open',
-    date: task.date,
+    date: taskDueDateValue(task),
     taskId: task.id,
   };
 
@@ -2476,7 +2536,7 @@ function chatworkTaskExists({ memberId, projectId, sourceProjectName, content, e
     if ((Number(task.estimatedHours) || 0) !== hours) return false;
     if ((task.projectId || '') !== (projectId || '')) return false;
     if (normalizeTaskDisplayValue(task.sourceProjectName) !== normalizedSource) return false;
-    const taskDates = [task.date, task.originalDate].filter(Boolean);
+    const taskDates = [taskDueDateValue(task), taskDisplayDateValue(task), task.originalDate].filter(Boolean);
     return !date || taskDates.includes(date);
   }) || false;
 }
@@ -2507,6 +2567,8 @@ function saveParsedChatworkTasks(taskParsed, memberId, date, ownerMemberId, opti
         content: task.content,
         note: buildInputTaskNote(task.note, group.projectName, project),
         date: taskDate,
+        dueDate: taskDate,
+        displayDate: taskDate,
         estimatedHours: task.hours,
         sourceProjectName,
         needsProjectReview: Boolean(group.projectName && !project),
@@ -2603,13 +2665,16 @@ async function saveBulkTasks() {
     const project = resolveInputProject(group.projectName);
 
     group.tasks.forEach(task => {
+      const taskDate = task.date || date;
       DB.Tasks.add({
         memberId,
         projectId: project?.id || null,
         phaseId: null,
         content: task.content,
         note: buildInputTaskNote(task.note, group.projectName, project),
-        date: task.date || date,
+        date: taskDate,
+        dueDate: taskDate,
+        displayDate: taskDate,
         estimatedHours: task.hours,
         sourceProjectName: project ? '' : (group.projectName || ''),
         needsProjectReview: Boolean(group.projectName && !project),
@@ -3268,7 +3333,7 @@ function projectReviewGroupHTML(group, index) {
         ${tasks.map(task => `
           <li>
             <div>
-              ${task.date ? `${taskDateTagHTML(task.date)} ` : ''}
+              ${taskDueDateValue(task) ? `${taskDateTagHTML(taskDueDateValue(task))} ` : ''}
               ${escHtml(task.content)}
               ${task.note ? `<div class="bulk-note">備考：${escHtml(task.note)}</div>` : ''}
             </div>
@@ -3609,7 +3674,7 @@ function ganttPhaseTaskListHTML(tasks, members) {
   const rows = tasks
     .slice()
     .sort((a, b) => {
-      const dateCompare = String(a.date || '').localeCompare(String(b.date || ''));
+      const dateCompare = String(taskDueDateValue(a)).localeCompare(String(taskDueDateValue(b)));
       if (dateCompare) return dateCompare;
       return String(a.content || '').localeCompare(String(b.content || ''), 'ja');
     })
@@ -3641,7 +3706,7 @@ function ganttPhaseTaskListHTML(tasks, members) {
 
 function ganttTaskBarsHTML(tasks, days) {
   return tasks
-    .filter(task => task.date)
+    .filter(task => taskDueDateValue(task))
     .map((task, index) => {
       const { start, end } = taskScheduleBounds(task);
       const style = ganttBarStyle(start, end, days);
@@ -3829,7 +3894,7 @@ function taskStartDateFromDueDate(dueDate, durationDays = 1) {
 }
 
 function taskScheduleBounds(task) {
-  const due = toISODate(task?.date);
+  const due = toISODate(taskDueDateValue(task));
   const durationDays = Math.max(1, Number(task?.durationDays || 1) || 1);
   const start = toISODate(task?.startDate) || taskStartDateFromDueDate(due, durationDays) || due;
   if (!start && !due) return { start: '', end: '' };
@@ -4056,7 +4121,7 @@ function projectReviewTaskGroups() {
       const openCount = group.tasks.filter(task => task.completed !== true).length;
       const hours = group.tasks.reduce((sum, task) => sum + (Number(task.estimatedHours) || 0), 0);
       const sortedDates = group.tasks
-        .map(task => task.date)
+        .map(task => taskDisplayDateValue(task))
         .filter(Boolean)
         .sort();
       const latestDate = sortedDates[sortedDates.length - 1] || '';
@@ -4279,7 +4344,7 @@ function projectEffectiveStartDate(project) {
   if (explicitStart) return explicitStart;
   const taskDates = DB.Tasks.all()
     .filter(task => task.projectId === project?.id)
-    .map(task => toISODate(task.date))
+    .map(task => toISODate(task.startDate) || toISODate(taskDueDateValue(task)))
     .filter(Boolean)
     .sort();
   return taskDates[0] || toISODate(project?.createdAt) || '';
@@ -4964,11 +5029,14 @@ function templateScheduleRows(templateId, deliveryDate) {
   }));
 }
 
-function renderProjectTemplatePreview() {
-  const el = document.getElementById('pj-template-preview');
+function renderTemplatePreviewForForm(options = {}) {
+  const {
+    previewId = 'pj-template-preview',
+    templateId = document.getElementById('pj-template')?.value || '',
+    deliveryDate = document.getElementById('pj-delivery')?.value || '',
+  } = options;
+  const el = document.getElementById(previewId);
   if (!el) return;
-  const templateId = document.getElementById('pj-template')?.value || '';
-  const deliveryDate = document.getElementById('pj-delivery')?.value || '';
   const tpl = DB.Templates.get(templateId);
   if (!tpl) {
     el.innerHTML = '';
@@ -5016,8 +5084,20 @@ function renderProjectTemplatePreview() {
     <div class="form-help">不要なタスクはチェックを外せます。タスク名・種別・締切日・遂行期間・工数は登録前に修正できます。</div>`;
 }
 
-function readTemplateTaskDrafts(templateId, deliveryDate) {
-  const rows = Array.from(document.querySelectorAll('#pj-template-preview .template-task-draft'));
+function renderProjectTemplatePreview() {
+  renderTemplatePreviewForForm();
+}
+
+function renderTaskProjectTemplatePreview() {
+  renderTemplatePreviewForForm({
+    previewId: 'qpj-template-preview',
+    templateId: document.getElementById('qpj-template')?.value || '',
+    deliveryDate: document.getElementById('qpj-delivery')?.value || '',
+  });
+}
+
+function readTemplateTaskDrafts(templateId, deliveryDate, previewSelector = '#pj-template-preview') {
+  const rows = Array.from(document.querySelectorAll(`${previewSelector} .template-task-draft`));
   if (!rows.length) return templateScheduleRows(templateId, deliveryDate);
   return rows
     .filter(row => row.querySelector('.tpl-task-enabled')?.checked)
@@ -5042,6 +5122,7 @@ function createTemplateTasksForProject(project, templateId, fallbackMemberId, ta
   const tasks = taskDrafts || templateScheduleRows(templateId, project.deliveryDate);
   tasks.forEach(task => {
     const phase = phaseByName.get(task.phase);
+    const dueDate = task.dueDate || templateTaskDueDate(project.deliveryDate, task.offset) || project.deliveryDate || DB.today();
     DB.Tasks.add({
       memberId: task.defaultMemberId || fallbackMemberId,
       projectId: project.id,
@@ -5049,8 +5130,10 @@ function createTemplateTasksForProject(project, templateId, fallbackMemberId, ta
       content: task.content,
       estimatedHours: task.hours || 1,
       durationDays: task.durationDays || 1,
-      startDate: task.startDate || taskStartDateFromDueDate(task.dueDate || templateTaskDueDate(project.deliveryDate, task.offset), task.durationDays || 1),
-      date: task.dueDate || templateTaskDueDate(project.deliveryDate, task.offset) || project.deliveryDate || DB.today(),
+      startDate: task.startDate || taskStartDateFromDueDate(dueDate, task.durationDays || 1),
+      date: dueDate,
+      dueDate,
+      displayDate: dueDate,
       taskType: task.type || '作業',
       reviewConfigMode: task.reviewConfigMode === 'custom' ? 'custom' : 'inherit',
       reviewerMemberIds: asArray(task.reviewerMemberIds),
@@ -5623,7 +5706,7 @@ function cleanupTaskDuplicateKey(task) {
 }
 
 function cleanupTaskDateSummary(tasks) {
-  const dates = [...new Set(tasks.map(task => task.date).filter(Boolean))].sort();
+  const dates = [...new Set(tasks.map(task => taskDisplayDateValue(task)).filter(Boolean))].sort();
   if (!dates.length) return '日付未設定';
   if (dates.length === 1) return DB.fmtDate(dates[0]);
   return `${DB.fmtDate(dates[0])}〜${DB.fmtDate(dates[dates.length - 1])}`;
@@ -5652,7 +5735,7 @@ function groupCleanupMissingProjectTasks(tasks) {
       };
     })
     .sort((a, b) => {
-      const dateCompare = String(b.primaryTask?.date || '').localeCompare(String(a.primaryTask?.date || ''));
+      const dateCompare = String(taskDisplayDateValue(b.primaryTask)).localeCompare(String(taskDisplayDateValue(a.primaryTask)));
       if (dateCompare) return dateCompare;
       return String(a.primaryTask?.content || '').localeCompare(String(b.primaryTask?.content || ''), 'ja');
     });
@@ -5681,12 +5764,12 @@ function findCleanupDuplicateTaskGroups(tasks) {
   return Array.from(groups.values())
     .filter(group => group.length > 1)
     .map(group => {
-      const sorted = group.slice().sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
-      const dates = sorted.map(task => task.date).filter(Boolean);
+      const sorted = group.slice().sort((a, b) => String(taskDisplayDateValue(a)).localeCompare(String(taskDisplayDateValue(b))));
+      const dates = sorted.map(task => taskDisplayDateValue(task)).filter(Boolean);
       const openTasks = sorted.filter(task => task.completed !== true);
       const keep = (openTasks.length ? openTasks : sorted)
         .slice()
-        .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))[0];
+        .sort((a, b) => String(taskDisplayDateValue(b)).localeCompare(String(taskDisplayDateValue(a))))[0];
       return {
         tasks: sorted,
         taskIds: sorted.map(task => task.id),
@@ -5766,7 +5849,7 @@ function cleanupTaskRow(taskGroup) {
   const task = taskGroup.primaryTask || taskGroup;
   const taskIds = taskGroup.taskIds || [task.id];
   const duplicateCount = taskGroup.duplicateCount || 1;
-  const dateSummary = taskGroup.dateSummary || (task.date ? DB.fmtDate(task.date) : '日付未設定');
+  const dateSummary = taskGroup.dateSummary || (taskDisplayDateValue(task) ? DB.fmtDate(taskDisplayDateValue(task)) : '日付未設定');
   const member = DB.Members.get(task.memberId);
   const currentProject = DB.Projects.get(task.projectId);
   const isDeletedProjectTask = Boolean(task.projectId && !currentProject);
@@ -5865,7 +5948,7 @@ function cleanupDuplicateTaskDetailRow(task, willKeep = false) {
     <div style="border:1px solid var(--border);border-radius:8px;padding:8px;background:var(--bg-glass)">
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
         ${willKeep ? '<span class="tag tag-done">残す候補</span>' : ''}
-        <span class="tag">${escHtml(task.date ? DB.fmtDate(task.date) : '日付未設定')}</span>
+        <span class="tag">${escHtml(taskDisplayDateValue(task) ? DB.fmtDate(taskDisplayDateValue(task)) : '日付未設定')}</span>
         ${task.originalDate ? `<span class="tag">開始 ${escHtml(DB.fmtDate(task.originalDate))}</span>` : ''}
         <span class="tag ${task.completed === true ? 'tag-done' : ''}">${status}</span>
         <span class="tag-hours">${Number(task.estimatedHours) || 0}h</span>
@@ -6029,7 +6112,7 @@ function cleanupCarryoverRow(issue) {
         <div class="cleanup-title">${escHtml(task.content || '未入力タスク')}</div>
         <div class="cleanup-meta">
           <span class="cleanup-warning">${escHtml(issue.label)}</span>
-          <span>${escHtml(task.date ? DB.fmtDate(task.date) : '日付未設定')}</span>
+          <span>${escHtml(taskDisplayDateValue(task) ? DB.fmtDate(taskDisplayDateValue(task)) : '日付未設定')}</span>
           <span>担当：${member ? escHtml(member.name) : '未設定'}</span>
           <span>${task.completed === true ? '完了' : '未完了'}</span>
         </div>
@@ -6161,12 +6244,12 @@ async function mergeCleanupDuplicateTasks(taskIdsText, keepTaskId) {
     showToast('統合対象が1件だけです', 'info');
     return;
   }
-  const dates = tasks.map(task => task.originalDate || task.date).filter(Boolean).sort();
-  const originalDate = dates[0] || keepTask.originalDate || keepTask.date || '';
+  const dates = tasks.map(task => task.originalDate || taskDisplayDateValue(task)).filter(Boolean).sort();
+  const originalDate = dates[0] || keepTask.originalDate || taskDisplayDateValue(keepTask) || '';
   const openTasks = tasks.filter(task => task.completed !== true);
   const latestOpen = openTasks
     .slice()
-    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))[0];
+    .sort((a, b) => String(taskDisplayDateValue(b)).localeCompare(String(taskDisplayDateValue(a))))[0];
   const target = latestOpen || keepTask;
   const doneCount = tasks.filter(task => task.completed === true).length;
   const openCount = tasks.length - doneCount;
