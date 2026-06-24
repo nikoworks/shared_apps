@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'サーバー保存安定化版 2026-06-24-03';
+const APP_BUILD_LABEL = 'プロジェクト同時登録版 2026-06-24-04';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const JP_HOLIDAYS = new Set([
@@ -1010,7 +1010,8 @@ async function refreshTaskData(options = {}) {
 }
 
 function taskSnapshot() {
-  return DB.Tasks.all().map(task => ({ ...task }));
+  const tasks = DB.Tasks.allIncludingMerged?.() || DB.Tasks.all();
+  return tasks.map(task => ({ ...task }));
 }
 
 function restoreTaskSnapshot(snapshot) {
@@ -1614,7 +1615,7 @@ function openTaskModal(editId) {
               onchange="_taskFormData.projectId=this.value;_taskFormData.phaseId='';refreshModalPhases()">
         ${projectOpts}
       </select>
-      <div class="form-help">通常は既存プロジェクトを選びます。ない場合だけ、この場で新規作成して紐付けます。</div>
+      <div class="form-help">通常は既存プロジェクトを選びます。ない場合は新規作成欄を入力すると、「追加する」でプロジェクト作成とタスク登録をまとめて行います。</div>
       <button class="btn btn-ghost" type="button" onclick="toggleTaskProjectCreateBox()">
         このタスク用にプロジェクトを作成
       </button>
@@ -1841,7 +1842,7 @@ function buildTaskProjectCreatePanel() {
   return `
     <div id="task-project-create-box" style="display:none;margin-top:12px;padding:14px;border:1px solid var(--border);border-radius:10px;background:var(--bg-glass)">
       <div style="font-weight:800;margin-bottom:10px;color:var(--text-1)">このタスク用のプロジェクトを作成</div>
-      <div class="form-help" style="margin-bottom:12px">${draftHelp}<br>作成すると、このタスクのプロジェクト欄に自動で入ります。</div>
+      <div class="form-help" style="margin-bottom:12px">${draftHelp}<br>入力後、画面下の「追加する」を押すと、プロジェクト作成とタスク登録をまとめて行います。</div>
       <div class="form-group">
         <label class="form-label">案件区分</label>
         <select class="form-select" id="qpj-deal-category">
@@ -1910,7 +1911,6 @@ function buildTaskProjectCreatePanel() {
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
         <button class="btn btn-ghost" type="button" onclick="toggleTaskProjectCreateBox(false)">閉じる</button>
-        <button class="btn btn-primary" type="button" onclick="createProjectFromTaskInline()">作成して紐付け</button>
       </div>
     </div>
   `;
@@ -1962,7 +1962,7 @@ function getTaskProjectCreateRecurringSeries(projectType) {
   return document.getElementById('qpj-recurring')?.value?.trim() || '';
 }
 
-async function createProjectFromTaskInline() {
+function createProjectFromTaskInline() {
   const clientName = getTaskProjectCreateClientName();
   const projectName = document.getElementById('qpj-name')?.value?.trim() || '';
   const ownerMemberId = document.getElementById('qpj-owner')?.value || '';
@@ -1972,17 +1972,17 @@ async function createProjectFromTaskInline() {
   const templateId = document.getElementById('qpj-template')?.value || '';
   const selectedTemplate = DB.Templates.get(templateId);
 
-  if (!clientName) { showToast('クライアント名を選ぶか、新規入力してください', 'error'); return; }
-  if (!projectName) { showToast('プロジェクト名を入力してください', 'error'); return; }
-  if (!ownerMemberId) { showToast('窓口担当を選んでください', 'error'); return; }
-  if (!deliveryDate) { showToast('納品日を入力してください', 'error'); return; }
+  if (!clientName) { showToast('クライアント名を選ぶか、新規入力してください', 'error'); return null; }
+  if (!projectName) { showToast('プロジェクト名を入力してください', 'error'); return null; }
+  if (!ownerMemberId) { showToast('窓口担当を選んでください', 'error'); return null; }
+  if (!deliveryDate) { showToast('納品日を入力してください', 'error'); return null; }
   if (projectType === 'recurring' && !recurringSeries) {
     showToast('定期プロジェクトは定期案件名を選ぶか、新規入力してください', 'error');
-    return;
+    return null;
   }
   if (selectedTemplate?.tasks?.length && !deliveryDate) {
     showToast('タスク付きテンプレートは納品日を入力してください', 'error');
-    return;
+    return null;
   }
   const taskDrafts = readTemplateTaskDrafts(templateId, deliveryDate, '#qpj-template-preview');
 
@@ -2015,13 +2015,7 @@ async function createProjectFromTaskInline() {
   if (kindSel) kindSel.value = _taskFormData.projectKindFilter;
   refreshTaskProjectOptions();
   toggleTaskProjectCreateBox(false);
-
-  const ok = await DB.syncCloudStore?.();
-  if (ok === false) {
-    showToast('プロジェクトを作成しました。保存状態は「最新に更新」で確認してください', 'info');
-    return;
-  }
-  showToast(taskCount ? `プロジェクトを作成し、標準タスク${taskCount}件も作成しました` : 'プロジェクトを作成し、このタスクに紐付けました', 'success');
+  return { project, taskCount };
 }
 
 function stepHours(delta) {
@@ -2114,6 +2108,18 @@ async function saveTask(editId) {
     return;
   }
 
+  const before = {
+    projects: DB.Projects.all().map(project => ({ ...project })),
+    tasks: taskSnapshot(),
+    asks: DB.Asks.all().map(ask => ({ ...ask })),
+  };
+  const createBox = document.getElementById('task-project-create-box');
+  let createdProjectResult = null;
+  if (!_taskFormData.projectId && createBox && createBox.style.display !== 'none') {
+    createdProjectResult = createProjectFromTaskInline();
+    if (!createdProjectResult) return;
+  }
+
   const payload = {
     memberId,
     projectId: _taskFormData.projectId || null,
@@ -2131,10 +2137,6 @@ async function saveTask(editId) {
     needsProjectReview: _taskFormData.projectId ? false : Boolean(_taskFormData.needsProjectReview),
   };
 
-  const before = {
-    tasks: taskSnapshot(),
-    asks: DB.Asks.all().map(ask => ({ ...ask })),
-  };
   let savedTask;
   if (editId) {
     DB.Tasks.update(editId, payload);
@@ -2145,14 +2147,22 @@ async function saveTask(editId) {
   saveTaskLinkedAsk(savedTask, askPayload);
   const ok = await DB.syncCloudStore?.();
   if (ok === false) {
+    if (DB.Projects.replaceAll) DB.Projects.replaceAll(before.projects);
     restoreTaskSnapshot(before.tasks);
     if (DB.Asks.replaceAll) DB.Asks.replaceAll(before.asks);
-    showToast('保存できなかったため、追加・更新を元に戻しました。最新に更新してから再度入力してください', 'error');
+    showToast('保存できなかったため、プロジェクト作成とタスク登録を元に戻しました。通信状態を確認して再度お試しください', 'error');
     return;
   }
   closeModal();
   refreshCurrentPage();
-  showToast(editId ? 'タスクを更新しました' : 'タスクを追加しました', 'success');
+  if (createdProjectResult) {
+    const templateMessage = createdProjectResult.taskCount
+      ? `、標準タスク${createdProjectResult.taskCount}件`
+      : '';
+    showToast(`プロジェクトとタスクを登録しました${templateMessage}`, 'success');
+  } else {
+    showToast(editId ? 'タスクを更新しました' : 'タスクを追加しました', 'success');
+  }
 }
 
 function readTaskAskForm() {

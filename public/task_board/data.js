@@ -18,9 +18,14 @@ const KEYS = {
 };
 
 const CLOUD_ROW_ID = 'main';
+const CLOUD_PENDING_KEY = 'tb_cloud_pending';
 let cloudClient = null;
 let cloudReady = false;
 let cloudSaveTimer = null;
+let cloudRetryTimer = null;
+let cloudSyncPromise = null;
+let cloudDirty = false;
+let cloudStatus = 'local';
 
 // ============================================================
 // ユーティリティ
@@ -62,6 +67,7 @@ function load(key) {
 
 function save(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
+  localStorage.setItem(CLOUD_PENDING_KEY, '1');
   queueCloudSave();
 }
 
@@ -102,54 +108,137 @@ function saveLocalOnly(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
+function setCloudStatus(status, detail = '') {
+  cloudStatus = status;
+  window.dispatchEvent(new CustomEvent('taskboard:cloud-status', {
+    detail: { status, detail },
+  }));
+}
+
+function getCloudStatus() {
+  return cloudStatus;
+}
+
 async function initCloudStore() {
-  if (!isCloudConfigured()) return false;
+  if (!isCloudConfigured()) {
+    setCloudStatus('local');
+    return false;
+  }
 
   const cfg = getCloudConfig();
   cloudClient = window.supabase.createClient(cfg.url, cfg.anonKey);
+  cloudReady = true;
+  setCloudStatus('loading');
 
   const { data, error } = await cloudClient
     .from('taskboard_data')
     .select('data')
     .eq('id', CLOUD_ROW_ID)
-    .single();
+    .maybeSingle();
 
   if (error) {
     console.warn('Supabase load failed:', error.message);
+    setCloudStatus('error', error.message);
+    scheduleCloudRetry();
     return false;
   }
 
-  applyStoreSnapshot(data?.data);
-  cloudReady = true;
+  const hasPendingLocalChanges = localStorage.getItem(CLOUD_PENDING_KEY) === '1';
+  if (hasPendingLocalChanges) {
+    const ok = await syncCloudStore();
+    if (!ok) scheduleCloudRetry();
+    return ok;
+  }
+
+  if (data?.data) {
+    applyStoreSnapshot(data.data);
+    setCloudStatus('saved');
+  } else {
+    localStorage.setItem(CLOUD_PENDING_KEY, '1');
+    const ok = await syncCloudStore();
+    if (!ok) scheduleCloudRetry();
+    return ok;
+  }
   return true;
 }
 
 function queueCloudSave() {
   if (!cloudReady || !cloudClient) return;
+  cloudDirty = true;
+  setCloudStatus('saving');
   clearTimeout(cloudSaveTimer);
-  cloudSaveTimer = setTimeout(syncCloudStore, 350);
+  cloudSaveTimer = setTimeout(syncCloudStore, 80);
 }
 
 async function syncCloudStore() {
   if (!cloudReady || !cloudClient) return false;
+  cloudDirty = true;
+  clearTimeout(cloudSaveTimer);
+  clearTimeout(cloudRetryTimer);
+  cloudRetryTimer = null;
 
-  const { error } = await cloudClient
-    .from('taskboard_data')
-    .upsert({
-      id: CLOUD_ROW_ID,
-      data: getStoreSnapshot(),
-      updated_at: new Date().toISOString(),
-    });
-
-  if (error) {
-    console.warn('Supabase save failed:', error.message);
-    return false;
+  if (cloudSyncPromise) {
+    await cloudSyncPromise;
+    if (cloudDirty) return syncCloudStore();
+    return cloudStatus === 'saved';
   }
-  return true;
+
+  cloudSyncPromise = (async () => {
+    while (cloudDirty) {
+      cloudDirty = false;
+      setCloudStatus('saving');
+      const writeId = `${Date.now()}-${genId()}`;
+      const snapshot = {
+        ...getStoreSnapshot(),
+        _sync: { writeId, savedAt: new Date().toISOString() },
+      };
+
+      const { data, error } = await cloudClient
+        .from('taskboard_data')
+        .upsert({
+          id: CLOUD_ROW_ID,
+          data: snapshot,
+          updated_at: snapshot._sync.savedAt,
+        })
+        .select('data')
+        .single();
+
+      if (error || data?.data?._sync?.writeId !== writeId) {
+        const message = error?.message || '保存内容をサーバーで確認できませんでした';
+        console.warn('Supabase save failed:', message);
+        cloudDirty = true;
+        setCloudStatus('error', message);
+        scheduleCloudRetry();
+        return false;
+      }
+    }
+
+    localStorage.removeItem(CLOUD_PENDING_KEY);
+    setCloudStatus('saved');
+    return true;
+  })();
+
+  try {
+    return await cloudSyncPromise;
+  } finally {
+    cloudSyncPromise = null;
+  }
+}
+
+function scheduleCloudRetry() {
+  if (!cloudReady || !cloudClient || cloudRetryTimer) return;
+  cloudRetryTimer = setTimeout(() => {
+    cloudRetryTimer = null;
+    syncCloudStore();
+  }, 5000);
 }
 
 async function reloadCloudStore() {
   if (!cloudReady || !cloudClient) return false;
+  if (localStorage.getItem(CLOUD_PENDING_KEY) === '1' || cloudDirty || cloudSyncPromise) {
+    const saved = await syncCloudStore();
+    if (!saved) return false;
+  }
 
   const { data, error } = await cloudClient
     .from('taskboard_data')
@@ -159,10 +248,12 @@ async function reloadCloudStore() {
 
   if (error) {
     console.warn('Supabase reload failed:', error.message);
+    setCloudStatus('error', error.message);
     return false;
   }
 
   applyStoreSnapshot(data?.data);
+  setCloudStatus('saved');
   return true;
 }
 
@@ -357,6 +448,9 @@ function syncDefaultTemplates() {
 // デモデータ（初回のみ投入）
 // ============================================================
 function seedDemoData() {
+  // クラウドの読み込み失敗中にサンプルデータを作ると、
+  // 通信復旧後に本番データを上書きするため投入しない。
+  if (isCloudConfigured() && cloudStatus === 'error') return;
   // メンバーが0件の場合のみ投入
   if (load(KEYS.MEMBERS)?.length > 0) return;
 
@@ -928,5 +1022,9 @@ function buildPhasesFromTemplate(templateId) {
 window.DB = {
   Members, Projects, Tasks, Asks, ChatworkImports, ProjectReviews, Templates,
   today, yesterday, prevDay, fmtDate, daysLeft, genId,
-  initStore, seedDemoData, syncCloudStore, reloadCloudStore,
+  initStore, seedDemoData, syncCloudStore, reloadCloudStore, getCloudStatus,
 };
+
+window.addEventListener('online', () => {
+  if (localStorage.getItem(CLOUD_PENDING_KEY) === '1') syncCloudStore();
+});
