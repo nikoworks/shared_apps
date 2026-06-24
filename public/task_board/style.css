@@ -257,6 +257,17 @@ body {
   color: var(--text-3);
 }
 
+.cloud-save-status {
+  display: block;
+  margin-top: 8px;
+  font-weight: 700;
+}
+
+.cloud-save-status[data-status="saving"],
+.cloud-save-status[data-status="loading"] { color: var(--warning); }
+.cloud-save-status[data-status="saved"] { color: var(--success); }
+.cloud-save-status[data-status="error"] { color: var(--danger); }
+
 /* ─── Main Content ───────────────────────────────────────── */
 .main-content {
   flex: 1;

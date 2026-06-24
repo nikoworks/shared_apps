@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '項目一元管理整理版 2026-06-24-02';
+const APP_BUILD_LABEL = 'サーバー保存安定化版 2026-06-24-03';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const JP_HOLIDAYS = new Set([
@@ -6953,12 +6953,34 @@ function updateSidebarDate() {
   }
 }
 
+function updateCloudSaveStatus(status = DB.getCloudStatus?.() || 'local') {
+  const el = document.getElementById('cloud-save-status');
+  if (!el) return;
+  const labels = {
+    loading: 'サーバー確認中',
+    saving: 'サーバーへ保存中',
+    saved: 'サーバー保存済み',
+    error: 'サーバー保存待ち',
+    local: 'この端末に保存',
+  };
+  el.dataset.status = status;
+  el.textContent = labels[status] || labels.local;
+  el.title = status === 'error'
+    ? '通信が戻ると自動で再保存します。画面を閉じずにお待ちください。'
+    : '';
+}
+
+window.addEventListener('taskboard:cloud-status', event => {
+  updateCloudSaveStatus(event.detail?.status);
+});
+
 /* ============================================================
    アプリ初期化
    ============================================================ */
 document.addEventListener('DOMContentLoaded', async () => {
   applyTheme();
   await DB.initStore();
+  updateCloudSaveStatus();
   DB.seedDemoData();       // 初回のみデモデータを投入
   const carriedCount = DB.Tasks.carryOverOpenTasks();
   const compacted = DB.Tasks.compactCarryoverDuplicates?.() || { mergedCount: 0 };
