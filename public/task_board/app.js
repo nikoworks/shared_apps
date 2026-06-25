@@ -2,13 +2,14 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '日付一元管理版 2026-06-25-02';
+const APP_BUILD_LABEL = 'バッファー自動調整版 2026-06-26-02';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const TASK_TYPE_GROUPS = {
   '作業系タスク': ['作業', '依頼', '修正', '納品'],
-  '確認系タスク': ['確認', '進行許可', '差し戻し対応', '再確認'],
+  '確認系タスク': ['確認', '進行許可'],
 };
+const REVIEW_TASK_TYPES = new Set(['確認', '進行許可', '再確認']);
 const JP_HOLIDAYS = new Set([
   '2026-01-01','2026-01-12','2026-02-11','2026-02-23','2026-03-20',
   '2026-04-29','2026-05-03','2026-05-04','2026-05-05','2026-05-06',
@@ -28,14 +29,28 @@ function apiUrl(path) {
 
 function taskTypeOptionsHTML(selected = '作業') {
   const knownTypes = Object.values(TASK_TYPE_GROUPS).flat();
-  const legacyOption = selected && !knownTypes.includes(selected)
-    ? `<option value="${escHtml(selected)}" selected>${escHtml(selected)}（旧種別）</option>`
+  const generatedOption = selected === '再確認'
+    ? `<option value="再確認" selected>再確認（自動作成）</option>`
     : '';
-  return legacyOption + Object.entries(TASK_TYPE_GROUPS).map(([label, types]) => `
+  const legacyOption = selected && selected !== '再確認' && !knownTypes.includes(selected)
+    ? `<option value="${escHtml(selected)}" selected>${escHtml(selected)}（過去データ）</option>`
+    : '';
+  return generatedOption + legacyOption + Object.entries(TASK_TYPE_GROUPS).map(([label, types]) => `
     <optgroup label="${label}">
       ${types.map(type => `<option value="${type}" ${selected === type ? 'selected' : ''}>${type}</option>`).join('')}
     </optgroup>
   `).join('');
+}
+
+function isReviewTask(taskOrType) {
+  const type = typeof taskOrType === 'string' ? taskOrType : taskOrType?.taskType;
+  return REVIEW_TASK_TYPES.has(type);
+}
+
+function reviewTaskAnswerLabels(taskType) {
+  if (taskType === '進行許可') return { ok: '許可する', reject: '許可しない' };
+  if (taskType === '再確認') return { ok: '修正確認済み', reject: '再差し戻し' };
+  return { ok: 'OK', reject: '差し戻す' };
 }
 
 function askDueDateValue(ask) {
@@ -924,6 +939,15 @@ function morningTaskRow(task) {
   const isCarry = Boolean(task.carriedFromTaskId);
   const isDone   = task.completed === true;
   const isFail   = task.completed === false;
+  const primaryControl = isReviewTask(task)
+    ? reviewTaskControlHTML(task)
+    : `<button class="check-btn ${isDone ? 'done' : ''}"
+                onclick="markTaskComplete('${task.id}')"
+                title="完了としてマーク" aria-label="完了">✓</button>
+        <button class="check-btn ${isFail ? 'fail' : ''}"
+                style="font-size:12px"
+                onclick="markTaskFail('${task.id}')"
+                title="未完了としてマーク" aria-label="未完了">✗</button>`;
 
   const reasonHTML = isFail ? `
     <div style="margin-top:7px">
@@ -937,13 +961,7 @@ function morningTaskRow(task) {
   return `
     <div class="task-row ${isCarry ? 'task-row-carry' : ''}" id="morning-task-${task.id}">
       <div style="display:flex;gap:5px;padding-top:2px">
-        <button class="check-btn ${isDone ? 'done' : ''}"
-                onclick="markTaskComplete('${task.id}')"
-                title="完了としてマーク" aria-label="完了">✓</button>
-        <button class="check-btn ${isFail ? 'fail' : ''}"
-                style="font-size:12px"
-                onclick="markTaskFail('${task.id}')"
-                title="未完了としてマーク" aria-label="未完了">✗</button>
+        ${primaryControl}
       </div>
       <div class="flex-1">
         <div class="task-title" style="${isDone ? 'text-decoration:line-through;opacity:.45' : ''}">${escHtml(task.content)}</div>
@@ -953,6 +971,8 @@ function morningTaskRow(task) {
           <span>担当：${escHtml(ownerLabel)}</span>
           ${projectLabel ? `<span>${projectLabel}</span>` : ''}
           ${phaseName ? `<span class="tag tag-phase">${phaseName}</span>` : ''}
+          <span class="tag">${escHtml(task.taskType || '作業')}</span>
+          ${reviewResultTagHTML(task)}
           <span class="tag-hours">${task.estimatedHours}h</span>
         </div>
         ${reasonHTML}
@@ -963,12 +983,15 @@ function morningTaskRow(task) {
 async function markTaskComplete(taskId) {
   const before = taskSnapshot();
   const beforeAsks = DB.Asks.all().map(ask => ({ ...ask }));
+  const beforeProjects = DB.Projects.all().map(project => ({ ...project }));
   DB.Tasks.setCompletion(taskId, true, '');
   createReviewAsksForCompletedTasks([taskId]);
+  createWorkflowTasksForCompletedTasks([taskId]);
   const ok = await DB.syncCloudStore?.();
   if (ok === false) {
     restoreTaskSnapshot(before);
     DB.Asks.replaceAll?.(beforeAsks);
+    DB.Projects.replaceAll?.(beforeProjects);
   }
   renderMorningCheck();
   showToast(ok === false ? '保存できなかったため、チェックを元に戻しました。最新に更新してから再度実行してください' : '完了としてマークしました', ok === false ? 'error' : 'success');
@@ -1339,12 +1362,15 @@ function todayTaskRow(task) {
   const isDone = task.completed === true;
   const visibleNote = visibleTaskNote(task);
   const dateLabel = duplicateCount > 1 && task._displayDateSummary ? task._displayDateSummary : '';
-  return `
-    <div class="task-row ${isCarry ? 'task-row-carry' : ''} ${isDone ? 'task-row-done' : ''}" id="task-row-${task.id}">
-      <button class="check-btn ${isDone ? 'done' : ''}"
+  const leadingControl = isReviewTask(task)
+    ? reviewTaskControlHTML(task)
+    : `<button class="check-btn ${isDone ? 'done' : ''}"
               onclick="toggleTodayTaskCompleteGroup('${taskIds.join(',')}')"
               title="${isDone ? '未完了に戻す' : '完了にする'}"
-              aria-label="${isDone ? '未完了に戻す' : '完了にする'}">✓</button>
+              aria-label="${isDone ? '未完了に戻す' : '完了にする'}">✓</button>`;
+  return `
+    <div class="task-row ${isCarry ? 'task-row-carry' : ''} ${isDone ? 'task-row-done' : ''}" id="task-row-${task.id}">
+      ${leadingControl}
       <div class="task-accent-bar"></div>
       <div class="flex-1">
         <div class="task-title">${escHtml(task.content)}</div>
@@ -1354,8 +1380,10 @@ function todayTaskRow(task) {
           <span>担当：${escHtml(ownerLabel)}</span>
           ${projectHTML}
           ${phaseName ? `<span class="tag tag-phase">${phaseName}</span>` : ''}
+          <span class="tag">${escHtml(task.taskType || '作業')}</span>
           ${isCarry ? '<span class="tag tag-carry tag-carry-strong">繰り越し</span>' : ''}
           ${isDone ? '<span class="tag tag-done">完了</span>' : ''}
+          ${reviewResultTagHTML(task)}
           ${linkedAsk ? '<span class="tag tag-ask">確認あり</span>' : ''}
           ${duplicateCount > 1 ? `<span class="tag">集約 ${duplicateCount}件</span>` : ''}
           <span class="tag-hours">${task.estimatedHours}h</span>
@@ -1366,6 +1394,243 @@ function todayTaskRow(task) {
         <button class="btn btn-danger btn-sm" onclick="deleteTask('${task.id}')">削除</button>
       </div>
     </div>`;
+}
+
+function reviewResultTagHTML(task) {
+  if (!isReviewTask(task)) return '';
+  if (task.resultStatus === 'ok') return '<span class="tag tag-done">回答：OK</span>';
+  if (task.resultStatus === 'rejected') return '<span class="tag tag-rejected">回答：差し戻し</span>';
+  if (task.resultStatus === 'hold') return '<span class="tag tag-hold">回答：保留</span>';
+  return `<span class="tag tag-ask">${escHtml(task.taskType)}待ち</span>`;
+}
+
+function reviewTaskControlHTML(task) {
+  if (task.completed === true) {
+    return '<span class="check-btn done" title="回答済み" aria-label="回答済み">✓</span>';
+  }
+  return `<button class="btn btn-primary btn-sm review-answer-btn" onclick="openReviewAnswerModal('${task.id}')">回答</button>`;
+}
+
+function openReviewAnswerModal(taskId) {
+  const task = DB.Tasks.get(taskId);
+  if (!task || !isReviewTask(task)) return;
+  const labels = reviewTaskAnswerLabels(task.taskType);
+  const resultSummary = task.resultStatus
+    ? `<div class="task-review-summary">現在の回答：${escHtml(task.resultStatus === 'ok' ? labels.ok : task.resultStatus === 'rejected' ? labels.reject : '保留')}</div>`
+    : '';
+  openModal(`
+    <div class="form-help" style="margin-bottom:12px">${escHtml(task.content)}</div>
+    ${resultSummary}
+    ${task.rejectionReason ? `<div class="task-note">差し戻し理由：${escHtml(task.rejectionReason)}</div>` : ''}
+    ${task.holdReason ? `<div class="task-note">保留理由：${escHtml(task.holdReason)}</div>` : ''}
+    <div class="review-answer-actions">
+      <button class="btn btn-success" onclick="answerReviewTaskOk('${task.id}')">${escHtml(labels.ok)}</button>
+      <button class="btn btn-danger" onclick="openReviewRejectModal('${task.id}')">${escHtml(labels.reject)}</button>
+      <button class="btn btn-ghost" onclick="openReviewHoldModal('${task.id}')">保留</button>
+    </div>
+    <div class="form-help" style="margin-top:12px">差し戻し時は修正タスクを自動作成します。保留時は次の回答期限を設定します。</div>
+  `, `${task.taskType}へ回答`);
+}
+
+async function answerReviewTaskOk(taskId) {
+  const task = DB.Tasks.get(taskId);
+  if (!task) return;
+  const before = taskSnapshot();
+  DB.Tasks.update(taskId, {
+    completed: true,
+    resultStatus: 'ok',
+    rejectionReason: '',
+    holdReason: '',
+    respondedAt: new Date().toISOString(),
+  });
+  const ok = await DB.syncCloudStore?.();
+  if (ok === false) {
+    restoreTaskSnapshot(before);
+    showToast('回答を保存できませんでした', 'error');
+    return;
+  }
+  closeModal();
+  refreshCurrentPage();
+  showToast('確認結果を保存しました', 'success');
+}
+
+function openReviewRejectModal(taskId) {
+  const task = DB.Tasks.get(taskId);
+  if (!task) return;
+  const parentTask = task.parentTaskId ? DB.Tasks.get(task.parentTaskId) : null;
+  const defaultMemberId = parentTask?.memberId || DB.Projects.get(task.projectId)?.ownerMemberId || '';
+  const dueDate = addBusinessDays(DB.today(), 1);
+  openModal(`
+    <div class="form-group">
+      <label class="form-label">差し戻し理由 *</label>
+      <textarea class="form-textarea" id="review-reject-reason" placeholder="修正してほしい点を簡潔に入力"></textarea>
+    </div>
+    <div class="form-group">
+      <label class="form-label">修正担当者 *</label>
+      <select class="form-select" id="review-revision-member">
+        <option value="">選択してください</option>
+        ${memberOptionsHTML(defaultMemberId, false)}
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">修正期限 *</label>
+      <input type="date" class="form-input" id="review-revision-due" value="${dueDate}">
+      <div class="form-help">原則は翌営業日です。修正量に合わせて変更できます。</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="openReviewAnswerModal('${task.id}')">戻る</button>
+      <button class="btn btn-danger" onclick="submitReviewRejection('${task.id}')">差し戻して修正タスクを作成</button>
+    </div>
+  `, '差し戻し');
+}
+
+async function submitReviewRejection(taskId) {
+  const task = DB.Tasks.get(taskId);
+  if (!task) return;
+  const reason = document.getElementById('review-reject-reason')?.value?.trim() || '';
+  const memberId = document.getElementById('review-revision-member')?.value || '';
+  const dueDate = document.getElementById('review-revision-due')?.value || '';
+  if (!reason) { showToast('差し戻し理由を入力してください', 'error'); return; }
+  if (!memberId) { showToast('修正担当者を選択してください', 'error'); return; }
+  if (!dueDate) { showToast('修正期限を入力してください', 'error'); return; }
+  if (dueDate < DB.today()) { showToast('修正期限は今日以降にしてください', 'error'); return; }
+
+  const before = taskSnapshot();
+  const beforeAsks = DB.Asks.all().map(ask => ({ ...ask }));
+  const beforeProjects = DB.Projects.all().map(project => ({ ...project }));
+  const previousEndDate = taskDueDateValue(task);
+  const schedule = canonicalTaskSchedule({
+    startDate: DB.today(),
+    dueDate,
+    displayDate: DB.today(),
+    durationDays: businessDatesBetween(DB.today(), dueDate).length,
+  });
+  DB.Tasks.update(task.id, {
+    completed: true,
+    resultStatus: 'rejected',
+    rejectionReason: reason,
+    holdReason: '',
+    respondedAt: new Date().toISOString(),
+  });
+  const reservedReviewDueDate = addBusinessDays(dueDate, 1);
+  const revisionTask = DB.Tasks.add({
+    memberId,
+    projectId: task.projectId || null,
+    phaseId: task.phaseId || null,
+    content: `修正：${task.content}`,
+    note: `差し戻し理由：${reason}`,
+    estimatedHours: 1,
+    taskType: '修正',
+    parentTaskId: task.parentTaskId || task.id,
+    reviewTaskId: task.id,
+    generatedByWorkflow: true,
+    reservedReviewDueDate,
+    ...schedule,
+  });
+  const adjustment = adjustProjectScheduleAfterExtension({
+    triggerTask: task,
+    previousEndDate,
+    newEndDate: reservedReviewDueDate,
+    reason: `確認差し戻し：${task.content}`,
+    excludeTaskIds: [revisionTask.id],
+    actorMemberId: task.memberId,
+  });
+  const ok = await DB.syncCloudStore?.();
+  if (ok === false) {
+    restoreTaskSnapshot(before);
+    DB.Asks.replaceAll?.(beforeAsks);
+    DB.Projects.replaceAll?.(beforeProjects);
+    showToast('差し戻しを保存できませんでした', 'error');
+    return;
+  }
+  closeModal();
+  refreshCurrentPage();
+  showToast(adjustment?.shiftDays
+    ? `修正タスクを作成し、後続タスクを${adjustment.shiftDays}営業日調整しました`
+    : '修正タスクを作成し、システムバッファー内で調整しました', 'success');
+}
+
+function openReviewHoldModal(taskId) {
+  const task = DB.Tasks.get(taskId);
+  if (!task) return;
+  const dueDate = addBusinessDays(DB.today(), 1);
+  openModal(`
+    <div class="form-group">
+      <label class="form-label">保留理由 *</label>
+      <select class="form-select" id="review-hold-reason" onchange="toggleReviewHoldOther()">
+        <option value="">選択してください</option>
+        <option value="外部回答待ち">外部回答待ち</option>
+        <option value="素材・情報待ち">素材・情報待ち</option>
+        <option value="関係者確認待ち">関係者確認待ち</option>
+        <option value="その他">その他</option>
+      </select>
+      <input class="form-input" id="review-hold-other" style="display:none;margin-top:8px" placeholder="理由を入力">
+    </div>
+    <div class="form-group">
+      <label class="form-label">次の回答期限 *</label>
+      <input type="date" class="form-input" id="review-hold-due" value="${dueDate}">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="openReviewAnswerModal('${task.id}')">戻る</button>
+      <button class="btn btn-primary" onclick="submitReviewHold('${task.id}')">保留にする</button>
+    </div>
+  `, '確認を保留');
+}
+
+function toggleReviewHoldOther() {
+  const select = document.getElementById('review-hold-reason');
+  const input = document.getElementById('review-hold-other');
+  if (input) input.style.display = select?.value === 'その他' ? '' : 'none';
+}
+
+async function submitReviewHold(taskId) {
+  const task = DB.Tasks.get(taskId);
+  if (!task) return;
+  const selectedReason = document.getElementById('review-hold-reason')?.value || '';
+  const otherReason = document.getElementById('review-hold-other')?.value?.trim() || '';
+  const dueDate = document.getElementById('review-hold-due')?.value || '';
+  const reason = selectedReason === 'その他' ? otherReason : selectedReason;
+  if (!reason) { showToast('保留理由を選択してください', 'error'); return; }
+  if (!dueDate) { showToast('次の回答期限を入力してください', 'error'); return; }
+  if (dueDate < DB.today()) { showToast('次の回答期限は今日以降にしてください', 'error'); return; }
+  const before = taskSnapshot();
+  const beforeAsks = DB.Asks.all().map(ask => ({ ...ask }));
+  const beforeProjects = DB.Projects.all().map(project => ({ ...project }));
+  const previousEndDate = taskDueDateValue(task);
+  const schedule = canonicalTaskSchedule({
+    startDate: task.startDate || DB.today(),
+    dueDate,
+    displayDate: dueDate,
+    durationDays: businessDatesBetween(task.startDate || DB.today(), dueDate).length,
+  });
+  DB.Tasks.update(task.id, {
+    ...schedule,
+    completed: null,
+    resultStatus: 'hold',
+    holdReason: reason,
+    rejectionReason: '',
+    respondedAt: new Date().toISOString(),
+  });
+  const adjustment = adjustProjectScheduleAfterExtension({
+    triggerTask: task,
+    previousEndDate,
+    newEndDate: dueDate,
+    reason: `確認保留：${reason}`,
+    actorMemberId: task.memberId,
+  });
+  const ok = await DB.syncCloudStore?.();
+  if (ok === false) {
+    restoreTaskSnapshot(before);
+    DB.Asks.replaceAll?.(beforeAsks);
+    DB.Projects.replaceAll?.(beforeProjects);
+    showToast('保留を保存できませんでした', 'error');
+    return;
+  }
+  closeModal();
+  refreshCurrentPage();
+  showToast(adjustment?.shiftDays
+    ? `保留期限を保存し、後続タスクを${adjustment.shiftDays}営業日調整しました`
+    : '保留期限を保存し、システムバッファー内で調整しました', 'success');
 }
 
 function taskProjectDisplayHTML(task) {
@@ -1400,13 +1665,18 @@ async function toggleTodayTaskCompleteGroup(taskIdsText) {
   if (!mainTask) return;
   const before = taskSnapshot();
   const beforeAsks = DB.Asks.all().map(ask => ({ ...ask }));
+  const beforeProjects = DB.Projects.all().map(project => ({ ...project }));
   const nextCompleted = mainTask.completed === true ? null : true;
   taskIds.forEach(taskId => DB.Tasks.setCompletion(taskId, nextCompleted, ''));
-  if (nextCompleted === true) createReviewAsksForCompletedTasks(taskIds);
+  if (nextCompleted === true) {
+    createReviewAsksForCompletedTasks(taskIds);
+    createWorkflowTasksForCompletedTasks(taskIds);
+  }
   const ok = await DB.syncCloudStore?.();
   if (ok === false) {
     restoreTaskSnapshot(before);
     DB.Asks.replaceAll?.(beforeAsks);
+    DB.Projects.replaceAll?.(beforeProjects);
     showToast('保存できなかったため、チェックを元に戻しました。最新に更新してから再度実行してください', 'error');
   } else {
     taskIds.forEach(taskId => {
@@ -1687,10 +1957,13 @@ function openTaskModal(editId, presetProjectId = '') {
     </div>
     <div class="form-group">
       <label class="form-label">タスク種別 *</label>
-      <select class="form-select" id="tf-task-type" onchange="_taskFormData.taskType=this.value">
+      <select class="form-select" id="tf-task-type" onchange="handleTaskTypeChange(this.value)">
         ${taskTypeOptionsHTML(_taskFormData.taskType || '作業')}
       </select>
       <div class="form-help">実際に手を動かすものは作業系、判断・承認を行うものは確認系を選びます。</div>
+      <div class="form-help" id="tf-review-deadline-help" style="${isReviewTask(_taskFormData) ? '' : 'display:none'};color:var(--warning)">
+        確認系タスクの期限は原則、翌営業日です。都合により締切日は変更できます。
+      </div>
     </div>
     <div class="task-schedule-box">
       <div class="task-schedule-title">タスク日程</div>
@@ -2105,6 +2378,27 @@ function syncTaskDueDateFromStart() {
   _taskFormData.displayDate = _taskFormData.displayDate || due;
   _taskFormData.durationDays = durationDays;
   const dueEl = document.getElementById('tf-date');
+  if (dueEl) dueEl.value = due;
+}
+
+function handleTaskTypeChange(taskType) {
+  _taskFormData.taskType = taskType || '作業';
+  const help = document.getElementById('tf-review-deadline-help');
+  if (help) help.style.display = isReviewTask(taskType) ? '' : 'none';
+  if (!isReviewTask(taskType)) return;
+
+  const start = DB.today();
+  const due = addBusinessDays(start, 1);
+  _taskFormData.startDate = start;
+  _taskFormData.durationDays = Math.max(1, businessDatesBetween(start, due).length);
+  _taskFormData.date = due;
+  _taskFormData.dueDate = due;
+  _taskFormData.displayDate = due;
+  const startEl = document.getElementById('tf-start-date');
+  const durationEl = document.getElementById('tf-duration-days');
+  const dueEl = document.getElementById('tf-date');
+  if (startEl) startEl.value = start;
+  if (durationEl) durationEl.value = String(_taskFormData.durationDays);
   if (dueEl) dueEl.value = due;
 }
 
@@ -4006,6 +4300,177 @@ function taskDueDateFromStartDate(startDate, durationDays = 1) {
   return addBusinessDays(safeStart, days - 1);
 }
 
+function businessDayDistance(startDate, endDate) {
+  const start = toISODate(startDate);
+  const end = toISODate(endDate);
+  if (!start || !end || end <= start) return 0;
+  return Math.max(0, businessDatesBetween(start, end).length - 1);
+}
+
+function businessBufferBetween(endDate, nextStartDate) {
+  const end = toISODate(endDate);
+  const next = toISODate(nextStartDate);
+  if (!end || !next || next <= end) return 0;
+  return Math.max(0, businessDatesBetween(end, next).length - 2);
+}
+
+function taskPhaseOrder(project, task) {
+  if (!task?.phaseId) return Number.MAX_SAFE_INTEGER - 1;
+  const index = (project?.phases || []).findIndex(phase => phase.id === task.phaseId);
+  return index >= 0 ? index : Number.MAX_SAFE_INTEGER;
+}
+
+function recalculateProjectPhaseDates(projectId) {
+  const project = DB.Projects.get(projectId);
+  if (!project) return;
+  const tasks = DB.Tasks.all().filter(task => task.projectId === projectId && !task.mergedIntoTaskId);
+  const phases = (project.phases || []).map(phase => {
+    const phaseTasks = tasks.filter(task => task.phaseId === phase.id);
+    if (!phaseTasks.length) return phase;
+    const starts = phaseTasks.map(task => taskScheduleBounds(task).start).filter(Boolean).sort();
+    const ends = phaseTasks.map(task => taskScheduleBounds(task).end).filter(Boolean).sort();
+    return {
+      ...phase,
+      startDate: starts[0] || phase.startDate || '',
+      dueDate: ends[ends.length - 1] || phase.dueDate || '',
+    };
+  });
+  DB.Projects.updatePhases(projectId, phases);
+}
+
+function notifyScheduleAdjustment(project, adjustment) {
+  if (!project || !adjustment?.extensionDays) return;
+  const config = getProjectReviewConfig(project);
+  const managerId = config.progressManagerMemberId || project.ownerMemberId || '';
+  const manager = managerId ? DB.Members.get(managerId) : null;
+  const impactText = adjustment.deliveryAtRisk
+    ? `納品日 ${DB.fmtDate(project.deliveryDate)} を超える見込みです。`
+    : `納品日は ${project.deliveryDate ? DB.fmtDate(project.deliveryDate) : '未設定'} のままです。`;
+  const content = [
+    adjustment.reason,
+    `システムバッファー使用：${adjustment.bufferUsedDays}営業日`,
+    `後続タスク変更：${adjustment.changedTasks.length}件（${adjustment.shiftDays}営業日移動）`,
+    impactText,
+  ].join(' / ');
+
+  if (manager) {
+    DB.Asks.add({
+      type: '日程変更',
+      fromMemberId: adjustment.actorMemberId || '',
+      toMemberId: manager.id,
+      toName: manager.name,
+      content,
+      projectId: project.id,
+      projectName: `${project.clientName || ''} / ${project.name || ''}`,
+      dueDate: DB.today(),
+      dueText: DB.today(),
+      status: 'open',
+      date: DB.today(),
+      taskId: adjustment.triggerTaskId || null,
+    });
+  }
+
+  const history = Array.isArray(project.scheduleAdjustments) ? project.scheduleAdjustments : [];
+  DB.Projects.update(project.id, {
+    scheduleAdjustments: [...history, {
+      ...adjustment,
+      notifiedMemberId: managerId,
+      createdAt: new Date().toISOString(),
+    }].slice(-100),
+  });
+}
+
+function adjustProjectScheduleAfterExtension({
+  triggerTask,
+  previousEndDate,
+  newEndDate,
+  reason,
+  excludeTaskIds = [],
+  actorMemberId = '',
+} = {}) {
+  const project = triggerTask?.projectId ? DB.Projects.get(triggerTask.projectId) : null;
+  const oldEnd = toISODate(previousEndDate);
+  const newEnd = toISODate(newEndDate);
+  if (!project || !oldEnd || !newEnd || newEnd <= oldEnd) return null;
+
+  const triggerPhaseOrder = taskPhaseOrder(project, triggerTask);
+  const excluded = new Set([triggerTask.id, ...excludeTaskIds].filter(Boolean));
+  const candidates = DB.Tasks.all()
+    .filter(task => task.projectId === project.id && task.completed !== true && !excluded.has(task.id))
+    .filter(task => {
+      const start = taskScheduleBounds(task).start;
+      const phaseOrder = taskPhaseOrder(project, task);
+      return phaseOrder > triggerPhaseOrder || (phaseOrder === triggerPhaseOrder && start > oldEnd);
+    })
+    .sort((a, b) => {
+      const phaseCompare = taskPhaseOrder(project, a) - taskPhaseOrder(project, b);
+      if (phaseCompare) return phaseCompare;
+      return String(taskScheduleBounds(a).start).localeCompare(String(taskScheduleBounds(b).start));
+    });
+
+  const extensionDays = businessDayDistance(oldEnd, newEnd);
+  const firstStart = candidates.map(task => taskScheduleBounds(task).start).filter(Boolean).sort()[0] || '';
+  const bufferDays = businessBufferBetween(oldEnd, firstStart);
+  const shiftDays = Math.max(0, extensionDays - bufferDays);
+  if (!shiftDays) {
+    const deliveryAtRisk = Boolean(project.deliveryDate && newEnd > project.deliveryDate);
+    const adjustment = {
+      triggerTaskId: triggerTask.id,
+      reason,
+      actorMemberId,
+      previousEndDate: oldEnd,
+      newEndDate: newEnd,
+      extensionDays,
+      bufferUsedDays: extensionDays,
+      shiftDays: 0,
+      changedTasks: [],
+      latestDue: newEnd,
+      deliveryAtRisk,
+    };
+    notifyScheduleAdjustment(project, adjustment);
+    return adjustment;
+  }
+
+  const changedTasks = candidates.map(task => {
+    const before = taskScheduleBounds(task);
+    const startDate = addBusinessDays(before.start, shiftDays);
+    const dueDate = addBusinessDays(before.end, shiftDays);
+    DB.Tasks.update(task.id, {
+      startDate,
+      dueDate,
+      date: dueDate,
+      displayDate: task.completed === true ? taskDisplayDateValue(task) : startDate,
+      scheduleAdjustedAt: new Date().toISOString(),
+      scheduleAdjustmentReason: reason,
+    });
+    return { taskId: task.id, beforeStart: before.start, beforeDue: before.end, startDate, dueDate };
+  });
+
+  recalculateProjectPhaseDates(project.id);
+  const latestDue = DB.Tasks.all()
+    .filter(task => task.projectId === project.id)
+    .map(task => taskDueDateValue(task))
+    .filter(Boolean)
+    .sort()
+    .slice(-1)[0] || '';
+  const deliveryAtRisk = Boolean(project.deliveryDate && latestDue > project.deliveryDate);
+  const adjustment = {
+    triggerTaskId: triggerTask.id,
+    reason,
+    actorMemberId,
+    previousEndDate: oldEnd,
+    newEndDate: newEnd,
+    extensionDays,
+    bufferUsedDays: Math.min(bufferDays, extensionDays),
+    shiftDays,
+    changedTasks,
+    latestDue,
+    deliveryAtRisk,
+  };
+  notifyScheduleAdjustment(DB.Projects.get(project.id), adjustment);
+  return adjustment;
+}
+
 function taskScheduleBounds(task) {
   const due = toISODate(taskDueDateValue(task));
   const durationDays = Math.max(1, Number(task?.durationDays || 1) || 1);
@@ -4512,12 +4977,15 @@ function projectTaskListRow(task) {
   const dateLabel = duplicateCount > 1 && task._displayDateSummary ? task._displayDateSummary : '';
   const isCarry = Boolean(task.carriedFromTaskId || task.originalDate || duplicateCount > 1);
   const visibleNote = visibleTaskNote(task);
-  return `
-    <div class="task-row ${isCarry ? 'task-row-carry' : ''} ${isDone ? 'task-row-done' : ''}" style="margin-bottom:8px">
-      <button class="check-btn ${isDone ? 'done' : ''}"
+  const primaryControl = isReviewTask(task)
+    ? reviewTaskControlHTML(task)
+    : `<button class="check-btn ${isDone ? 'done' : ''}"
               onclick="toggleProjectTaskComplete('${taskIds.join(',')}')"
               title="${isDone ? '未完了に戻す' : '完了にする'}"
-              aria-label="${isDone ? '未完了に戻す' : '完了にする'}">✓</button>
+              aria-label="${isDone ? '未完了に戻す' : '完了にする'}">✓</button>`;
+  return `
+    <div class="task-row ${isCarry ? 'task-row-carry' : ''} ${isDone ? 'task-row-done' : ''}" style="margin-bottom:8px">
+      ${primaryControl}
       <div class="task-accent-bar"></div>
       <div class="flex-1">
         <div class="task-title">${escHtml(task.content)}</div>
@@ -4526,8 +4994,10 @@ function projectTaskListRow(task) {
           ${taskDateTagHTML(originDate, { carried: isCarry, label: dateLabel || undefined })}
           <span>担当：${member ? escHtml(member.name) : '未設定'}</span>
           ${phaseName ? `<span class="tag tag-phase">${escHtml(phaseName)}</span>` : '<span style="color:var(--text-3)">フェーズなし</span>'}
+          <span class="tag">${escHtml(task.taskType || '作業')}</span>
           ${isCarry ? '<span class="tag tag-carry tag-carry-strong">繰り越し</span>' : ''}
           ${isDone ? '<span class="tag tag-done">完了</span>' : ''}
+          ${reviewResultTagHTML(task)}
           ${duplicateCount > 1 ? `<span class="tag">集約 ${duplicateCount}件</span>` : ''}
           <span class="tag-hours">${task.estimatedHours}h</span>
         </div>
@@ -4537,6 +5007,7 @@ function projectTaskListRow(task) {
 }
 
 function createReviewAsksForCompletedTask(task) {
+  if (isReviewTask(task) || task?.generatedByWorkflow) return 0;
   if (!task?.projectId) return 0;
   const project = DB.Projects.get(task.projectId);
   if (!project) return 0;
@@ -4586,6 +5057,56 @@ function createReviewAsksForCompletedTasks(taskIds = []) {
     .reduce((sum, task) => sum + createReviewAsksForCompletedTask(task), 0);
 }
 
+function createRecheckForCompletedRevision(task) {
+  if (!task || task.taskType !== '修正' || !task.reviewTaskId) return null;
+  const sourceReview = DB.Tasks.get(task.reviewTaskId);
+  if (!sourceReview) return null;
+  const alreadyExists = DB.Tasks.all().some(candidate =>
+    candidate.taskType === '再確認' &&
+    candidate.parentTaskId === task.id &&
+    !candidate.mergedIntoTaskId
+  );
+  if (alreadyExists) return null;
+
+  const startDate = DB.today();
+  const dueDate = addBusinessDays(startDate, 1);
+  const schedule = canonicalTaskSchedule({
+    startDate,
+    dueDate,
+    displayDate: dueDate,
+    durationDays: businessDatesBetween(startDate, dueDate).length,
+  });
+  const recheckTask = DB.Tasks.add({
+    memberId: sourceReview.memberId,
+    projectId: task.projectId || sourceReview.projectId || null,
+    phaseId: task.phaseId || sourceReview.phaseId || null,
+    content: `再確認：${sourceReview.content.replace(/^再確認：/, '')}`,
+    note: `修正タスク「${task.content}」の完了後に自動作成`,
+    estimatedHours: 0.25,
+    taskType: '再確認',
+    parentTaskId: task.id,
+    reviewTaskId: sourceReview.id,
+    generatedByWorkflow: true,
+    ...schedule,
+  });
+  adjustProjectScheduleAfterExtension({
+    triggerTask: task,
+    previousEndDate: task.reservedReviewDueDate || taskDueDateValue(task),
+    newEndDate: dueDate,
+    reason: `修正完了・再確認日程確定：${task.content}`,
+    excludeTaskIds: [recheckTask.id],
+    actorMemberId: task.memberId,
+  });
+  return recheckTask;
+}
+
+function createWorkflowTasksForCompletedTasks(taskIds = []) {
+  return taskIds
+    .map(id => DB.Tasks.get(id))
+    .filter(task => task?.completed === true)
+    .reduce((count, task) => count + (createRecheckForCompletedRevision(task) ? 1 : 0), 0);
+}
+
 async function toggleProjectTaskComplete(taskIdsText) {
   const taskIds = String(taskIdsText || '').split(',').map(id => id.trim()).filter(Boolean);
   if (!taskIds.length) return;
@@ -4594,13 +5115,18 @@ async function toggleProjectTaskComplete(taskIdsText) {
   const projectId = task.projectId;
   const before = taskSnapshot();
   const beforeAsks = DB.Asks.all().map(ask => ({ ...ask }));
+  const beforeProjects = DB.Projects.all().map(project => ({ ...project }));
   const nextCompleted = task.completed === true ? null : true;
   taskIds.forEach(taskId => DB.Tasks.setCompletion(taskId, nextCompleted, ''));
-  if (nextCompleted === true) createReviewAsksForCompletedTasks(taskIds);
+  if (nextCompleted === true) {
+    createReviewAsksForCompletedTasks(taskIds);
+    createWorkflowTasksForCompletedTasks(taskIds);
+  }
   const ok = await DB.syncCloudStore?.();
   if (ok === false) {
     restoreTaskSnapshot(before);
     DB.Asks.replaceAll?.(beforeAsks);
+    DB.Projects.replaceAll?.(beforeProjects);
     showToast('保存できなかったため、チェックを元に戻しました。最新に更新してから再度実行してください', 'error');
   }
   if (projectId) openProjectTasksModal(projectId);

@@ -769,6 +769,24 @@ body {
   background: var(--accent-lite);
   color: var(--accent);
 }
+.tag-rejected {
+  background: var(--danger-lite);
+  color: var(--danger);
+}
+.tag-hold {
+  background: var(--warning-lite);
+  color: var(--warning);
+}
+.review-answer-btn {
+  align-self: flex-start;
+  min-width: 52px;
+}
+.review-answer-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
 
 /* Day countdown chips */
 .day-chip {
@@ -2347,6 +2365,7 @@ body {
   .cleanup-grid { grid-template-columns: 1fr; }
   .task-ask-grid,
   .task-date-grid { grid-template-columns: 1fr; }
+  .review-answer-actions { grid-template-columns: 1fr; }
   .chatwork-import-grid { grid-template-columns: 1fr; }
   .page-header, .page-body { padding-inline: 16px; }
 }

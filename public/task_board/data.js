@@ -571,6 +571,7 @@ const Projects = {
     reviewRule = 'all', reviewDueDays = 1, notifyProgressManager = true,
     leadSource = '', leadSourceDetail = '',
     isProvisional = false, detailsDueAt = '', projectStatus = 'active', note = '',
+    scheduleAdjustments = [],
   }) {
     const list = this.all();
     const phases = buildPhasesFromTemplate(templateId);
@@ -582,6 +583,7 @@ const Projects = {
       leadSource, leadSourceDetail,
       isProvisional, detailsDueAt,
       projectStatus, note,
+      scheduleAdjustments,
       archived: false, createdAt: today(), phases,
     };
     list.push(project);
@@ -636,6 +638,9 @@ const Tasks = {
     carriedFromTaskId = null,
     sourceProjectName = '', needsProjectReview = false,
     taskType = '作業',
+    parentTaskId = null, reviewTaskId = null, generatedByWorkflow = false,
+    resultStatus = '', rejectionReason = '', holdReason = '', respondedAt = '',
+    reservedReviewDueDate = '', scheduleAdjustedAt = '', scheduleAdjustmentReason = '',
     reviewConfigMode = 'inherit', reviewerMemberIds = [], approvalMemberIds = [],
     reviewRule = 'inherit', reviewDueDays = null, notifyProgressManager = true,
     chatworkRoomId = '', chatworkMessageId = '',
@@ -653,6 +658,16 @@ const Tasks = {
       content, estimatedHours: parseFloat(estimatedHours),
       durationDays: Math.max(1, parseInt(durationDays, 10) || 1),
       taskType,
+      parentTaskId,
+      reviewTaskId,
+      generatedByWorkflow,
+      resultStatus,
+      rejectionReason,
+      holdReason,
+      respondedAt,
+      reservedReviewDueDate,
+      scheduleAdjustedAt,
+      scheduleAdjustmentReason,
       reviewConfigMode,
       reviewerMemberIds,
       approvalMemberIds,
