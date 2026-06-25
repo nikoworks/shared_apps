@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'バッファー自動調整版 2026-06-26-02';
+const APP_BUILD_LABEL = '確認タスク整理版 2026-06-26-03';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const TASK_TYPE_GROUPS = {
@@ -1903,13 +1903,6 @@ function openTaskModal(editId, presetProjectId = '') {
   const phaseOpts = `<option value="">フェーズなし</option>` +
     curPhases.map(ph =>
       `<option value="${ph.id}" ${_taskFormData.phaseId === ph.id ? 'selected' : ''}>${ph.name}</option>`).join('');
-  const linkedAsk = editId ? getTaskLinkedAsk(editId) : null;
-  const linkedAskDueDate = askDueDateValue(linkedAsk);
-  const linkedAskLegacyDue = linkedAsk?.dueText && !linkedAskDueDate ? linkedAsk.dueText : '';
-  const askMemberOpts = `<option value="">宛先を選択...</option>` + members.map(m =>
-    `<option value="${m.id}" ${linkedAsk?.toMemberId === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
-  const taskReviewMode = _taskFormData.reviewConfigMode === 'custom' ? 'custom' : 'inherit';
-  const taskReviewSummary = taskReviewSummaryText(_taskFormData);
   const carryOrigin = editId && _taskFormData.carriedFromTaskId ? getCarryOriginTask(_taskFormData) : null;
   const carryOriginDate = carryOrigin && carryOrigin.id !== _taskFormData.id ? taskDisplayDateValue(carryOrigin) : '';
   const formDueDate = taskDueDateValue(_taskFormData) || DB.today();
@@ -2008,67 +2001,6 @@ function openTaskModal(editId, presetProjectId = '') {
         <button class="hours-btn" onclick="stepHours(-0.25)" type="button">－</button>
         <span class="hours-display" id="tf-hours-display">${_taskFormData.estimatedHours || 1}h</span>
         <button class="hours-btn" onclick="stepHours(0.25)" type="button">＋</button>
-      </div>
-    </div>
-    <div class="task-ask-box">
-      <div class="task-ask-title">進行に関わる確認</div>
-      <div class="form-help">次の工程・納期・判断に影響する確認だけを入れます。個人的な作業相談はここに残さず、直接確認してください。</div>
-      <div class="task-review-summary">${escHtml(taskReviewSummary)}</div>
-      <label class="checkline" style="margin:10px 0">
-        <input type="checkbox" id="tf-review-custom" ${taskReviewMode === 'custom' ? 'checked' : ''} onchange="toggleTaskReviewCustom()">
-        <span>このタスクだけ確認者・許可者を変更する</span>
-      </label>
-      <div id="tf-review-custom-box" style="${taskReviewMode === 'custom' ? '' : 'display:none'}">
-        <div class="task-ask-grid">
-          <div class="form-group">
-            <label class="form-label">確認者（複数選択可）</label>
-            <select class="form-select member-multi-select" id="tf-reviewers" multiple size="4">
-              ${memberMultiOptionsHTML(_taskFormData.reviewerMemberIds || [])}
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">進行許可者（複数選択可）</label>
-            <select class="form-select member-multi-select" id="tf-approvers" multiple size="4">
-              ${memberMultiOptionsHTML(_taskFormData.approvalMemberIds || [])}
-            </select>
-          </div>
-        </div>
-        <div class="task-ask-grid">
-          <div class="form-group">
-            <label class="form-label">確認ルール</label>
-            <select class="form-select" id="tf-review-rule">
-              <option value="inherit" ${(_taskFormData.reviewRule || 'inherit') === 'inherit' ? 'selected' : ''}>プロジェクト設定を使用</option>
-              <option value="all" ${_taskFormData.reviewRule === 'all' ? 'selected' : ''}>全員確認</option>
-              <option value="any" ${_taskFormData.reviewRule === 'any' ? 'selected' : ''}>誰か1人でOK</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="form-label">確認期限（日）</label>
-            <input type="number" class="form-input" id="tf-review-due-days" min="0" step="1" value="${_taskFormData.reviewDueDays ?? ''}" placeholder="未入力ならプロジェクト設定">
-          </div>
-        </div>
-        <label class="checkline">
-          <input type="checkbox" id="tf-notify-progress-manager" ${_taskFormData.notifyProgressManager === false ? '' : 'checked'}>
-          <span>確認待ちを進行管理役にも通知する</span>
-        </label>
-      </div>
-      <div class="form-help" style="margin-top:10px">下の欄は、登録時点で個別の確認依頼を残したい場合だけ使います。</div>
-      <div class="task-ask-grid">
-        <div class="form-group">
-          <label class="form-label">誰に</label>
-          <select class="form-select" id="tf-ask-to">${askMemberOpts}</select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">いつまでに</label>
-          <input type="date" class="form-input" id="tf-ask-due"
-                 value="${escHtml(linkedAskDueDate)}">
-          ${linkedAskLegacyDue ? `<div class="form-help">旧期限：${escHtml(linkedAskLegacyDue)}。保存時にカレンダーの日付へ置き換わります。</div>` : ''}
-        </div>
-      </div>
-      <div class="form-group">
-        <label class="form-label">内容</label>
-        <textarea class="form-textarea" id="tf-ask-content"
-                  placeholder="例：この画像で次工程へ進めてよいか確認してください">${escHtml(linkedAsk?.content || '')}</textarea>
       </div>
     </div>
     <div class="modal-actions">
@@ -2409,25 +2341,6 @@ function syncTaskDueDateOnly() {
   _taskFormData.displayDate = _taskFormData.displayDate || due;
 }
 
-function toggleTaskReviewCustom() {
-  const checked = Boolean(document.getElementById('tf-review-custom')?.checked);
-  const box = document.getElementById('tf-review-custom-box');
-  if (box) box.style.display = checked ? '' : 'none';
-}
-
-function readTaskReviewForm() {
-  const custom = Boolean(document.getElementById('tf-review-custom')?.checked);
-  const dueText = document.getElementById('tf-review-due-days')?.value || '';
-  return {
-    reviewConfigMode: custom ? 'custom' : 'inherit',
-    reviewerMemberIds: custom ? readMultiSelectValues('tf-reviewers') : [],
-    approvalMemberIds: custom ? readMultiSelectValues('tf-approvers') : [],
-    reviewRule: custom ? (document.getElementById('tf-review-rule')?.value || 'inherit') : 'inherit',
-    reviewDueDays: custom && dueText !== '' ? Number(dueText) : null,
-    notifyProgressManager: custom ? Boolean(document.getElementById('tf-notify-progress-manager')?.checked) : true,
-  };
-}
-
 function getTaskBaseReviewConfig(task) {
   if (!task?.projectId) return null;
   const project = DB.Projects.get(task.projectId);
@@ -2457,12 +2370,6 @@ function getTaskReviewConfig(task) {
   };
 }
 
-function taskReviewSummaryText(task) {
-  const config = getTaskReviewConfig(task);
-  const source = task?.reviewConfigMode === 'custom' ? 'このタスク専用' : 'プロジェクト・フェーズ設定を使用';
-  return `${source}：確認者 ${memberNames(config.reviewerMemberIds)} / 許可者 ${memberNames(config.approvalMemberIds)} / ${reviewRuleLabel(config.reviewRule)} / ${Number(config.reviewDueDays) || 1}日以内`;
-}
-
 async function saveTask(editId) {
   const memberId = document.getElementById('tf-member')?.value;
   const content  = document.getElementById('tf-content')?.value?.trim();
@@ -2476,17 +2383,10 @@ async function saveTask(editId) {
     durationDays: document.getElementById('tf-duration-days')?.value || _taskFormData.durationDays || 1,
   });
   const displayDate = _taskFormData.displayDate || taskDisplayDateValue(_taskFormData) || taskDate;
-  const askPayload = readTaskAskForm();
-  const reviewPayload = readTaskReviewForm();
   if (!memberId) { showToast('担当者を選択してください', 'error'); return; }
   if (!content)  { showToast('タスク内容を入力してください', 'error'); return; }
   if (!taskStartDate) { showToast('開始日を入力してください', 'error'); return; }
   if (taskStartDate > taskDate) { showToast('締切日は開始日以降の日付にしてください', 'error'); return; }
-  if (askPayload.hasAny && (!askPayload.toMemberId || !askPayload.dueText || !askPayload.content)) {
-    showToast('進行確認は「誰に」「いつまでに」「内容」を入力してください', 'error');
-    return;
-  }
-
   const before = {
     projects: DB.Projects.all().map(project => ({ ...project })),
     tasks: taskSnapshot(),
@@ -2512,7 +2412,6 @@ async function saveTask(editId) {
     estimatedHours: _taskFormData.estimatedHours || 1,
     durationDays: taskSchedule.durationDays,
     taskType: document.getElementById('tf-task-type')?.value || _taskFormData.taskType || '作業',
-    ...reviewPayload,
     sourceProjectName: _taskFormData.projectId ? '' : (_taskFormData.sourceProjectName || ''),
     needsProjectReview: _taskFormData.projectId ? false : Boolean(_taskFormData.needsProjectReview),
   };
@@ -2524,7 +2423,6 @@ async function saveTask(editId) {
   } else {
     savedTask = DB.Tasks.add(payload);
   }
-  saveTaskLinkedAsk(savedTask, askPayload);
   const ok = await DB.syncCloudStore?.();
   if (ok === false) {
     if (DB.Projects.replaceAll) DB.Projects.replaceAll(before.projects);
@@ -2542,50 +2440,6 @@ async function saveTask(editId) {
     showToast(`プロジェクトとタスクを登録しました${templateMessage}`, 'success');
   } else {
     showToast(editId ? 'タスクを更新しました' : 'タスクを追加しました', 'success');
-  }
-}
-
-function readTaskAskForm() {
-  const toMemberId = document.getElementById('tf-ask-to')?.value || '';
-  const dueDate = document.getElementById('tf-ask-due')?.value || '';
-  const content = document.getElementById('tf-ask-content')?.value?.trim() || '';
-  return {
-    toMemberId,
-    dueDate,
-    dueText: dueDate,
-    content,
-    hasAny: Boolean(toMemberId || dueDate || content),
-  };
-}
-
-function saveTaskLinkedAsk(task, askPayload) {
-  if (!task) return;
-  const existing = getTaskLinkedAsk(task.id);
-  if (!askPayload.hasAny) {
-    if (existing) DB.Asks.remove(existing.id);
-    return;
-  }
-
-  const project = task.projectId ? DB.Projects.get(task.projectId) : null;
-  const patch = {
-    type: '確認',
-    fromMemberId: task.memberId,
-    toMemberId: askPayload.toMemberId,
-    toName: '',
-    content: askPayload.content,
-    projectId: task.projectId || null,
-    projectName: project ? `${project.clientName} / ${project.name}` : '',
-    dueDate: askPayload.dueDate,
-    dueText: askPayload.dueText,
-    status: 'open',
-    date: taskDueDateValue(task),
-    taskId: task.id,
-  };
-
-  if (existing) {
-    DB.Asks.update(existing.id, patch);
-  } else {
-    DB.Asks.add(patch);
   }
 }
 

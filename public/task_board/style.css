@@ -1646,26 +1646,12 @@ body {
   background: var(--danger-lite);
   color: var(--danger);
 }
-.task-ask-box {
-  margin-top: 12px;
-  padding: 13px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: rgba(255,255,255,.035);
-}
 .task-ask-title {
   margin-bottom: 4px;
   font-size: 14px;
   font-weight: 800;
   color: var(--text-1);
 }
-.task-ask-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-top: 10px;
-}
-
 .task-schedule-box {
   margin-bottom: 18px;
   padding: 14px;
@@ -2363,7 +2349,6 @@ body {
   .sidebar { display: none; }
   .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
   .cleanup-grid { grid-template-columns: 1fr; }
-  .task-ask-grid,
   .task-date-grid { grid-template-columns: 1fr; }
   .review-answer-actions { grid-template-columns: 1fr; }
   .chatwork-import-grid { grid-template-columns: 1fr; }
