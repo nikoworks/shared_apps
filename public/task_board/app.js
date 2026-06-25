@@ -2,9 +2,13 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'プロジェクト同時登録版 2026-06-24-04';
+const APP_BUILD_LABEL = '日付一元管理版 2026-06-25-02';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
+const TASK_TYPE_GROUPS = {
+  '作業系タスク': ['作業', '依頼', '修正', '納品'],
+  '確認系タスク': ['確認', '進行許可', '差し戻し対応', '再確認'],
+};
 const JP_HOLIDAYS = new Set([
   '2026-01-01','2026-01-12','2026-02-11','2026-02-23','2026-03-20',
   '2026-04-29','2026-05-03','2026-05-04','2026-05-05','2026-05-06',
@@ -20,6 +24,28 @@ function apiUrl(path) {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   if (window.location.protocol === 'file:') return `${PUBLIC_APP_ORIGIN}${normalizedPath}`;
   return normalizedPath;
+}
+
+function taskTypeOptionsHTML(selected = '作業') {
+  const knownTypes = Object.values(TASK_TYPE_GROUPS).flat();
+  const legacyOption = selected && !knownTypes.includes(selected)
+    ? `<option value="${escHtml(selected)}" selected>${escHtml(selected)}（旧種別）</option>`
+    : '';
+  return legacyOption + Object.entries(TASK_TYPE_GROUPS).map(([label, types]) => `
+    <optgroup label="${label}">
+      ${types.map(type => `<option value="${type}" ${selected === type ? 'selected' : ''}>${type}</option>`).join('')}
+    </optgroup>
+  `).join('');
+}
+
+function askDueDateValue(ask) {
+  const value = String(ask?.dueDate || ask?.dueText || '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : '';
+}
+
+function askDueLabel(ask) {
+  const dueDate = askDueDateValue(ask);
+  return dueDate ? DB.fmtDate(dueDate) : String(ask?.dueText || '').trim();
 }
 
 function getSavedTheme() {
@@ -213,11 +239,38 @@ function taskDisplayDateValue(task) {
 function normalizeTaskDateFields(task = {}) {
   const dueDate = taskDueDateValue(task);
   const displayDate = taskDisplayDateValue(task) || dueDate || DB.today();
+  const durationDays = Math.max(1, Number(task.durationDays || 1) || 1);
+  const startDate = task.startDate || taskStartDateFromDueDate(dueDate || displayDate, durationDays);
   return {
     ...task,
     date: dueDate || displayDate,
     dueDate: dueDate || displayDate,
     displayDate,
+    startDate,
+    durationDays,
+  };
+}
+
+function canonicalTaskSchedule({
+  startDate = '',
+  dueDate = '',
+  displayDate = '',
+  durationDays = 1,
+  preferStart = false,
+} = {}) {
+  const duration = Math.max(1, Number(durationDays || 1) || 1);
+  let start = toISODate(startDate);
+  let due = toISODate(dueDate);
+  if (preferStart && start) due = taskDueDateFromStartDate(start, duration);
+  if (!start && due) start = taskStartDateFromDueDate(due, duration);
+  if (!due && start) due = taskDueDateFromStartDate(start, duration);
+  const display = toISODate(displayDate) || due || start || DB.today();
+  return {
+    startDate: start || display,
+    durationDays: duration,
+    dueDate: due || display,
+    date: due || display,
+    displayDate: display,
   };
 }
 
@@ -611,7 +664,7 @@ function renderDashIncompleteTrend(members) {
   const rows = members.map(m => {
     const streak = DB.Tasks.consecutiveIncompleteDays(m.id);
     const cells = days.map(day => {
-      const dt = allTasks.filter(t => t.memberId === m.id && t.date === day);
+      const dt = allTasks.filter(t => t.memberId === m.id && taskDisplayDateValue(t) === day);
       if (!dt.length) return `<td><span style="color:var(--text-3);font-size:11px">－</span></td>`;
       const hasIncomplete = dt.some(t => t.completed === false);
       const allDone       = dt.every(t => t.completed === true);
@@ -962,7 +1015,7 @@ function updateMorningBadge() {
    ============================================================ */
 let _taskFilter = { memberId: '', projectId: '', date: '', startDate: '', endDate: '', showCompleted: false };
 const _recentlyCompletedTaskIds = new Set();
-let _taskFormData = { memberId: '', projectId: '', phaseId: '', content: '', estimatedHours: 1, note: '', date: '' };
+let _taskFormData = { memberId: '', projectId: '', phaseId: '', content: '', estimatedHours: 1, taskType: '作業', note: '', date: '' };
 let _openTaskProjectCreateOnNextModal = false;
 let _bulkTaskData = { memberId: '', ownerMemberId: '', date: '', text: '', preview: null };
 const CHATWORK_ROOM_KEY = 'tb_chatwork_room_id';
@@ -1441,7 +1494,7 @@ function renderSharedAskPanel(selectedDate) {
     .filter(a => a.status !== 'done')
     .filter(a => !_taskFilter.memberId || a.toMemberId === _taskFilter.memberId || a.fromMemberId === _taskFilter.memberId || a.toName === '全員')
     .filter(a => !_taskFilter.projectId || a.projectId === _taskFilter.projectId)
-    .sort((a, b) => String(a.dueText || a.date || '').localeCompare(String(b.dueText || b.date || '')));
+    .sort((a, b) => String(askDueDateValue(a) || a.date || '').localeCompare(String(askDueDateValue(b) || b.date || '')));
 
   if (!asks.length) return '';
   return `
@@ -1467,7 +1520,7 @@ function askCardHTML(ask, selectedDate = DB.today()) {
           <span class="ask-type">${escHtml(ask.type || '質問')}</span>
           ${ask.date ? taskDateTagHTML(ask.date, { label: relativeDateLabel(ask.date, selectedDate) }) : ''}
           ${projectLabel ? `<span class="ask-project">${escHtml(projectLabel)}</span>` : ''}
-          ${ask.dueText ? `<span class="ask-due">期限：${escHtml(ask.dueText)}</span>` : ''}
+          ${askDueLabel(ask) ? `<span class="ask-due">期限：${escHtml(askDueLabel(ask))}</span>` : ''}
         </div>
         ${relatedTask ? `<div class="ask-related">関連タスク：${escHtml(relatedTask.content)}</div>` : ''}
         <div class="ask-content">${escHtml(ask.content)}</div>
@@ -1532,7 +1585,7 @@ function openCleanupTaskEdit(taskId) {
   openTaskModal(taskId);
 }
 
-function openTaskModal(editId) {
+function openTaskModal(editId, presetProjectId = '') {
   const members  = DB.Members.all();
   const projects = DB.Projects.active();
   if (!members.length) {
@@ -1545,14 +1598,16 @@ function openTaskModal(editId) {
     const t = DB.Tasks.get(editId);
     if (t) _taskFormData = normalizeTaskDateFields(t);
   } else {
+    const presetProject = presetProjectId ? DB.Projects.get(presetProjectId) : null;
     _taskFormData = {
       memberId: _taskFilter.memberId || _personalMemberId || '',
-      projectId: '',
+      projectId: presetProject?.id || '',
       phaseId: '',
       content: '',
       estimatedHours: 1,
+      taskType: '作業',
       durationDays: 1,
-      startDate: '',
+      startDate: getTaskDefaultDate(),
       reviewConfigMode: 'inherit',
       reviewerMemberIds: [],
       approvalMemberIds: [],
@@ -1563,6 +1618,7 @@ function openTaskModal(editId) {
       date: getTaskDefaultDate(),
       dueDate: getTaskDefaultDate(),
       displayDate: getTaskDefaultDate(),
+      projectKindFilter: presetProject?.projectType === 'recurring' ? 'recurring' : (presetProject ? 'standard' : 'all'),
     };
   }
   if (!_taskFormData.projectKindFilter) {
@@ -1578,6 +1634,8 @@ function openTaskModal(editId) {
     curPhases.map(ph =>
       `<option value="${ph.id}" ${_taskFormData.phaseId === ph.id ? 'selected' : ''}>${ph.name}</option>`).join('');
   const linkedAsk = editId ? getTaskLinkedAsk(editId) : null;
+  const linkedAskDueDate = askDueDateValue(linkedAsk);
+  const linkedAskLegacyDue = linkedAsk?.dueText && !linkedAskDueDate ? linkedAsk.dueText : '';
   const askMemberOpts = `<option value="">宛先を選択...</option>` + members.map(m =>
     `<option value="${m.id}" ${linkedAsk?.toMemberId === m.id ? 'selected' : ''}>${m.name}</option>`).join('');
   const taskReviewMode = _taskFormData.reviewConfigMode === 'custom' ? 'custom' : 'inherit';
@@ -1628,18 +1686,36 @@ function openTaskModal(editId) {
       </select>
     </div>
     <div class="form-group">
-      <label class="form-label">締切日（この日までに完了） *</label>
-      <input type="date" class="form-input" id="tf-date"
-             value="${formDueDate}"
-             onchange="_taskFormData.date=this.value;syncTaskStartDateFromDue()">
-      ${workDateHelp}
+      <label class="form-label">タスク種別 *</label>
+      <select class="form-select" id="tf-task-type" onchange="_taskFormData.taskType=this.value">
+        ${taskTypeOptionsHTML(_taskFormData.taskType || '作業')}
+      </select>
+      <div class="form-help">実際に手を動かすものは作業系、判断・承認を行うものは確認系を選びます。</div>
     </div>
-    <div class="form-group">
-      <label class="form-label">開始日</label>
-      <input type="date" class="form-input" id="tf-start-date"
-             value="${_taskFormData.startDate || ''}"
-             onchange="_taskFormData.startDate=this.value">
-      <div class="form-help">締切日と遂行期間から自動計算されます。必要なら手で修正できます。</div>
+    <div class="task-schedule-box">
+      <div class="task-schedule-title">タスク日程</div>
+      <div class="task-date-grid">
+        <div class="form-group">
+          <label class="form-label">開始日 *</label>
+          <input type="date" class="form-input" id="tf-start-date"
+                 value="${_taskFormData.startDate || ''}"
+                 onchange="_taskFormData.startDate=this.value;syncTaskDueDateFromStart()">
+        </div>
+        <div class="form-group">
+          <label class="form-label">遂行期間（営業日）</label>
+          <input type="number" class="form-input" id="tf-duration-days" min="1" step="1"
+                 value="${Number(_taskFormData.durationDays || 1)}"
+                 onchange="_taskFormData.durationDays=Math.max(1, Number(this.value || 1) || 1);syncTaskDueDateFromStart()">
+        </div>
+        <div class="form-group">
+          <label class="form-label">締切日 *</label>
+          <input type="date" class="form-input" id="tf-date"
+                 value="${formDueDate}"
+                 onchange="syncTaskDueDateOnly()">
+        </div>
+      </div>
+      <div class="form-help">開始日と遂行期間から締切日を自動計算します。締切日だけを手で変更しても、開始日は変わりません。</div>
+      ${workDateHelp}
     </div>
     <div class="form-group">
       <label class="form-label">タスク内容 *</label>
@@ -1660,13 +1736,6 @@ function openTaskModal(editId) {
         <span class="hours-display" id="tf-hours-display">${_taskFormData.estimatedHours || 1}h</span>
         <button class="hours-btn" onclick="stepHours(0.25)" type="button">＋</button>
       </div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">遂行期間（日）</label>
-      <input type="number" class="form-input" id="tf-duration-days" min="1" step="1"
-             value="${Number(_taskFormData.durationDays || 1)}"
-             onchange="_taskFormData.durationDays=Math.max(1, Number(this.value || 1) || 1);syncTaskStartDateFromDue()">
-      <div class="form-help">締切日までに遂行するための営業日数です。負荷計算では、予定時間をこの期間に按分します。</div>
     </div>
     <div class="task-ask-box">
       <div class="task-ask-title">進行に関わる確認</div>
@@ -1718,9 +1787,9 @@ function openTaskModal(editId) {
         </div>
         <div class="form-group">
           <label class="form-label">いつまでに</label>
-          <input type="text" class="form-input" id="tf-ask-due"
-                 value="${escHtml(linkedAsk?.dueText || '')}"
-                 placeholder="例：今日中 / 5/29 / 午前中">
+          <input type="date" class="form-input" id="tf-ask-due"
+                 value="${escHtml(linkedAskDueDate)}">
+          ${linkedAskLegacyDue ? `<div class="form-help">旧期限：${escHtml(linkedAskLegacyDue)}。保存時にカレンダーの日付へ置き換わります。</div>` : ''}
         </div>
       </div>
       <div class="form-group">
@@ -1997,7 +2066,7 @@ function createProjectFromTaskInline() {
     dealCategory: document.getElementById('qpj-deal-category')?.value || 'existing',
     leadSource: document.getElementById('qpj-lead-source')?.value || '',
     leadSourceDetail: document.getElementById('qpj-lead-source-detail')?.value?.trim() || '',
-    startDate: taskDueDateValue(_taskFormData) || DB.today(),
+    startDate: _taskFormData.startDate || taskDueDateValue(_taskFormData) || DB.today(),
     createdByMemberId: _personalMemberId || ownerMemberId || getDefaultCreatorMemberId(),
     ownerMemberId,
     isProvisional: false,
@@ -2026,17 +2095,24 @@ function stepHours(delta) {
   if (disp) disp.textContent = `${_taskFormData.estimatedHours}h`;
 }
 
-function syncTaskStartDateFromDue() {
-  const due = document.getElementById('tf-date')?.value || taskDueDateValue(_taskFormData) || DB.today();
+function syncTaskDueDateFromStart() {
+  const start = document.getElementById('tf-start-date')?.value || _taskFormData.startDate || DB.today();
   const durationDays = Math.max(1, Number(document.getElementById('tf-duration-days')?.value || _taskFormData.durationDays || 1) || 1);
-  const start = taskStartDateFromDueDate(due, durationDays);
+  const due = taskDueDateFromStartDate(start, durationDays);
+  _taskFormData.startDate = start;
   _taskFormData.date = due;
   _taskFormData.dueDate = due;
   _taskFormData.displayDate = _taskFormData.displayDate || due;
   _taskFormData.durationDays = durationDays;
-  _taskFormData.startDate = start;
-  const startEl = document.getElementById('tf-start-date');
-  if (startEl) startEl.value = start;
+  const dueEl = document.getElementById('tf-date');
+  if (dueEl) dueEl.value = due;
+}
+
+function syncTaskDueDateOnly() {
+  const due = document.getElementById('tf-date')?.value || taskDueDateValue(_taskFormData) || DB.today();
+  _taskFormData.date = due;
+  _taskFormData.dueDate = due;
+  _taskFormData.displayDate = _taskFormData.displayDate || due;
 }
 
 function toggleTaskReviewCustom() {
@@ -2098,11 +2174,20 @@ async function saveTask(editId) {
   const content  = document.getElementById('tf-content')?.value?.trim();
   const note     = document.getElementById('tf-note')?.value?.trim() || '';
   const taskDate = document.getElementById('tf-date')?.value || DB.today();
+  const taskStartDate = document.getElementById('tf-start-date')?.value || '';
+  const taskSchedule = canonicalTaskSchedule({
+    startDate: taskStartDate,
+    dueDate: taskDate,
+    displayDate: _taskFormData.displayDate || taskDisplayDateValue(_taskFormData),
+    durationDays: document.getElementById('tf-duration-days')?.value || _taskFormData.durationDays || 1,
+  });
   const displayDate = _taskFormData.displayDate || taskDisplayDateValue(_taskFormData) || taskDate;
   const askPayload = readTaskAskForm();
   const reviewPayload = readTaskReviewForm();
   if (!memberId) { showToast('担当者を選択してください', 'error'); return; }
   if (!content)  { showToast('タスク内容を入力してください', 'error'); return; }
+  if (!taskStartDate) { showToast('開始日を入力してください', 'error'); return; }
+  if (taskStartDate > taskDate) { showToast('締切日は開始日以降の日付にしてください', 'error'); return; }
   if (askPayload.hasAny && (!askPayload.toMemberId || !askPayload.dueText || !askPayload.content)) {
     showToast('進行確認は「誰に」「いつまでに」「内容」を入力してください', 'error');
     return;
@@ -2126,12 +2211,13 @@ async function saveTask(editId) {
     phaseId:   _taskFormData.phaseId   || null,
     content,
     note,
-    date: taskDate,
-    dueDate: taskDate,
-    displayDate,
-    startDate: document.getElementById('tf-start-date')?.value || taskStartDateFromDueDate(taskDate, document.getElementById('tf-duration-days')?.value || _taskFormData.durationDays || 1),
+    date: taskSchedule.date,
+    dueDate: taskSchedule.dueDate,
+    displayDate: displayDate || taskSchedule.displayDate,
+    startDate: taskSchedule.startDate,
     estimatedHours: _taskFormData.estimatedHours || 1,
-    durationDays: Math.max(1, Number(document.getElementById('tf-duration-days')?.value || _taskFormData.durationDays || 1) || 1),
+    durationDays: taskSchedule.durationDays,
+    taskType: document.getElementById('tf-task-type')?.value || _taskFormData.taskType || '作業',
     ...reviewPayload,
     sourceProjectName: _taskFormData.projectId ? '' : (_taskFormData.sourceProjectName || ''),
     needsProjectReview: _taskFormData.projectId ? false : Boolean(_taskFormData.needsProjectReview),
@@ -2167,13 +2253,14 @@ async function saveTask(editId) {
 
 function readTaskAskForm() {
   const toMemberId = document.getElementById('tf-ask-to')?.value || '';
-  const dueText = document.getElementById('tf-ask-due')?.value?.trim() || '';
+  const dueDate = document.getElementById('tf-ask-due')?.value || '';
   const content = document.getElementById('tf-ask-content')?.value?.trim() || '';
   return {
     toMemberId,
-    dueText,
+    dueDate,
+    dueText: dueDate,
     content,
-    hasAny: Boolean(toMemberId || dueText || content),
+    hasAny: Boolean(toMemberId || dueDate || content),
   };
 }
 
@@ -2194,6 +2281,7 @@ function saveTaskLinkedAsk(task, askPayload) {
     content: askPayload.content,
     projectId: task.projectId || null,
     projectName: project ? `${project.clientName} / ${project.name}` : '',
+    dueDate: askPayload.dueDate,
     dueText: askPayload.dueText,
     status: 'open',
     date: taskDueDateValue(task),
@@ -2559,6 +2647,12 @@ function saveParsedChatworkTasks(taskParsed, memberId, date, ownerMemberId, opti
 
     (group.tasks || []).forEach(task => {
       const taskDate = task.date || date;
+      const schedule = canonicalTaskSchedule({
+        startDate: taskDate,
+        dueDate: taskDate,
+        displayDate: taskDate,
+        durationDays: 1,
+      });
       const sourceProjectName = project ? '' : (group.projectName || '');
       if (options.recovery && chatworkTaskExists({
         memberId,
@@ -2576,9 +2670,7 @@ function saveParsedChatworkTasks(taskParsed, memberId, date, ownerMemberId, opti
         phaseId: null,
         content: task.content,
         note: buildInputTaskNote(task.note, group.projectName, project),
-        date: taskDate,
-        dueDate: taskDate,
-        displayDate: taskDate,
+        ...schedule,
         estimatedHours: task.hours,
         sourceProjectName,
         needsProjectReview: Boolean(group.projectName && !project),
@@ -2676,15 +2768,19 @@ async function saveBulkTasks() {
 
     group.tasks.forEach(task => {
       const taskDate = task.date || date;
+      const schedule = canonicalTaskSchedule({
+        startDate: taskDate,
+        dueDate: taskDate,
+        displayDate: taskDate,
+        durationDays: 1,
+      });
       DB.Tasks.add({
         memberId,
         projectId: project?.id || null,
         phaseId: null,
         content: task.content,
         note: buildInputTaskNote(task.note, group.projectName, project),
-        date: taskDate,
-        dueDate: taskDate,
-        displayDate: taskDate,
+        ...schedule,
         estimatedHours: task.hours,
         sourceProjectName: project ? '' : (group.projectName || ''),
         needsProjectReview: Boolean(group.projectName && !project),
@@ -3903,6 +3999,13 @@ function taskStartDateFromDueDate(dueDate, durationDays = 1) {
   return addBusinessDays(safeDue, -(days - 1));
 }
 
+function taskDueDateFromStartDate(startDate, durationDays = 1) {
+  const safeStart = toISODate(startDate);
+  if (!safeStart) return '';
+  const days = Math.max(1, Number(durationDays || 1) || 1);
+  return addBusinessDays(safeStart, days - 1);
+}
+
 function taskScheduleBounds(task) {
   const due = toISODate(taskDueDateValue(task));
   const durationDays = Math.max(1, Number(task?.durationDays || 1) || 1);
@@ -4367,12 +4470,12 @@ function openProjectTasksModal(projectId) {
     .filter(t => t.projectId === projectId)
     .sort((a, b) => {
       if ((a.completed === true) !== (b.completed === true)) return a.completed === true ? 1 : -1;
-      return String(b.date || '').localeCompare(String(a.date || ''));
+      return String(taskDueDateValue(b)).localeCompare(String(taskDueDateValue(a)));
     });
   const tasks = collapseTaskDisplayDuplicates(rawTasks)
     .sort((a, b) => {
       if ((a.completed === true) !== (b.completed === true)) return a.completed === true ? 1 : -1;
-      return String(sourceDateForTask(a) || a.date || '').localeCompare(String(sourceDateForTask(b) || b.date || ''));
+      return String(sourceDateForTask(a) || taskDueDateValue(a)).localeCompare(String(sourceDateForTask(b) || taskDueDateValue(b)));
     });
   const totalH = tasks.reduce((sum, task) => sum + (Number(task.estimatedHours) || 0), 0);
   const doneCount = tasks.filter(t => t.completed === true).length;
@@ -4394,7 +4497,7 @@ function openProjectTasksModal(projectId) {
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal()">閉じる</button>
-      <button class="btn btn-primary" onclick="openTaskModal(null)">タスクを追加</button>
+      <button class="btn btn-primary" onclick="openTaskModal(null, '${projectId}')">タスクを追加</button>
     </div>
   `, title);
 }
@@ -5039,6 +5142,20 @@ function templateScheduleRows(templateId, deliveryDate) {
   }));
 }
 
+function syncTemplateTaskDraftDue(input) {
+  const row = input?.closest?.('.template-task-draft');
+  if (!row) return;
+  const startEl = row.querySelector('.tpl-task-start');
+  const durationEl = row.querySelector('.tpl-task-duration');
+  const dueEl = row.querySelector('.tpl-task-date');
+  const schedule = canonicalTaskSchedule({
+    startDate: startEl?.value || '',
+    durationDays: durationEl?.value || 1,
+    preferStart: true,
+  });
+  if (dueEl) dueEl.value = schedule.dueDate;
+}
+
 function renderTemplatePreviewForForm(options = {}) {
   const {
     previewId = 'pj-template-preview',
@@ -5072,14 +5189,14 @@ function renderTemplatePreviewForForm(options = {}) {
       </label>
       <input class="form-input tpl-task-content" value="${escHtml(task.content)}" aria-label="タスク名">
       <select class="form-select tpl-task-type" aria-label="種別">
-        ${['作業','依頼','確認','待ち','修正','連絡','納品'].map(type =>
-          `<option value="${type}" ${(task.type || '作業') === type ? 'selected' : ''}>${type}</option>`).join('')}
+        ${taskTypeOptionsHTML(task.type || '作業')}
       </select>
       <select class="form-select tpl-task-member" aria-label="担当">
         ${memberOptionsHTML(task.defaultMemberId || '', true)}
       </select>
+      <input type="date" class="form-input tpl-task-start" value="${deliveryDate ? escHtml(task.startDate) : ''}" aria-label="開始日" oninput="syncTemplateTaskDraftDue(this)">
+      <input type="number" class="form-input tpl-task-duration" min="1" step="1" value="${Number(task.durationDays || 1)}" aria-label="遂行期間（日）" oninput="syncTemplateTaskDraftDue(this)">
       <input type="date" class="form-input tpl-task-date" value="${deliveryDate ? escHtml(task.dueDate) : ''}" aria-label="締切日">
-      <input type="number" class="form-input tpl-task-duration" min="1" step="1" value="${Number(task.durationDays || 1)}" aria-label="遂行期間（日）">
       <input type="number" class="form-input tpl-task-hours" min="0.25" step="0.25" value="${Number(task.hours || 1)}" aria-label="工数">
       <small>${escHtml(task.phase || 'フェーズなし')}</small>
     </div>`).join('');
@@ -5091,7 +5208,7 @@ function renderTemplatePreviewForForm(options = {}) {
     <div class="template-preview-phases">${phasePills}</div>
     ${deliveryDate ? '' : '<div class="form-help">納品日を入れると締切日を表示します。</div>'}
     <div class="template-preview-list">${previewRows}</div>
-    <div class="form-help">不要なタスクはチェックを外せます。タスク名・種別・締切日・遂行期間・工数は登録前に修正できます。</div>`;
+    <div class="form-help">不要なタスクはチェックを外せます。開始日と遂行期間を変えると締切日を再計算します。締切日だけを変更しても開始日は変わりません。</div>`;
 }
 
 function renderProjectTemplatePreview() {
@@ -5111,16 +5228,23 @@ function readTemplateTaskDrafts(templateId, deliveryDate, previewSelector = '#pj
   if (!rows.length) return templateScheduleRows(templateId, deliveryDate);
   return rows
     .filter(row => row.querySelector('.tpl-task-enabled')?.checked)
-    .map(row => ({
-      phase: row.dataset.phase || '',
-      content: row.querySelector('.tpl-task-content')?.value?.trim() || '',
-      type: row.querySelector('.tpl-task-type')?.value || '作業',
-      defaultMemberId: row.querySelector('.tpl-task-member')?.value || '',
-      dueDate: row.querySelector('.tpl-task-date')?.value || '',
-      durationDays: Math.max(1, Number(row.querySelector('.tpl-task-duration')?.value || 1) || 1),
-      startDate: taskStartDateFromDueDate(row.querySelector('.tpl-task-date')?.value || '', row.querySelector('.tpl-task-duration')?.value || 1),
-      hours: Number(row.querySelector('.tpl-task-hours')?.value || 1) || 1,
-    }))
+    .map(row => {
+      const schedule = canonicalTaskSchedule({
+        startDate: row.querySelector('.tpl-task-start')?.value || '',
+        dueDate: row.querySelector('.tpl-task-date')?.value || '',
+        durationDays: row.querySelector('.tpl-task-duration')?.value || 1,
+      });
+      return {
+        phase: row.dataset.phase || '',
+        content: row.querySelector('.tpl-task-content')?.value?.trim() || '',
+        type: row.querySelector('.tpl-task-type')?.value || '作業',
+        defaultMemberId: row.querySelector('.tpl-task-member')?.value || '',
+        dueDate: schedule.dueDate,
+        durationDays: schedule.durationDays,
+        startDate: schedule.startDate,
+        hours: Number(row.querySelector('.tpl-task-hours')?.value || 1) || 1,
+      };
+    })
     .filter(task => task.content);
 }
 
@@ -5133,17 +5257,19 @@ function createTemplateTasksForProject(project, templateId, fallbackMemberId, ta
   tasks.forEach(task => {
     const phase = phaseByName.get(task.phase);
     const dueDate = task.dueDate || templateTaskDueDate(project.deliveryDate, task.offset) || project.deliveryDate || DB.today();
+    const schedule = canonicalTaskSchedule({
+      startDate: task.startDate,
+      dueDate,
+      displayDate: dueDate,
+      durationDays: task.durationDays || 1,
+    });
     DB.Tasks.add({
       memberId: task.defaultMemberId || fallbackMemberId,
       projectId: project.id,
       phaseId: phase?.id || null,
       content: task.content,
       estimatedHours: task.hours || 1,
-      durationDays: task.durationDays || 1,
-      startDate: task.startDate || taskStartDateFromDueDate(dueDate, task.durationDays || 1),
-      date: dueDate,
-      dueDate,
-      displayDate: dueDate,
+      ...schedule,
       taskType: task.type || '作業',
       reviewConfigMode: task.reviewConfigMode === 'custom' ? 'custom' : 'inherit',
       reviewerMemberIds: asArray(task.reviewerMemberIds),
@@ -5640,7 +5766,7 @@ function analyzeDataIssues() {
 
   const missingProjectTasks = groupCleanupMissingProjectTasks(tasks
     .filter(t => !t.projectId || !projectIds.has(t.projectId) || t.needsProjectReview)
-    .sort((a, b) => String(b.date || '').localeCompare(String(a.date || ''))));
+    .sort((a, b) => String(taskDisplayDateValue(b)).localeCompare(String(taskDisplayDateValue(a)))));
 
   const carryoverIssues = [];
   tasks.forEach(task => {
@@ -6264,10 +6390,11 @@ async function mergeCleanupDuplicateTasks(taskIdsText, keepTaskId) {
   const doneCount = tasks.filter(task => task.completed === true).length;
   const openCount = tasks.length - doneCount;
   const warning = doneCount ? `\n完了済み ${doneCount}件、未完了 ${openCount}件が含まれています。` : '';
-  if (!confirm(`${tasks.length}件の同じタスクを1件に統合します。${warning}\n残すタスク：${target.content || '未入力タスク'}\n日付：${target.date ? DB.fmtDate(target.date) : '未設定'}\nよろしいですか？`)) return;
+  const targetDisplayDate = taskDisplayDateValue(target);
+  if (!confirm(`${tasks.length}件の同じタスクを1件に統合します。${warning}\n残すタスク：${target.content || '未入力タスク'}\n表示日：${targetDisplayDate ? DB.fmtDate(targetDisplayDate) : '未設定'}\nよろしいですか？`)) return;
 
   DB.Tasks.update(target.id, {
-    date: target.completed === true ? target.date : DB.today(),
+    displayDate: target.completed === true ? targetDisplayDate : DB.today(),
     originalDate,
     carriedFromTaskId: null,
     carriedOverToTaskId: null,
@@ -6752,8 +6879,7 @@ function tplTaskRow(task = {}, i = 0, phases = getTemplatePhases()) {
       <input class="form-input tpl-task-content-edit" placeholder="タスク名" value="${escHtml(task.content || '')}">
       <select class="form-select tpl-task-phase-edit">${templatePhaseOptionsHTML(phase, phases)}</select>
       <select class="form-select tpl-task-type-edit">
-        ${['作業','依頼','確認','待ち','修正','連絡','納品'].map(item =>
-          `<option value="${item}" ${type === item ? 'selected' : ''}>${item}</option>`).join('')}
+        ${taskTypeOptionsHTML(type)}
       </select>
       <select class="form-select tpl-task-member-edit">${memberOptionsHTML(task.defaultMemberId || '', true)}</select>
       <input type="number" class="form-input tpl-task-offset-edit" value="${Number(task.offset || 0)}" title="納品日からの営業日" aria-label="営業日前" placeholder="営業日前" step="1">

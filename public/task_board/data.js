@@ -868,7 +868,7 @@ const Asks = {
   all() { return load(KEYS.ASKS) ?? []; },
   add({
     type = '質問', fromMemberId = '', toMemberId = '', toName = '',
-    content, projectId = null, projectName = '', dueText = '', status = 'open',
+    content, projectId = null, projectName = '', dueDate = '', dueText = '', status = 'open',
     date = today(), taskId = null,
   }) {
     const list = this.all();
@@ -882,7 +882,8 @@ const Asks = {
       projectId,
       projectName,
       taskId,
-      dueText,
+      dueDate: dueDate || (/^\d{4}-\d{2}-\d{2}$/.test(dueText) ? dueText : ''),
+      dueText: dueText || dueDate,
       status,
       date,
       createdAt: new Date().toISOString(),

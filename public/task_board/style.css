@@ -1647,6 +1647,31 @@ body {
   gap: 10px;
   margin-top: 10px;
 }
+
+.task-schedule-box {
+  margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-glass);
+}
+
+.task-schedule-title {
+  margin-bottom: 10px;
+  color: var(--text-1);
+  font-weight: 800;
+}
+
+.task-date-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, .7fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.task-date-grid .form-group {
+  margin-bottom: 6px;
+}
 .chatwork-import-box {
   margin-bottom: 14px;
   padding: 13px;
@@ -2136,7 +2161,7 @@ body {
 }
 .template-preview-row {
   display: grid;
-  grid-template-columns: auto minmax(180px, 1fr) 92px 130px 145px 68px 72px minmax(90px, auto);
+  grid-template-columns: auto minmax(180px, 1fr) 92px 130px 140px 68px 140px 72px minmax(90px, auto);
   gap: 8px;
   align-items: center;
   padding: 7px 8px;
@@ -2320,7 +2345,8 @@ body {
   .sidebar { display: none; }
   .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
   .cleanup-grid { grid-template-columns: 1fr; }
-  .task-ask-grid { grid-template-columns: 1fr; }
+  .task-ask-grid,
+  .task-date-grid { grid-template-columns: 1fr; }
   .chatwork-import-grid { grid-template-columns: 1fr; }
   .page-header, .page-body { padding-inline: 16px; }
 }
