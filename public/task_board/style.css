@@ -621,10 +621,10 @@ body {
 }
 .tpl-task-header {
   display: grid;
-  grid-template-columns: 28px minmax(180px, 1fr) 130px 82px 130px 86px 68px 68px 32px 32px 32px 32px 32px;
+  grid-template-columns: 28px minmax(180px, 1fr) 130px 82px 130px 86px 68px 68px 92px 32px 32px 32px 32px 32px;
   gap: 6px;
   align-items: center;
-  min-width: 1120px;
+  min-width: 1200px;
   padding: 0 7px 2px;
   color: var(--text-3);
   font-size: 11px;
@@ -636,10 +636,10 @@ body {
 }
 .tpl-task-row {
   display: grid;
-  grid-template-columns: 28px minmax(180px, 1fr) 130px 82px 130px 86px 68px 68px 32px 32px 32px 32px 32px;
+  grid-template-columns: 28px minmax(180px, 1fr) 130px 82px 130px 86px 68px 68px 92px 32px 32px 32px 32px 32px;
   gap: 6px;
   align-items: center;
-  min-width: 1120px;
+  min-width: 1200px;
   padding: 7px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -665,6 +665,21 @@ body {
   min-width: 0;
   font-size: 12px;
   padding: 6px 8px;
+}
+.tpl-task-dependency-edit,
+.template-preview-dependency {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.tpl-task-dependency-edit input,
+.template-preview-dependency input {
+  width: auto;
 }
 
 /* ─── Progress Bar ───────────────────────────────────────── */
@@ -892,6 +907,88 @@ body {
   grid-template-columns: repeat(4, minmax(120px, 1fr));
   gap: 12px;
   margin-bottom: 14px;
+}
+.gantt-editor {
+  margin-bottom: 16px;
+  padding: 16px;
+}
+.gantt-editor > span {
+  display: block;
+  margin-top: 5px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.gantt-editor-head,
+.gantt-dependency-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.gantt-editor-head > div {
+  display: grid;
+  gap: 3px;
+}
+.gantt-editor-head > div > span {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.gantt-editor-head > div > strong {
+  color: var(--text-1);
+}
+.gantt-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 14px 0;
+}
+.gantt-dependency-legend {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 14px;
+  color: var(--text-3);
+  font-size: 11px;
+}
+.gantt-dependency-legend span {
+  border-radius: 999px;
+  padding: 4px 9px;
+  color: #fff;
+  font-weight: 800;
+}
+.gantt-dependency-legend .before { background: var(--warning); }
+.gantt-dependency-legend .selected { background: var(--primary); }
+.gantt-dependency-legend .after { background: var(--success); }
+.gantt-dependency-title .form-select {
+  width: auto;
+  min-width: 210px;
+}
+.gantt-dependency-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 7px;
+  margin-top: 10px;
+}
+.gantt-dependency-option {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-glass);
+  cursor: pointer;
+}
+.gantt-dependency-option.disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+.gantt-dependency-option span {
+  display: grid;
+  gap: 2px;
+}
+.gantt-dependency-option small {
+  color: var(--text-3);
 }
 .gantt-load-panel {
   padding: 14px;
@@ -1186,6 +1283,10 @@ body {
   border-color: rgba(99,102,241,.45);
   background: rgba(99,102,241,.08);
 }
+.gantt-phase-task.selected {
+  border-color: var(--primary);
+  background: rgba(99,102,241,.14);
+}
 .gantt-phase-task-title {
   color: var(--text-1);
   font-weight: 800;
@@ -1251,6 +1352,31 @@ body {
   background: rgba(255,255,255,.78);
   border-color: rgba(255,255,255,.35);
   box-shadow: 0 3px 8px rgba(0,0,0,.18);
+}
+.gantt-bar-task {
+  appearance: none;
+  border: 0;
+  cursor: pointer;
+}
+.gantt-bar-task.blocked {
+  background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.24) 0 3px, transparent 3px 7px);
+}
+.gantt-bar-task.dependency-selected {
+  z-index: 5;
+  box-shadow: 0 0 0 3px rgba(99,102,241,.45);
+}
+.gantt-bar-task.dependency-before {
+  z-index: 4;
+  background: var(--warning);
+  box-shadow: 0 0 0 2px rgba(245,158,11,.28);
+}
+.gantt-bar-task.dependency-after {
+  z-index: 4;
+  background: var(--success);
+  box-shadow: 0 0 0 2px rgba(34,197,94,.25);
+}
+.gantt-bar-task.dependency-muted {
+  opacity: .22;
 }
 .gantt-bar-task.active {
   background: rgba(56,189,248,.95);
@@ -2165,7 +2291,7 @@ body {
 }
 .template-preview-row {
   display: grid;
-  grid-template-columns: auto minmax(180px, 1fr) 92px 130px 140px 68px 140px 72px minmax(90px, auto);
+  grid-template-columns: auto minmax(180px, 1fr) 92px 130px 140px 68px 140px 72px 76px minmax(90px, auto);
   gap: 8px;
   align-items: center;
   padding: 7px 8px;
@@ -2350,6 +2476,16 @@ body {
   .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
   .cleanup-grid { grid-template-columns: 1fr; }
   .task-date-grid { grid-template-columns: 1fr; }
+  .gantt-editor-head,
+  .gantt-dependency-title {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .gantt-dependency-title .form-select {
+    width: 100%;
+    min-width: 0;
+  }
+  .gantt-dependency-list { grid-template-columns: 1fr; }
   .review-answer-actions { grid-template-columns: 1fr; }
   .chatwork-import-grid { grid-template-columns: 1fr; }
   .page-header, .page-body { padding-inline: 16px; }

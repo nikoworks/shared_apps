@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '確認タスク整理版 2026-06-26-03';
+const APP_BUILD_LABEL = 'ガント工程編集試用版 2026-06-26-04';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const TASK_TYPE_GROUPS = {
@@ -981,6 +981,8 @@ function morningTaskRow(task) {
 }
 
 async function markTaskComplete(taskId) {
+  const targetTask = DB.Tasks.get(taskId);
+  if (targetTask?.completed !== true && !ensureTaskDependenciesComplete(targetTask)) return;
   const before = taskSnapshot();
   const beforeAsks = DB.Asks.all().map(ask => ({ ...ask }));
   const beforeProjects = DB.Projects.all().map(project => ({ ...project }));
@@ -1414,6 +1416,7 @@ function reviewTaskControlHTML(task) {
 function openReviewAnswerModal(taskId) {
   const task = DB.Tasks.get(taskId);
   if (!task || !isReviewTask(task)) return;
+  if (!ensureTaskDependenciesComplete(task)) return;
   const labels = reviewTaskAnswerLabels(task.taskType);
   const resultSummary = task.resultStatus
     ? `<div class="task-review-summary">現在の回答：${escHtml(task.resultStatus === 'ok' ? labels.ok : task.resultStatus === 'rejected' ? labels.reject : '保留')}</div>`
@@ -1525,6 +1528,8 @@ async function submitReviewRejection(taskId) {
     reviewTaskId: task.id,
     generatedByWorkflow: true,
     reservedReviewDueDate,
+    dependencyTaskIds: [task.id],
+    dependencyMode: 'all',
     ...schedule,
   });
   const adjustment = adjustProjectScheduleAfterExtension({
@@ -1667,6 +1672,13 @@ async function toggleTodayTaskCompleteGroup(taskIdsText) {
   const beforeAsks = DB.Asks.all().map(ask => ({ ...ask }));
   const beforeProjects = DB.Projects.all().map(project => ({ ...project }));
   const nextCompleted = mainTask.completed === true ? null : true;
+  if (nextCompleted === true) {
+    const blockedTask = taskIds.map(id => DB.Tasks.get(id)).find(item => item && !taskDependenciesComplete(item));
+    if (blockedTask) {
+      ensureTaskDependenciesComplete(blockedTask);
+      return;
+    }
+  }
   taskIds.forEach(taskId => DB.Tasks.setCompletion(taskId, nextCompleted, ''));
   if (nextCompleted === true) {
     createReviewAsksForCompletedTasks(taskIds);
@@ -1746,13 +1758,13 @@ function renderMemberAskPanel(memberId) {
     <div class="ask-panel">
       ${toMe.length ? `
         <div class="ask-section">
-          <div class="ask-section-title">あなた宛の進行確認</div>
+          <div class="ask-section-title">あなた宛の通知・お願い</div>
           ${toMe.map(askCardHTML).join('')}
         </div>
       ` : ''}
       ${fromMe.length ? `
         <div class="ask-section">
-          <div class="ask-section-title">自分が出した進行確認</div>
+          <div class="ask-section-title">自分が出した通知・お願い</div>
           ${fromMe.map(askCardHTML).join('')}
         </div>
       ` : ''}
@@ -1770,8 +1782,8 @@ function renderSharedAskPanel(selectedDate) {
   return `
     <div class="ask-panel ask-panel-shared">
       <div class="ask-section">
-        <div class="ask-section-title">共有確認・お願い</div>
-        <div class="form-help">進行に関わる確認だけをここに残します。作業上の細かい相談は個別に確認してください。</div>
+        <div class="ask-section-title">進行通知・お願い</div>
+        <div class="form-help">確認開始、進行許可、日程変更などの通知を表示します。実際の確認作業は確認系タスクで管理します。</div>
         ${asks.map(ask => askCardHTML(ask, selectedDate)).join('')}
       </div>
     </div>`;
@@ -2383,6 +2395,7 @@ async function saveTask(editId) {
     durationDays: document.getElementById('tf-duration-days')?.value || _taskFormData.durationDays || 1,
   });
   const displayDate = _taskFormData.displayDate || taskDisplayDateValue(_taskFormData) || taskDate;
+  const existingTask = editId ? DB.Tasks.get(editId) : null;
   if (!memberId) { showToast('担当者を選択してください', 'error'); return; }
   if (!content)  { showToast('タスク内容を入力してください', 'error'); return; }
   if (!taskStartDate) { showToast('開始日を入力してください', 'error'); return; }
@@ -2412,6 +2425,10 @@ async function saveTask(editId) {
     estimatedHours: _taskFormData.estimatedHours || 1,
     durationDays: taskSchedule.durationDays,
     taskType: document.getElementById('tf-task-type')?.value || _taskFormData.taskType || '作業',
+    dependencyTaskIds: existingTask?.projectId === (_taskFormData.projectId || null)
+      ? taskDependencyIds(existingTask)
+      : [],
+    dependencyMode: existingTask?.dependencyMode === 'any' ? 'any' : 'all',
     sourceProjectName: _taskFormData.projectId ? '' : (_taskFormData.sourceProjectName || ''),
     needsProjectReview: _taskFormData.projectId ? false : Boolean(_taskFormData.needsProjectReview),
   };
@@ -3671,6 +3688,8 @@ let _ganttFilter = {
   startDate: '',
   endDate: '',
 };
+let _ganttEditMode = false;
+let _ganttSelectedTaskId = '';
 
 function renderGantt() {
   const main = document.getElementById('main-content');
@@ -3708,6 +3727,9 @@ function renderGantt() {
         <h2>ガント</h2>
         <p>クライアント別・定期案件別にプロジェクトとフェーズの流れを確認します</p>
       </div>
+      <button class="btn ${_ganttEditMode ? 'btn-primary' : 'btn-ghost'}" onclick="toggleGanttEditMode()">
+        ${_ganttEditMode ? '工程編集を終了' : '工程を編集'}
+      </button>
     </div>
     <div class="page-body fade-in">
       <div class="gantt-filters">
@@ -3752,6 +3774,8 @@ function renderGantt() {
         </div>
       </div>
 
+      ${_ganttEditMode ? ganttDependencyEditorHTML(tasks) : ''}
+
       ${projects.length
         ? `${ganttWorkloadHTML(projects, tasks, members, days)}${ganttChartHTML(projects, tasks, members, days, timelineWidth)}`
         : `<div class="empty-state">
@@ -3761,6 +3785,184 @@ function renderGantt() {
           </div>`}
     </div>
   `;
+}
+
+function toggleGanttEditMode() {
+  _ganttEditMode = !_ganttEditMode;
+  if (!_ganttEditMode) _ganttSelectedTaskId = '';
+  renderGantt();
+}
+
+function selectGanttTask(taskId) {
+  if (!_ganttEditMode) {
+    openTaskModal(taskId);
+    return;
+  }
+  _ganttSelectedTaskId = taskId;
+  renderGantt();
+}
+
+function taskDependencyIds(task) {
+  return asArray(task?.dependencyTaskIds).filter(Boolean);
+}
+
+function taskDependencyState(task) {
+  const dependencies = taskDependencyIds(task)
+    .map(id => DB.Tasks.get(id))
+    .filter(Boolean);
+  if (!dependencies.length) return { blocked: false, completed: 0, total: 0 };
+  const completed = dependencies.filter(item => item.completed === true).length;
+  const blocked = task?.dependencyMode === 'any'
+    ? completed === 0
+    : completed < dependencies.length;
+  return { blocked, completed, total: dependencies.length };
+}
+
+function taskDependenciesComplete(task) {
+  return !taskDependencyState(task).blocked;
+}
+
+function ensureTaskDependenciesComplete(task) {
+  const state = taskDependencyState(task);
+  if (!state.blocked) return true;
+  const waiting = taskDependencyIds(task)
+    .map(id => DB.Tasks.get(id))
+    .filter(item => item && item.completed !== true)
+    .map(item => item.content)
+    .filter(Boolean);
+  showToast(`前提タスクの完了待ちです：${waiting.slice(0, 3).join('、')}`, 'error');
+  return false;
+}
+
+function taskDependsOn(taskId, targetId, visited = new Set()) {
+  if (!taskId || visited.has(taskId)) return false;
+  visited.add(taskId);
+  const task = DB.Tasks.get(taskId);
+  return taskDependencyIds(task).some(id => id === targetId || taskDependsOn(id, targetId, visited));
+}
+
+function ganttDependencyEditorHTML(tasks) {
+  const task = _ganttSelectedTaskId ? DB.Tasks.get(_ganttSelectedTaskId) : null;
+  if (!task) {
+    return `
+      <section class="gantt-editor card">
+        <strong>工程編集モード</strong>
+        <span>ガント上の細いタスクバーを選ぶと、前提関係と日程を編集できます。依存線は選択中のタスクだけ表示します。</span>
+      </section>`;
+  }
+  const project = task.projectId ? DB.Projects.get(task.projectId) : null;
+  const projectTasks = tasks
+    .filter(item => item.projectId === task.projectId && item.id !== task.id)
+    .sort((a, b) => String(taskDueDateValue(a)).localeCompare(String(taskDueDateValue(b))));
+  const selected = new Set(taskDependencyIds(task));
+  const state = taskDependencyState(task);
+  const options = projectTasks.map(item => {
+    const disabled = taskDependsOn(item.id, task.id);
+    return `
+      <label class="gantt-dependency-option ${disabled ? 'disabled' : ''}">
+        <input type="checkbox" value="${item.id}" ${selected.has(item.id) ? 'checked' : ''} ${disabled ? 'disabled' : ''}
+               onchange="saveGanttDependencies('${task.id}')">
+        <span>
+          <strong>${escHtml(item.content || '未入力タスク')}</strong>
+          <small>${escHtml(DB.fmtDate(taskDueDateValue(item)))} / ${escHtml(item.taskType || '作業')}${disabled ? ' / 循環するため選択不可' : ''}</small>
+        </span>
+      </label>`;
+  }).join('');
+  return `
+    <section class="gantt-editor card">
+      <div class="gantt-editor-head">
+        <div>
+          <span>${project ? `${escHtml(project.clientName)} / ${escHtml(project.name)}` : 'プロジェクト未設定'}</span>
+          <strong>${escHtml(task.content || '未入力タスク')}</strong>
+        </div>
+        <span class="gantt-status ${state.blocked ? 'pending' : 'active'}">
+          ${state.total ? `前提 ${state.completed}/${state.total}完了` : 'すぐ開始可能'}
+        </span>
+      </div>
+      <div class="gantt-editor-actions">
+        <button class="btn btn-ghost btn-sm" onclick="shiftGanttTask('${task.id}',-1,false)">← 1営業日</button>
+        <button class="btn btn-ghost btn-sm" onclick="shiftGanttTask('${task.id}',1,false)">1営業日 →</button>
+        <button class="btn btn-ghost btn-sm" onclick="shiftGanttTask('${task.id}',-1,true)">← 後続も移動</button>
+        <button class="btn btn-ghost btn-sm" onclick="shiftGanttTask('${task.id}',1,true)">後続も移動 →</button>
+        <button class="btn btn-ghost btn-sm" onclick="openTaskModal('${task.id}')">詳細編集</button>
+      </div>
+      <div class="gantt-dependency-legend">
+        <span class="before">前提タスク</span><b>→</b><span class="selected">選択中</span><b>→</b><span class="after">直後のタスク</span>
+      </div>
+      <div class="gantt-dependency-title">
+        <strong>このタスクを始めるために完了が必要なタスク</strong>
+        <select class="form-select" id="gantt-dependency-mode" onchange="saveGanttDependencies('${task.id}')">
+          <option value="all" ${task.dependencyMode === 'any' ? '' : 'selected'}>選択したすべてが完了</option>
+          <option value="any" ${task.dependencyMode === 'any' ? 'selected' : ''}>選択したどれかが完了</option>
+        </select>
+      </div>
+      <div class="gantt-dependency-list">${options || '<span class="form-help">同じプロジェクト内に他のタスクがありません。</span>'}</div>
+    </section>`;
+}
+
+async function saveGanttDependencies(taskId) {
+  const task = DB.Tasks.get(taskId);
+  if (!task) return;
+  const before = taskSnapshot();
+  const dependencyTaskIds = Array.from(document.querySelectorAll('.gantt-dependency-option input:checked'))
+    .map(input => input.value)
+    .filter(id => id !== taskId && !taskDependsOn(id, taskId));
+  DB.Tasks.update(taskId, {
+    dependencyTaskIds,
+    dependencyMode: document.getElementById('gantt-dependency-mode')?.value === 'any' ? 'any' : 'all',
+  });
+  const ok = await DB.syncCloudStore?.();
+  if (ok === false) {
+    restoreTaskSnapshot(before);
+    showToast('前提関係を保存できませんでした', 'error');
+  }
+  renderGantt();
+}
+
+function directTaskSuccessors(taskId) {
+  return DB.Tasks.all().filter(task => taskDependencyIds(task).includes(taskId));
+}
+
+function collectTaskSuccessors(taskId, collected = new Set()) {
+  directTaskSuccessors(taskId).forEach(task => {
+    if (collected.has(task.id)) return;
+    collected.add(task.id);
+    collectTaskSuccessors(task.id, collected);
+  });
+  return collected;
+}
+
+async function shiftGanttTask(taskId, amount, includeSuccessors) {
+  const task = DB.Tasks.get(taskId);
+  if (!task || !amount) return;
+  const before = taskSnapshot();
+  const ids = new Set([taskId]);
+  if (includeSuccessors) collectTaskSuccessors(taskId).forEach(id => ids.add(id));
+  ids.forEach(id => {
+    const current = DB.Tasks.get(id);
+    if (!current) return;
+    const bounds = taskScheduleBounds(current);
+    const startDate = addBusinessDays(bounds.start, amount);
+    const dueDate = addBusinessDays(bounds.end, amount);
+    DB.Tasks.update(id, {
+      startDate,
+      dueDate,
+      date: dueDate,
+      displayDate: current.displayDate === bounds.end ? dueDate : current.displayDate,
+      scheduleAdjustedAt: new Date().toISOString(),
+      scheduleAdjustmentReason: includeSuccessors ? 'ガント工程編集で後続を含めて移動' : 'ガント工程編集で移動',
+    });
+  });
+  const project = task.projectId ? DB.Projects.get(task.projectId) : null;
+  if (project) recalculateProjectPhaseDates(project.id);
+  const ok = await DB.syncCloudStore?.();
+  if (ok === false) {
+    restoreTaskSnapshot(before);
+    showToast('日程を保存できませんでした', 'error');
+  } else {
+    showToast(includeSuccessors ? `${ids.size}件の日程を移動しました` : 'タスクの日程を移動しました', 'success');
+  }
+  renderGantt();
 }
 
 function resetGanttFilter() {
@@ -3938,8 +4140,9 @@ function ganttPhaseTaskListHTML(tasks, members) {
       const note = visibleTaskNote(task);
       const bounds = taskScheduleBounds(task);
       const durationDays = Math.max(1, businessDatesBetween(bounds.start, bounds.end).length);
+      const dependencyState = taskDependencyState(task);
       return `
-        <button type="button" class="gantt-phase-task" onclick="openTaskModal('${task.id}')">
+        <button type="button" class="gantt-phase-task ${_ganttSelectedTaskId === task.id ? 'selected' : ''}" onclick="selectGanttTask('${task.id}')">
           <span class="gantt-phase-task-title">${escHtml(task.content || '未入力タスク')}</span>
           <span class="gantt-phase-task-meta">
             ${bounds.start && bounds.end ? `${escHtml(DB.fmtDate(bounds.start))}〜${escHtml(DB.fmtDate(bounds.end))}` : '日付未設定'}
@@ -3947,6 +4150,7 @@ function ganttPhaseTaskListHTML(tasks, members) {
             / ${Number(task.estimatedHours) || 0}h
             / ${durationDays}日
             / ${status}
+            ${dependencyState.total ? ` / 前提 ${dependencyState.completed}/${dependencyState.total}` : ''}
           </span>
           ${note ? `<span class="gantt-phase-task-note">${escHtml(note)}</span>` : ''}
         </button>`;
@@ -3967,9 +4171,23 @@ function ganttTaskBarsHTML(tasks, days) {
       if (!style) return '';
       const doneClass = task.completed === true ? 'done' : task.completed === false ? 'active' : 'pending';
       const lane = index % 3;
-      return `<div class="gantt-bar gantt-bar-task ${doneClass}" style="${style};top:${11 + lane * 9}px" title="${escHtml(task.content || '未入力タスク')} / ${escHtml(DB.fmtDate(start))}〜${escHtml(DB.fmtDate(end))}"></div>`;
+      const relationClass = ganttTaskRelationClass(task);
+      const dependencyState = taskDependencyState(task);
+      return `<button type="button" class="gantt-bar gantt-bar-task ${doneClass} ${relationClass} ${dependencyState.blocked ? 'blocked' : ''}"
+                style="${style};top:${11 + lane * 9}px"
+                onclick="selectGanttTask('${task.id}')"
+                title="${escHtml(task.content || '未入力タスク')} / ${escHtml(DB.fmtDate(start))}〜${escHtml(DB.fmtDate(end))}${dependencyState.total ? ` / 前提 ${dependencyState.completed}/${dependencyState.total}` : ''}"></button>`;
     })
     .join('');
+}
+
+function ganttTaskRelationClass(task) {
+  if (!_ganttEditMode || !_ganttSelectedTaskId) return '';
+  if (task.id === _ganttSelectedTaskId) return 'dependency-selected';
+  const selected = DB.Tasks.get(_ganttSelectedTaskId);
+  if (taskDependencyIds(selected).includes(task.id)) return 'dependency-before';
+  if (taskDependencyIds(task).includes(_ganttSelectedTaskId)) return 'dependency-after';
+  return 'dependency-muted';
 }
 
 function ganttDayHeaderHTML(dateStr) {
@@ -4249,9 +4467,11 @@ function adjustProjectScheduleAfterExtension({
 
   const triggerPhaseOrder = taskPhaseOrder(project, triggerTask);
   const excluded = new Set([triggerTask.id, ...excludeTaskIds].filter(Boolean));
+  const dependencySuccessors = collectTaskSuccessors(triggerTask.id);
   const candidates = DB.Tasks.all()
     .filter(task => task.projectId === project.id && task.completed !== true && !excluded.has(task.id))
     .filter(task => {
+      if (dependencySuccessors.size) return dependencySuccessors.has(task.id);
       const start = taskScheduleBounds(task).start;
       const phaseOrder = taskPhaseOrder(project, task);
       return phaseOrder > triggerPhaseOrder || (phaseOrder === triggerPhaseOrder && start > oldEnd);
@@ -4941,6 +5161,8 @@ function createRecheckForCompletedRevision(task) {
     parentTaskId: task.id,
     reviewTaskId: sourceReview.id,
     generatedByWorkflow: true,
+    dependencyTaskIds: [task.id],
+    dependencyMode: 'all',
     ...schedule,
   });
   adjustProjectScheduleAfterExtension({
@@ -4971,6 +5193,13 @@ async function toggleProjectTaskComplete(taskIdsText) {
   const beforeAsks = DB.Asks.all().map(ask => ({ ...ask }));
   const beforeProjects = DB.Projects.all().map(project => ({ ...project }));
   const nextCompleted = task.completed === true ? null : true;
+  if (nextCompleted === true) {
+    const blockedTask = taskIds.map(id => DB.Tasks.get(id)).find(item => item && !taskDependenciesComplete(item));
+    if (blockedTask) {
+      ensureTaskDependenciesComplete(blockedTask);
+      return;
+    }
+  }
   taskIds.forEach(taskId => DB.Tasks.setCompletion(taskId, nextCompleted, ''));
   if (nextCompleted === true) {
     createReviewAsksForCompletedTasks(taskIds);
@@ -5519,6 +5748,7 @@ function templateScheduleRows(templateId, deliveryDate) {
     dueDate: templateTaskDueDate(deliveryDate, task.offset),
     durationDays: Math.max(1, Number(task.durationDays || 1) || 1),
     startDate: taskStartDateFromDueDate(templateTaskDueDate(deliveryDate, task.offset), task.durationDays || 1),
+    dependsOnPrevious: task.dependsOnPrevious ?? isReviewTask(task.type),
   }));
 }
 
@@ -5578,6 +5808,10 @@ function renderTemplatePreviewForForm(options = {}) {
       <input type="number" class="form-input tpl-task-duration" min="1" step="1" value="${Number(task.durationDays || 1)}" aria-label="遂行期間（日）" oninput="syncTemplateTaskDraftDue(this)">
       <input type="date" class="form-input tpl-task-date" value="${deliveryDate ? escHtml(task.dueDate) : ''}" aria-label="締切日">
       <input type="number" class="form-input tpl-task-hours" min="0.25" step="0.25" value="${Number(task.hours || 1)}" aria-label="工数">
+      <label class="template-preview-dependency" title="直前タスク完了後に開始">
+        <input type="checkbox" class="tpl-task-depends-previous" ${task.dependsOnPrevious ? 'checked' : ''}>
+        <span>直前完了後</span>
+      </label>
       <small>${escHtml(task.phase || 'フェーズなし')}</small>
     </div>`).join('');
   el.innerHTML = `
@@ -5623,6 +5857,7 @@ function readTemplateTaskDrafts(templateId, deliveryDate, previewSelector = '#pj
         durationDays: schedule.durationDays,
         startDate: schedule.startDate,
         hours: Number(row.querySelector('.tpl-task-hours')?.value || 1) || 1,
+        dependsOnPrevious: Boolean(row.querySelector('.tpl-task-depends-previous')?.checked),
       };
     })
     .filter(task => task.content);
@@ -5633,6 +5868,7 @@ function createTemplateTasksForProject(project, templateId, fallbackMemberId, ta
   if (!project || !tpl?.tasks?.length) return 0;
   const phaseByName = new Map((project.phases || []).map(phase => [phase.name, phase]));
   let count = 0;
+  let previousTask = null;
   const tasks = taskDrafts || templateScheduleRows(templateId, project.deliveryDate);
   tasks.forEach(task => {
     const phase = phaseByName.get(task.phase);
@@ -5643,7 +5879,7 @@ function createTemplateTasksForProject(project, templateId, fallbackMemberId, ta
       displayDate: dueDate,
       durationDays: task.durationDays || 1,
     });
-    DB.Tasks.add({
+    const createdTask = DB.Tasks.add({
       memberId: task.defaultMemberId || fallbackMemberId,
       projectId: project.id,
       phaseId: phase?.id || null,
@@ -5657,8 +5893,11 @@ function createTemplateTasksForProject(project, templateId, fallbackMemberId, ta
       reviewRule: task.reviewRule || 'inherit',
       reviewDueDays: task.reviewDueDays ?? null,
       notifyProgressManager: task.notifyProgressManager !== false,
+      dependencyTaskIds: task.dependsOnPrevious && previousTask ? [previousTask.id] : [],
+      dependencyMode: 'all',
       note: `テンプレート：${tpl.name}`,
     });
+    previousTask = createdTask;
     count++;
   });
   return count;
@@ -7148,6 +7387,7 @@ function openTemplateModal(editId) {
           <span>営業日前</span>
           <span>遂行(日)</span>
           <span>工数</span>
+          <span>開始条件</span>
           <span></span>
           <span></span>
           <span></span>
@@ -7253,6 +7493,7 @@ function templatePhaseOptionsHTML(selectedPhase = '', sourcePhases = getTemplate
 function tplTaskRow(task = {}, i = 0, phases = getTemplatePhases()) {
   const phase = task.phase || (phases[0] ? (typeof phases[0] === 'string' ? phases[0] : phases[0].name) : '');
   const type = task.type || '作業';
+  const dependsOnPrevious = task.dependsOnPrevious ?? isReviewTask(type);
   return `
     <div class="tpl-task-row" data-index="${i}" tabindex="0" onclick="selectTplTaskRow(this)" onkeydown="handleTplTaskRowKeydown(event)">
       <span class="tpl-task-number">${i + 1}</span>
@@ -7265,6 +7506,10 @@ function tplTaskRow(task = {}, i = 0, phases = getTemplatePhases()) {
       <input type="number" class="form-input tpl-task-offset-edit" value="${Number(task.offset || 0)}" title="納品日からの営業日" aria-label="営業日前" placeholder="営業日前" step="1">
       <input type="number" class="form-input tpl-task-duration-edit" value="${Number(task.durationDays || 1)}" min="1" step="1" title="遂行期間（日）" aria-label="遂行期間（日）" placeholder="遂行">
       <input type="number" class="form-input tpl-task-hours-edit" value="${Number(task.hours || 1)}" min="0.25" step="0.25" title="工数" aria-label="工数" placeholder="工数">
+      <label class="tpl-task-dependency-edit" title="直前タスクが完了してから開始">
+        <input type="checkbox" ${dependsOnPrevious ? 'checked' : ''}>
+        <span>直前完了後</span>
+      </label>
       <button class="btn btn-ghost btn-sm btn-icon" onclick="insertTplTaskAfter(this);event.stopPropagation()" title="下に追加">＋</button>
       <button class="btn btn-ghost btn-sm btn-icon" onclick="duplicateTplTaskRow(this);event.stopPropagation()" title="複製">⧉</button>
       <button class="btn btn-ghost btn-sm btn-icon" onclick="moveTplTaskRow(this, -1)" title="上へ">↑</button>
@@ -7317,6 +7562,7 @@ function readTplTaskRow(row) {
     offset: Number(row.querySelector('.tpl-task-offset-edit')?.value || 0) || 0,
     durationDays: Math.max(1, Number(row.querySelector('.tpl-task-duration-edit')?.value || 1) || 1),
     hours: Number(row.querySelector('.tpl-task-hours-edit')?.value || 1) || 1,
+    dependsOnPrevious: Boolean(row.querySelector('.tpl-task-dependency-edit input')?.checked),
   };
 }
 
@@ -7408,6 +7654,7 @@ function getTemplateTasks() {
       offset: Number(row.querySelector('.tpl-task-offset-edit')?.value || 0) || 0,
       durationDays: Math.max(1, Number(row.querySelector('.tpl-task-duration-edit')?.value || 1) || 1),
       hours: Number(row.querySelector('.tpl-task-hours-edit')?.value || 1) || 1,
+      dependsOnPrevious: Boolean(row.querySelector('.tpl-task-dependency-edit input')?.checked),
     }))
     .filter(task => task.content);
 }
