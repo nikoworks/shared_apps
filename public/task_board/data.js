@@ -884,14 +884,27 @@ const Tasks = {
 // ============================================================
 const Asks = {
   all() { return load(KEYS.ASKS) ?? []; },
+  normalizeText(value = '') {
+    return String(value || '').trim().replace(/\s+/g, ' ');
+  },
+  uniqueKey(ask = {}) {
+    const projectKey = ask.projectId || this.normalizeText(ask.projectName || '');
+    const targetKey = ask.taskId || [projectKey, this.normalizeText(ask.content || '')].join(':');
+    return [
+      ask.type || '',
+      projectKey,
+      targetKey,
+      ask.toMemberId || this.normalizeText(ask.toName || '') || 'all',
+      ask.fromMemberId || '',
+    ].join('|');
+  },
   add({
     type = '質問', fromMemberId = '', toMemberId = '', toName = '',
     content, projectId = null, projectName = '', dueDate = '', dueText = '', status = 'open',
     date = today(), taskId = null,
   }) {
     const list = this.all();
-    const ask = {
-      id: genId(),
+    const normalized = {
       type,
       fromMemberId,
       toMemberId,
@@ -904,11 +917,34 @@ const Asks = {
       dueText: dueText || dueDate,
       status,
       date,
+    };
+    const key = this.uniqueKey(normalized);
+    const existing = status === 'open'
+      ? list.find(a => a.status === 'open' && this.uniqueKey(a) === key)
+      : null;
+    if (existing) {
+      const merged = {
+        ...existing,
+        content: normalized.content || existing.content,
+        projectId: normalized.projectId || existing.projectId,
+        projectName: normalized.projectName || existing.projectName,
+        dueDate: normalized.dueDate || existing.dueDate,
+        dueText: normalized.dueText || existing.dueText,
+        date: [existing.date, normalized.date].filter(Boolean).sort()[0] || existing.date || normalized.date,
+        updatedAt: new Date().toISOString(),
+        duplicatePreventedAt: new Date().toISOString(),
+      };
+      save(KEYS.ASKS, list.map(a => a.id === existing.id ? merged : a));
+      return { ...merged, _created: false, _duplicatePrevented: true };
+    }
+    const ask = {
+      id: genId(),
+      ...normalized,
       createdAt: new Date().toISOString(),
     };
     list.push(ask);
     save(KEYS.ASKS, list);
-    return ask;
+    return { ...ask, _created: true };
   },
   update(id, patch) {
     save(KEYS.ASKS, this.all().map(a => a.id === id ? { ...a, ...patch } : a));
@@ -933,6 +969,44 @@ const Asks = {
     return this.all().filter(a => a.fromMemberId === memberId);
   },
   get(id) { return this.all().find(a => a.id === id) ?? null; },
+  compactOpenDuplicates() {
+    const list = this.all();
+    const groups = new Map();
+    list.forEach(ask => {
+      if (ask.status !== 'open') return;
+      const key = this.uniqueKey(ask);
+      const group = groups.get(key) || [];
+      group.push(ask);
+      groups.set(key, group);
+    });
+    const removeIds = new Set();
+    const replacements = new Map();
+    groups.forEach(group => {
+      if (group.length < 2) return;
+      const sorted = [...group].sort((a, b) => {
+        const dateCompare = String(a.date || '').localeCompare(String(b.date || ''));
+        if (dateCompare !== 0) return dateCompare;
+        return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+      });
+      const keep = sorted[0];
+      const latest = sorted[sorted.length - 1];
+      replacements.set(keep.id, {
+        ...keep,
+        content: latest.content || keep.content,
+        dueDate: sorted.map(a => a.dueDate).filter(Boolean).sort()[0] || keep.dueDate || '',
+        dueText: sorted.map(a => a.dueText).filter(Boolean).sort()[0] || keep.dueText || '',
+        updatedAt: new Date().toISOString(),
+        duplicateCompactedAt: new Date().toISOString(),
+      });
+      sorted.slice(1).forEach(ask => removeIds.add(ask.id));
+    });
+    if (!removeIds.size) return { removedCount: 0 };
+    const next = list
+      .filter(ask => !removeIds.has(ask.id))
+      .map(ask => replacements.get(ask.id) || ask);
+    save(KEYS.ASKS, next);
+    return { removedCount: removeIds.size };
+  },
 };
 
 // ============================================================

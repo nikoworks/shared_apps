@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'ガント工程編集試用版 2026-06-26-04';
+const APP_BUILD_LABEL = '通知重複防止版 2026-06-30-02';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const TASK_TYPE_GROUPS = {
@@ -61,6 +61,24 @@ function askDueDateValue(ask) {
 function askDueLabel(ask) {
   const dueDate = askDueDateValue(ask);
   return dueDate ? DB.fmtDate(dueDate) : String(ask?.dueText || '').trim();
+}
+
+function askDueState(ask, selectedDate = DB.today()) {
+  const dueDate = askDueDateValue(ask);
+  if (dueDate) {
+    if (dueDate < selectedDate) return { label: '期限超過', className: 'overdue' };
+    if (dueDate === selectedDate) return { label: '本日期限', className: 'today' };
+    return { label: '期限内', className: 'open' };
+  }
+  const date = String(ask?.date || '').trim();
+  const dueText = String(ask?.dueText || '').trim();
+  const withinDays = Number((dueText.match(/(\d+)\s*日以内/) || [])[1] || 0);
+  if (date && withinDays > 0) {
+    const elapsedDays = Math.floor((new Date(`${selectedDate}T00:00:00`) - new Date(`${date}T00:00:00`)) / 86400000);
+    if (elapsedDays > withinDays) return { label: '期限超過', className: 'overdue' };
+    if (elapsedDays === withinDays) return { label: '本日期限', className: 'today' };
+  }
+  return { label: '', className: 'open' };
 }
 
 function getSavedTheme() {
@@ -1745,12 +1763,12 @@ function dateTone(dateStr) {
 }
 
 function renderMemberAskPanel(memberId) {
-  const toMe = DB.Asks.byMember(memberId)
+  const toMe = collapseAskDisplayDuplicates(DB.Asks.byMember(memberId)
     .filter(a => a.status !== 'done')
-    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
-  const fromMe = DB.Asks.fromMember(memberId)
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt))));
+  const fromMe = collapseAskDisplayDuplicates(DB.Asks.fromMember(memberId)
     .filter(a => a.status !== 'done')
-    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt))));
 
   if (!toMe.length && !fromMe.length) return '';
 
@@ -1759,24 +1777,25 @@ function renderMemberAskPanel(memberId) {
       ${toMe.length ? `
         <div class="ask-section">
           <div class="ask-section-title">あなた宛の通知・お願い</div>
-          ${toMe.map(askCardHTML).join('')}
+          ${toMe.map(ask => askCardHTML(ask)).join('')}
         </div>
       ` : ''}
       ${fromMe.length ? `
         <div class="ask-section">
           <div class="ask-section-title">自分が出した通知・お願い</div>
-          ${fromMe.map(askCardHTML).join('')}
+          ${fromMe.map(ask => askCardHTML(ask)).join('')}
         </div>
       ` : ''}
     </div>`;
 }
 
 function renderSharedAskPanel(selectedDate) {
-  const asks = DB.Asks.all()
+  if (_taskFilter.memberId) return '';
+  const asks = collapseAskDisplayDuplicates(DB.Asks.all()
     .filter(a => a.status !== 'done')
     .filter(a => !_taskFilter.memberId || a.toMemberId === _taskFilter.memberId || a.fromMemberId === _taskFilter.memberId || a.toName === '全員')
     .filter(a => !_taskFilter.projectId || a.projectId === _taskFilter.projectId)
-    .sort((a, b) => String(askDueDateValue(a) || a.date || '').localeCompare(String(askDueDateValue(b) || b.date || '')));
+    .sort((a, b) => String(askDueDateValue(a) || a.date || '').localeCompare(String(askDueDateValue(b) || b.date || ''))));
 
   if (!asks.length) return '';
   return `
@@ -1795,16 +1814,20 @@ function askCardHTML(ask, selectedDate = DB.today()) {
   const projectLabel = ask.projectId ? projectLabelById(ask.projectId) : ask.projectName;
   const relatedTask = ask.taskId ? DB.Tasks.get(ask.taskId) : null;
   const typeClass = normalizeAskType(ask.type);
+  const dueState = askDueState(ask, selectedDate);
   return `
     <div class="ask-card ${typeClass}">
       <div class="ask-main">
         <div class="ask-head">
           <span class="ask-type">${escHtml(ask.type || '質問')}</span>
+          ${dueState.label ? `<span class="ask-status ${dueState.className}">${escHtml(dueState.label)}</span>` : ''}
           ${ask.date ? taskDateTagHTML(ask.date, { label: relativeDateLabel(ask.date, selectedDate) }) : ''}
-          ${projectLabel ? `<span class="ask-project">${escHtml(projectLabel)}</span>` : ''}
           ${askDueLabel(ask) ? `<span class="ask-due">期限：${escHtml(askDueLabel(ask))}</span>` : ''}
         </div>
-        ${relatedTask ? `<div class="ask-related">関連タスク：${escHtml(relatedTask.content)}</div>` : ''}
+        <div class="ask-context">
+          <div><span>プロジェクト</span>${escHtml(projectLabel || '未紐付け')}</div>
+          <div><span>対象タスク</span>${escHtml(relatedTask?.content || 'タスク未指定')}</div>
+        </div>
         <div class="ask-content">${escHtml(ask.content)}</div>
         <div class="ask-meta">
           ${fromMember ? `依頼元：${escHtml(fromMember.name)}` : ''}
@@ -1816,6 +1839,45 @@ function askCardHTML(ask, selectedDate = DB.today()) {
         <button class="btn btn-success btn-sm" onclick="completeAsk('${ask.id}')">完了</button>
       </div>
     </div>`;
+}
+
+function askDisplayKey(ask) {
+  if (DB.Asks.uniqueKey) return DB.Asks.uniqueKey(ask);
+  const task = ask.taskId ? DB.Tasks.get(ask.taskId) : null;
+  const projectKey = ask.projectId || task?.projectId || ask.projectName || '';
+  const contentKey = String(ask.content || '').trim().replace(/\s+/g, ' ');
+  const targetKey = ask.taskId || [projectKey, contentKey].join(':');
+  return [
+    ask.type || '',
+    projectKey,
+    targetKey,
+    ask.toMemberId || ask.toName || 'all',
+    ask.fromMemberId || '',
+  ].join('|');
+}
+
+function collapseAskDisplayDuplicates(asks = []) {
+  const groups = new Map();
+  asks.forEach(ask => {
+    const key = askDisplayKey(ask);
+    const group = groups.get(key) || [];
+    group.push(ask);
+    groups.set(key, group);
+  });
+  return Array.from(groups.values()).map(group => {
+    const sorted = [...group].sort((a, b) => {
+      const dueCompare = String(askDueDateValue(a) || a.date || '').localeCompare(String(askDueDateValue(b) || b.date || ''));
+      if (dueCompare !== 0) return dueCompare;
+      return String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+    });
+    const primary = sorted[0];
+    return {
+      ...primary,
+      _groupedAskIds: sorted.map(item => item.id),
+      dueDate: sorted.map(askDueDateValue).filter(Boolean).sort()[0] || primary.dueDate || '',
+      date: sorted.map(item => item.date).filter(Boolean).sort()[0] || primary.date || '',
+    };
+  });
 }
 
 function normalizeAskType(type) {
@@ -1837,8 +1899,22 @@ function getTaskLinkedAsk(taskId) {
 }
 
 function completeAsk(askId) {
-  DB.Asks.update(askId, { status: 'done', completedAt: new Date().toISOString() });
-  showToast('進行確認を完了にしました', 'success');
+  const ask = DB.Asks.get(askId);
+  const completedAt = new Date().toISOString();
+  let count = 0;
+  if (ask) {
+    const key = askDisplayKey(ask);
+    DB.Asks.all()
+      .filter(item => item.status !== 'done' && askDisplayKey(item) === key)
+      .forEach(item => {
+        DB.Asks.update(item.id, { status: 'done', completedAt });
+        count++;
+      });
+  } else {
+    DB.Asks.update(askId, { status: 'done', completedAt });
+    count = 1;
+  }
+  showToast(count > 1 ? `同じ通知${count}件を完了にしました` : '通知・お願いを完了にしました', 'success');
   renderTodayTasks();
 }
 
@@ -2862,7 +2938,7 @@ function saveParsedChatworkAsks(asks, memberId, date) {
   (asks || []).forEach(ask => {
     const toMember = ask.toName === '全員' ? null : findMemberByName(ask.toName);
     const project = ask.projectName ? findProjectByName(ask.projectName) : null;
-    DB.Asks.add({
+    const saved = DB.Asks.add({
       type: ask.type,
       fromMemberId: memberId,
       toMemberId: toMember?.id || '',
@@ -2873,7 +2949,7 @@ function saveParsedChatworkAsks(asks, memberId, date) {
       dueText: ask.dueText,
       date: ask.date || date,
     });
-    count++;
+    if (saved?._created !== false) count++;
   });
   return count;
 }
@@ -5105,7 +5181,7 @@ function createReviewAsksForCompletedTask(task) {
       ask.type === type
     );
     if (alreadyExists) return;
-    DB.Asks.add({
+    const saved = DB.Asks.add({
       type,
       fromMemberId: task.memberId || project.ownerMemberId || '',
       toMemberId: memberId,
@@ -5117,7 +5193,7 @@ function createReviewAsksForCompletedTask(task) {
       taskId: task.id,
       date: DB.today(),
     });
-    count++;
+    if (saved?._created !== false) count++;
   };
   reviewRecipientIds.forEach(memberId => addTaskFlowAsk(memberId, '確認', '完了タスクの確認'));
   approvalRecipientIds.forEach(memberId => addTaskFlowAsk(memberId, '進行許可', '次工程へ進めてよいか確認'));
@@ -7747,6 +7823,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   DB.seedDemoData();       // 初回のみデモデータを投入
   const carriedCount = DB.Tasks.carryOverOpenTasks();
   const compacted = DB.Tasks.compactCarryoverDuplicates?.() || { mergedCount: 0 };
+  const compactedAsks = DB.Asks.compactOpenDuplicates?.() || { removedCount: 0 };
   const urlMember = resolveMemberFromUrl();
   if (urlMember) {
     _personalMemberId = urlMember.id;
@@ -7763,6 +7840,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   if (compacted.mergedCount > 0) {
     showToast(`${compacted.mergedCount}件の繰り越し履歴を同じタスクに統合しました`, 'info');
+  }
+  if (compactedAsks.removedCount > 0) {
+    showToast(`${compactedAsks.removedCount}件の重複通知を整理しました`, 'info');
   }
 });
 
