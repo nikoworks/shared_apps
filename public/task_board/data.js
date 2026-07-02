@@ -635,6 +635,7 @@ const Tasks = {
     memberId, projectId = null, phaseId = null, content, estimatedHours,
     durationDays = 1,
     note = '', date = today(), dueDate = '', displayDate = '', startDate = '',
+    dueDateIsTemporary = false,
     carriedFromTaskId = null,
     sourceProjectName = '', needsProjectReview = false,
     taskType = '作業',
@@ -654,6 +655,7 @@ const Tasks = {
       date: resolvedDueDate, // 旧データ互換用。新しい画面では dueDate / displayDate を正本にする。
       dueDate: resolvedDueDate,
       displayDate: resolvedDisplayDate,
+      dueDateIsTemporary: Boolean(dueDateIsTemporary),
       memberId, projectId, phaseId,
       startDate,
       content, estimatedHours: parseFloat(estimatedHours),

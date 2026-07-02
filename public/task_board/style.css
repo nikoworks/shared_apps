@@ -764,6 +764,35 @@ body {
 :root[data-theme="light"] .tag-date-carry {
   box-shadow: 0 0 0 1px rgba(217,119,6,.18), 0 3px 10px rgba(217,119,6,.14);
 }
+.tag-due {
+  font-weight: 800;
+  border: 1px solid transparent;
+}
+.tag-due-open {
+  color: var(--text-2);
+  background: rgba(148,163,184,.12);
+  border-color: rgba(148,163,184,.22);
+}
+.tag-due-today {
+  color: var(--warning);
+  background: var(--warning-lite);
+  border-color: rgba(245,158,11,.28);
+}
+.tag-due-overdue {
+  color: var(--danger);
+  background: var(--danger-lite);
+  border-color: rgba(239,68,68,.28);
+}
+.tag-due-temp {
+  color: #7c3aed;
+  background: rgba(124,58,237,.12);
+  border-color: rgba(124,58,237,.24);
+}
+.tag-due-missing {
+  color: var(--danger);
+  background: var(--danger-lite);
+  border-color: rgba(239,68,68,.28);
+}
 .tag-carry {
   background: var(--warning-lite);
   color: var(--warning);
@@ -1148,6 +1177,23 @@ body {
   top: 0;
   z-index: 7;
   background: var(--gantt-head-bg);
+}
+.gantt-months {
+  display: flex;
+  height: 28px;
+  background:
+    linear-gradient(to right, var(--gantt-grid) 1px, transparent 1px) 0 0 / 36px 100%;
+  border-bottom: 1px solid var(--gantt-grid-soft);
+}
+.gantt-month {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  border-right: 1px solid var(--gantt-grid);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
 }
 .gantt-days {
   display: flex;

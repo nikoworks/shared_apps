@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '通知重複防止版 2026-06-30-02';
+const APP_BUILD_LABEL = '締切表示・月表示版 2026-07-02-01';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const TASK_TYPE_GROUPS = {
@@ -267,6 +267,16 @@ function taskDueDateValue(task) {
 
 function taskDisplayDateValue(task) {
   return task?.displayDate || task?.date || task?.dueDate || '';
+}
+
+function taskDueTagHTML(task, baseDate = DB.today()) {
+  const dueDate = taskDueDateValue(task);
+  if (!dueDate) return '<span class="tag tag-due tag-due-missing">締切未設定</span>';
+  const isTemporary = Boolean(task?.dueDateIsTemporary);
+  const isDone = task?.completed === true;
+  const statusClass = !isDone && dueDate < baseDate ? 'overdue' : dueDate === baseDate ? 'today' : 'open';
+  const prefix = !isDone && dueDate < baseDate ? '締切超過' : isTemporary ? '締切 仮' : '締切';
+  return `<span class="tag tag-due tag-due-${statusClass}${isTemporary ? ' tag-due-temp' : ''}" title="${escHtml(isTemporary ? 'チャットワーク等から登録された仮締切です。必要に応じて編集してください。' : 'タスク締切日')}">${prefix} ${escHtml(DB.fmtDate(dueDate))}</span>`;
 }
 
 function normalizeTaskDateFields(task = {}) {
@@ -985,6 +995,7 @@ function morningTaskRow(task) {
         <div class="task-title" style="${isDone ? 'text-decoration:line-through;opacity:.45' : ''}">${escHtml(task.content)}</div>
         <div class="task-meta">
           ${taskDateTagHTML(originDate, { carried: isCarry })}
+          ${taskDueTagHTML(task)}
           ${isCarry ? `<span class="tag tag-carry">繰り越し</span>` : ''}
           <span>担当：${escHtml(ownerLabel)}</span>
           ${projectLabel ? `<span>${projectLabel}</span>` : ''}
@@ -1397,6 +1408,7 @@ function todayTaskRow(task) {
         ${visibleNote ? `<div class="task-note">備考：${escHtml(visibleNote)}</div>` : ''}
         <div class="task-meta">
           ${taskDateTagHTML(originDate, { carried: isCarry, label: dateLabel || undefined })}
+          ${taskDueTagHTML(task)}
           <span>担当：${escHtml(ownerLabel)}</span>
           ${projectHTML}
           ${phaseName ? `<span class="tag tag-phase">${phaseName}</span>` : ''}
@@ -2496,6 +2508,7 @@ async function saveTask(editId) {
     note,
     date: taskSchedule.date,
     dueDate: taskSchedule.dueDate,
+    dueDateIsTemporary: false,
     displayDate: displayDate || taskSchedule.displayDate,
     startDate: taskSchedule.startDate,
     estimatedHours: _taskFormData.estimatedHours || 1,
@@ -2912,6 +2925,7 @@ function saveParsedChatworkTasks(taskParsed, memberId, date, ownerMemberId, opti
         content: task.content,
         note: buildInputTaskNote(task.note, group.projectName, project),
         ...schedule,
+        dueDateIsTemporary: true,
         estimatedHours: task.hours,
         sourceProjectName,
         needsProjectReview: Boolean(group.projectName && !project),
@@ -3022,6 +3036,7 @@ async function saveBulkTasks() {
         content: task.content,
         note: buildInputTaskNote(task.note, group.projectName, project),
         ...schedule,
+        dueDateIsTemporary: true,
         estimatedHours: task.hours,
         sourceProjectName: project ? '' : (group.projectName || ''),
         needsProjectReview: Boolean(group.projectName && !project),
@@ -4061,6 +4076,9 @@ function ganttChartHTML(projects, tasks, members, days, timelineWidth) {
         <div>プロジェクト / フェーズ</div>
       </div>
       <div class="gantt-scroll gantt-scroll-head">
+        <div class="gantt-months" style="width:${timelineWidth}px">
+          ${ganttMonthHeaderHTML(days)}
+        </div>
         <div class="gantt-days" style="width:${timelineWidth}px">
           ${days.map(day => ganttDayHeaderHTML(day)).join('')}
         </div>
@@ -4277,6 +4295,26 @@ function ganttDayHeaderHTML(dateStr) {
       <span>${['日','月','火','水','木','金','土'][d.getDay()]}</span>
     </div>
   `;
+}
+
+function ganttMonthHeaderHTML(days) {
+  if (!days.length) return '';
+  const segments = [];
+  days.forEach(day => {
+    const safeDate = toISODate(day) || day;
+    const d = new Date(`${safeDate}T00:00:00`);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const label = `${d.getFullYear()}年${d.getMonth() + 1}月`;
+    const current = segments[segments.length - 1];
+    if (current?.key === key) {
+      current.count++;
+    } else {
+      segments.push({ key, label, count: 1 });
+    }
+  });
+  return segments.map(segment => `
+    <div class="gantt-month" style="width:${segment.count * 36}px">${escHtml(segment.label)}</div>
+  `).join('');
 }
 
 function ganttTodayMarkerHTML(days) {
