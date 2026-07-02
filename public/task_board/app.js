@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = '締切表示・月表示版 2026-07-02-01';
+const APP_BUILD_LABEL = 'タスク追加導線整理版 2026-07-02-02';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const TASK_TYPE_GROUPS = {
@@ -2033,13 +2033,10 @@ function openTaskModal(editId, presetProjectId = '') {
         <option value="recurring" ${_taskFormData.projectKindFilter === 'recurring' ? 'selected' : ''}>定期プロジェクトだけ</option>
       </select>
       <select class="form-select" id="tf-project"
-              onchange="_taskFormData.projectId=this.value;_taskFormData.phaseId='';refreshModalPhases()">
+              onchange="handleTaskProjectSelect(this.value)">
         ${projectOpts}
       </select>
-      <div class="form-help">通常は既存プロジェクトを選びます。ない場合は新規作成欄を入力すると、「追加する」でプロジェクト作成とタスク登録をまとめて行います。</div>
-      <button class="btn btn-ghost" type="button" onclick="toggleTaskProjectCreateBox()">
-        このタスク用にプロジェクトを作成
-      </button>
+      <div class="form-help">通常は既存プロジェクトを選びます。ない場合は一番下の「＋ 新規プロジェクトを作成」を選んでください。</div>
       ${buildTaskProjectCreatePanel()}
     </div>
     <div class="form-group">
@@ -2127,11 +2124,26 @@ function refreshModalPhases() {
     phases.map(ph => `<option value="${ph.id}">${ph.name}</option>`).join('');
 }
 
+function handleTaskProjectSelect(value) {
+  if (value === '__create__') {
+    _taskFormData.projectId = '';
+    _taskFormData.phaseId = '';
+    toggleTaskProjectCreateBox(true);
+    refreshModalPhases();
+    return;
+  }
+  _taskFormData.projectId = value;
+  _taskFormData.phaseId = '';
+  toggleTaskProjectCreateBox(false);
+  refreshModalPhases();
+}
+
 function refreshTaskProjectOptions() {
   const sel = document.getElementById('tf-project');
   if (!sel) return;
   sel.innerHTML = buildTaskProjectOptions();
-  sel.value = _taskFormData.projectId || '';
+  const box = document.getElementById('task-project-create-box');
+  sel.value = box && box.style.display !== 'none' ? '__create__' : (_taskFormData.projectId || '');
   refreshModalPhases();
 }
 
@@ -2152,7 +2164,8 @@ function buildTaskProjectOptions() {
       return `<option value="${project.id}" ${_taskFormData.projectId === project.id ? 'selected' : ''}>
         ${escHtml(project.clientName)} / ${escHtml(project.name)}（${typeLabel}）
       </option>`;
-    }).join('');
+    }).join('') +
+    `<option value="__create__">＋ 新規プロジェクトを作成</option>`;
 }
 
 function inferProjectDraftFromTaskForm() {
@@ -2218,19 +2231,13 @@ function buildTaskProjectCreatePanel() {
       <div style="font-weight:800;margin-bottom:10px;color:var(--text-1)">このタスク用のプロジェクトを作成</div>
       <div class="form-help" style="margin-bottom:12px">${draftHelp}<br>入力後、画面下の「追加する」を押すと、プロジェクト作成とタスク登録をまとめて行います。</div>
       <div class="form-group">
-        <label class="form-label">案件区分</label>
-        <select class="form-select" id="qpj-deal-category">
-          <option value="existing">既存クライアント</option>
-          <option value="proposal">提案ベース</option>
+        <label class="form-label">クライアント名 *</label>
+        <select class="form-select" id="qpj-client-select" onchange="toggleTaskProjectCreateFields()">
+          ${clientSelectOpts}
         </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">案件流入元</label>
-        <select class="form-select" id="qpj-lead-source">
-          ${leadSourceOptionsHTML()}
-        </select>
-        <input class="form-input" id="qpj-lead-source-detail" style="margin-top:8px"
-               placeholder="例：LPの資料請求フォーム / メディアレーダー資料DL後 / 〇〇社から紹介">
+        <input class="form-input" id="qpj-client" style="margin-top:8px;${clientInputDisplay}"
+               placeholder="例：〇〇株式会社"
+               value="${clientSelectValue === '__new__' ? escHtml(draft.clientName) : ''}">
       </div>
       <div class="form-group">
         <label class="form-label">プロジェクト種別</label>
@@ -2239,6 +2246,18 @@ function buildTaskProjectCreatePanel() {
           <option value="production" ${draft.projectType === 'production' ? 'selected' : ''}>制作プロジェクト</option>
           <option value="recurring" ${draft.projectType === 'recurring' ? 'selected' : ''}>定期プロジェクト</option>
         </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">テンプレート</label>
+        <select class="form-select" id="qpj-template" onchange="onTaskProjectTemplateChange()">
+          <option value="">テンプレートなし</option>${templateOpts}
+        </select>
+        <div class="form-help">選ぶと、このプロジェクト用のフェーズと標準タスクも一緒に作成します。</div>
+        <div id="qpj-template-preview" class="template-preview"></div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">プロジェクトの納品日 *</label>
+        <input type="date" class="form-input" id="qpj-delivery" onchange="renderTaskProjectTemplatePreview()">
       </div>
       <div class="form-group" id="qpj-recurring-group" style="${recurringGroupDisplay}">
         <label class="form-label">定期案件名</label>
@@ -2249,15 +2268,6 @@ function buildTaskProjectCreatePanel() {
                placeholder="例：明治安田 月号 / プレゼントキャンペーン更新"
                value="${recurringSelectValue === '__new__' ? escHtml(draft.recurringSeries) : ''}">
         <div class="form-help">定期案件は既存名から選ぶと、表記ゆれを防げます。</div>
-      </div>
-      <div class="form-group">
-        <label class="form-label">クライアント名 *</label>
-        <select class="form-select" id="qpj-client-select" onchange="toggleTaskProjectCreateFields()">
-          ${clientSelectOpts}
-        </select>
-        <input class="form-input" id="qpj-client" style="margin-top:8px;${clientInputDisplay}"
-               placeholder="例：〇〇株式会社"
-               value="${clientSelectValue === '__new__' ? escHtml(draft.clientName) : ''}">
       </div>
       <div class="form-group">
         <label class="form-label">プロジェクト名 *</label>
@@ -2272,16 +2282,19 @@ function buildTaskProjectCreatePanel() {
         </select>
       </div>
       <div class="form-group">
-        <label class="form-label">納品日 *</label>
-        <input type="date" class="form-input" id="qpj-delivery" onchange="renderTaskProjectTemplatePreview()">
+        <label class="form-label">案件区分</label>
+        <select class="form-select" id="qpj-deal-category">
+          <option value="existing">既存クライアント</option>
+          <option value="proposal">提案ベース</option>
+        </select>
       </div>
       <div class="form-group">
-        <label class="form-label">フェーズテンプレート</label>
-        <select class="form-select" id="qpj-template" onchange="onTaskProjectTemplateChange()">
-          <option value="">テンプレートなし</option>${templateOpts}
+        <label class="form-label">案件流入元</label>
+        <select class="form-select" id="qpj-lead-source">
+          ${leadSourceOptionsHTML()}
         </select>
-        <div class="form-help">選ぶと、このプロジェクト用のフェーズと標準タスクも一緒に作成します。</div>
-        <div id="qpj-template-preview" class="template-preview"></div>
+        <input class="form-input" id="qpj-lead-source-detail" style="margin-top:8px"
+               placeholder="例：LPの資料請求フォーム / メディアレーダー資料DL後 / 〇〇社から紹介">
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap">
         <button class="btn btn-ghost" type="button" onclick="toggleTaskProjectCreateBox(false)">閉じる</button>
@@ -2295,6 +2308,8 @@ function toggleTaskProjectCreateBox(force) {
   if (!box) return;
   const shouldShow = typeof force === 'boolean' ? force : box.style.display === 'none';
   box.style.display = shouldShow ? '' : 'none';
+  const projectSelect = document.getElementById('tf-project');
+  if (projectSelect) projectSelect.value = shouldShow ? '__create__' : (_taskFormData.projectId || '');
   if (shouldShow) toggleTaskProjectCreateFields();
 }
 
