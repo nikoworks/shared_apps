@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'タスク種別・仮締切整理版 2026-07-13-02';
+const APP_BUILD_LABEL = 'タスク種別・仮締切整理版 2026-07-13-03';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const TASK_TYPE_GROUPS = {
@@ -562,6 +562,15 @@ function resolveMemberFromUrl() {
 function getMemberPageUrl(memberId) {
   const url = new URL(window.location.href);
   url.searchParams.set('member', memberId);
+  return url.toString();
+}
+
+function getMemberCleanupUrl(memberId, issue = 'tasks') {
+  const url = new URL(window.location.href);
+  url.search = '';
+  url.hash = '';
+  if (memberId) url.searchParams.set('member', memberId);
+  url.searchParams.set('cleanup', issue || 'tasks');
   return url.toString();
 }
 
@@ -7041,6 +7050,75 @@ function cleanupClientOptionsHTML(currentName = '') {
     .join('');
 }
 
+function cleanupRequestGroups(taskGroups = []) {
+  const groups = new Map();
+  taskGroups.forEach(taskGroup => {
+    const task = taskGroup.primaryTask || taskGroup;
+    const memberId = task?.memberId || '';
+    if (!memberId) return;
+    const current = groups.get(memberId) || { memberId, rows: 0, tasks: 0 };
+    current.rows += 1;
+    current.tasks += taskGroup.duplicateCount || 1;
+    groups.set(memberId, current);
+  });
+  return Array.from(groups.values()).sort((a, b) => {
+    const aName = DB.Members.get(a.memberId)?.name || '';
+    const bName = DB.Members.get(b.memberId)?.name || '';
+    return aName.localeCompare(bName, 'ja');
+  });
+}
+
+function cleanupRequestActionsHTML(taskGroups = []) {
+  const groups = cleanupRequestGroups(taskGroups);
+  if (!groups.length) return '';
+  if (_cleanupFilter.memberId) {
+    const member = DB.Members.get(_cleanupFilter.memberId);
+    const group = groups.find(item => item.memberId === _cleanupFilter.memberId) || groups[0];
+    return `<button class="btn btn-secondary btn-sm" onclick="copyCleanupRequest('${group.memberId}')">${escHtml(member?.name || '本人')}へ依頼文コピー</button>`;
+  }
+  return `<div class="cleanup-request-actions">
+    ${groups.map(group => {
+      const member = DB.Members.get(group.memberId);
+      return `<button class="btn btn-ghost btn-sm" onclick="copyCleanupRequest('${group.memberId}')">${escHtml(member?.name || '担当未設定')}へ依頼 (${group.tasks}件)</button>`;
+    }).join('')}
+  </div>`;
+}
+
+async function copyCleanupRequest(memberId) {
+  const member = DB.Members.get(memberId);
+  if (!member) { showToast('依頼先メンバーが見つかりません', 'error'); return; }
+  const taskGroups = analyzeDataIssues().missingProjectTasks.filter(group => {
+    const task = group.primaryTask || group;
+    return task.memberId === memberId;
+  });
+  const taskCount = taskGroups.reduce((sum, group) => sum + (group.duplicateCount || 1), 0);
+  if (!taskCount) { showToast(`${member.name}さんの未紐付けタスクはありません`, 'info'); return; }
+  const url = getMemberCleanupUrl(memberId, 'tasks');
+  const sampleLines = taskGroups.slice(0, 5).map(group => {
+    const task = group.primaryTask || group;
+    const source = task.sourceProjectName ? ` / 確認名: ${task.sourceProjectName}` : '';
+    return `- ${task.content || '未入力タスク'}${source}`;
+  });
+  if (taskGroups.length > 5) sampleLines.push(`- ほか${taskGroups.length - 5}行`);
+  const message = [
+    `${member.name}さん`,
+    '',
+    'TaskBoardにプロジェクト未紐付けのタスクがあります。',
+    '下記URLから開いて、正しいプロジェクトへ紐付けをお願いします。',
+    '',
+    `対象: ${taskCount}件`,
+    ...sampleLines,
+    '',
+    url,
+  ].join('\n');
+  try {
+    await navigator.clipboard.writeText(message);
+    showToast('本人への依頼文をコピーしました', 'success');
+  } catch {
+    window.prompt('この文章をコピーしてください', message);
+  }
+}
+
 function cleanupTaskSection(tasks) {
   const actualTaskCount = tasks.reduce((sum, group) => sum + (group.duplicateCount || 1), 0);
   const duplicateCount = actualTaskCount - tasks.length;
@@ -7051,7 +7129,10 @@ function cleanupTaskSection(tasks) {
           <h3>未紐付け・確認待ちタスク</h3>
           <p>Chatwork取り込みや古い入力で、正式プロジェクトに紐付いていないタスクです。重複候補は1行にまとめています。</p>
         </div>
-        <span class="cleanup-pill">${tasks.length}行${duplicateCount ? ` / 重複${duplicateCount}件を集約` : ''}</span>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+          ${cleanupRequestActionsHTML(tasks)}
+          <span class="cleanup-pill">${tasks.length}行${duplicateCount ? ` / 重複${duplicateCount}件を集約` : ''}</span>
+        </div>
       </div>
       ${tasks.length ? tasks.map(cleanupTaskRow).join('') : cleanupEmpty('未紐付けタスクはありません')}
     </section>`;
@@ -8225,6 +8306,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   updateSidebarDate();
   updateMorningBadge();
   if (openUrlRequestedProjectReview()) return;
+  if (openUrlRequestedCleanup()) return;
   navigate(_personalMemberId ? 'tasks' : 'dashboard');
   openUrlRequestedProject();
   if (carriedCount > 0) {
@@ -8245,6 +8327,16 @@ function openUrlRequestedProjectReview() {
   _currentPage = 'projectReview';
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
   renderProjectReviewPage(reviewId);
+  return true;
+}
+
+function openUrlRequestedCleanup() {
+  const params = new URLSearchParams(window.location.search);
+  const cleanupIssue = params.get('cleanup');
+  if (!cleanupIssue) return false;
+  _cleanupFilter.issue = cleanupIssue || 'tasks';
+  if (_personalMemberId) _cleanupFilter.memberId = _personalMemberId;
+  navigate('cleanup');
   return true;
 }
 
