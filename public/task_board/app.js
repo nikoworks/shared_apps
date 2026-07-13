@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'タスク種別・仮締切整理版 2026-07-13-01';
+const APP_BUILD_LABEL = 'タスク種別・仮締切整理版 2026-07-13-02';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const TASK_TYPE_GROUPS = {
@@ -14,7 +14,7 @@ const TASK_MODE_OPTIONS = [
   { value: 'project', label: 'プロジェクト作業' },
   { value: 'self', label: '自己完結タスク' },
   { value: 'review_required', label: '確認してもらう作業' },
-  { value: 'waiting', label: '待ち・追いかけ' },
+  { value: 'waiting', label: '確認待ち・追いかけ' },
   { value: 'review_assigned', label: '確認するタスク' },
 ];
 const SELF_TASK_CATEGORIES = ['日次作業', '社内作業', '経理', '共有', '整理', 'その他'];
@@ -54,6 +54,10 @@ function taskTypeOptionsHTML(selected = '作業') {
 function isReviewTask(taskOrType) {
   const type = typeof taskOrType === 'string' ? taskOrType : taskOrType?.taskType;
   return REVIEW_TASK_TYPES.has(type);
+}
+
+function isAssignedReviewTask(task) {
+  return Boolean(task && isReviewTask(task) && normalizeTaskMode(task) === 'review_assigned');
 }
 
 function reviewTaskAnswerLabels(taskType) {
@@ -1414,8 +1418,8 @@ function collapseTaskDisplayDuplicates(tasks) {
 function taskProjectSortLabel(task) {
   const mode = normalizeTaskMode(task);
   if (mode === 'self') return `自己完結 / ${task.categoryName || 'その他'}`;
-  if (taskIsWaiting(task)) return `待ち・追いかけ / ${task.waitingFor || task.temporaryDueReason || task.waitReason || '確認待ち'}`;
-  if (isReviewTask(task)) return '確認すること';
+  if (taskIsWaiting(task)) return `確認待ち・追いかけ / ${task.waitingFor || task.temporaryDueReason || task.waitReason || '確認待ち'}`;
+  if (isAssignedReviewTask(task)) return '確認すること';
   const project = task?.projectId ? DB.Projects.get(task.projectId) : null;
   if (project) return cleanupProjectName(project);
   if (task?.sourceProjectName) return `確認待ち / ${task.sourceProjectName}`;
@@ -1423,7 +1427,7 @@ function taskProjectSortLabel(task) {
 }
 
 function taskLaneKey(task) {
-  if (isReviewTask(task)) return 'review';
+  if (isAssignedReviewTask(task)) return 'review';
   if (taskIsWaiting(task)) return 'waiting';
   if (normalizeTaskMode(task) === 'self') return 'self';
   return 'work';
@@ -1433,7 +1437,7 @@ function taskLaneLabel(key) {
   return {
     work: '今日やること',
     review: '確認すること',
-    waiting: '待ち・追いかけ',
+    waiting: '確認待ち・追いかけ',
     self: '自己完結タスク',
   }[key] || '今日やること';
 }
@@ -1495,7 +1499,7 @@ function todayTaskRow(task) {
   const isDone = task.completed === true;
   const visibleNote = visibleTaskNote(task);
   const dateLabel = duplicateCount > 1 && task._displayDateSummary ? task._displayDateSummary : '';
-  const leadingControl = isReviewTask(task)
+  const leadingControl = isAssignedReviewTask(task)
     ? reviewTaskControlHTML(task)
     : `<button class="check-btn ${isDone ? 'done' : ''}"
               onclick="toggleTodayTaskCompleteGroup('${taskIds.join(',')}')"
@@ -1527,14 +1531,14 @@ function todayTaskRow(task) {
         </div>
       </div>
       <div style="display:flex;gap:5px;align-items:center;flex-shrink:0">
-        <button class="btn btn-ghost btn-sm" onclick="openCleanupTaskEdit('${task.id}')">編集</button>
+        <button class="btn btn-ghost btn-sm" onclick="openTaskModal('${task.id}')">編集</button>
         <button class="btn btn-danger btn-sm" onclick="deleteTask('${task.id}')">削除</button>
       </div>
     </div>`;
 }
 
 function reviewResultTagHTML(task) {
-  if (!isReviewTask(task)) return '';
+  if (!isAssignedReviewTask(task)) return '';
   if (task.resultStatus === 'ok') return '<span class="tag tag-done">回答：OK</span>';
   if (task.resultStatus === 'rejected') return '<span class="tag tag-rejected">回答：差し戻し</span>';
   if (task.resultStatus === 'hold') return '<span class="tag tag-hold">回答：保留</span>';
@@ -2183,7 +2187,7 @@ function openTaskModal(editId, presetProjectId = '') {
       <select class="form-select" id="tf-task-type" onchange="handleTaskTypeChange(this.value)">
         ${taskTypeOptionsHTML(_taskFormData.taskType || '作業')}
       </select>
-      <div class="form-help">実際に手を動かすものは作業系、判断・承認を行うものは確認系を選びます。</div>
+      <div class="form-help">「確認してもらう作業」では、ここは通常「作業」のままでOKです。確認者側の確認タスクは別に自動作成されます。</div>
       <div class="form-help" id="tf-review-deadline-help" style="${isReviewTask(_taskFormData) ? '' : 'display:none'};color:var(--warning)">
         確認系タスクの期限は原則、翌営業日です。都合により締切日は変更できます。
       </div>
@@ -2298,6 +2302,11 @@ function handleTaskModeChange(mode) {
   if (!taskModeAllowsProject(_taskFormData.taskMode)) {
     _taskFormData.projectId = '';
     _taskFormData.phaseId = '';
+  }
+  if (_taskFormData.taskMode === 'review_required' && isReviewTask(_taskFormData.taskType)) {
+    _taskFormData.taskType = '作業';
+    const typeEl = document.getElementById('tf-task-type');
+    if (typeEl) typeEl.value = '作業';
   }
   if (_taskFormData.taskMode === 'waiting') {
     _taskFormData.dueDateIsTemporary = true;
@@ -2781,7 +2790,9 @@ async function saveTask(editId) {
     startDate: taskSchedule.startDate,
     estimatedHours: _taskFormData.estimatedHours || 1,
     durationDays: taskSchedule.durationDays,
-    taskType: document.getElementById('tf-task-type')?.value || _taskFormData.taskType || '作業',
+    taskType: taskMode === 'review_required'
+      ? '作業'
+      : (document.getElementById('tf-task-type')?.value || _taskFormData.taskType || '作業'),
     taskMode,
     categoryName: taskMode === 'self' ? categoryName : '',
     reviewerMemberId: taskMode === 'review_required' ? reviewerMemberId : '',
@@ -2836,10 +2847,10 @@ async function saveTask(editId) {
 function upsertPlannedReviewTask(sourceTask, reviewerMemberId, reviewDueDate) {
   if (!sourceTask || !reviewerMemberId || !reviewDueDate) return null;
   const schedule = canonicalTaskSchedule({
-    startDate: reviewDueDate,
+    startDate: DB.today(),
     dueDate: reviewDueDate,
-    displayDate: reviewDueDate,
-    durationDays: 1,
+    displayDate: DB.today(),
+    durationDays: Math.max(1, businessDatesBetween(DB.today(), reviewDueDate).length),
   });
   const existingId = sourceTask.plannedReviewTaskId;
   const existing = existingId ? DB.Tasks.get(existingId) : null;
