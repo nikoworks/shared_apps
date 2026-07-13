@@ -82,6 +82,7 @@ create table if not exists public.taskboard_data (
 | 窓口担当 | `projects.ownerMemberId` | 進行責任者・未担当タスクの初期担当候補 |
 | フェーズ | `projects.phases[]` と `tasks.phaseId` | タスクはフェーズIDだけを持つ |
 | タスク締切日 | `tasks.dueDate` | その日までに完了する日 |
+| 仮締切 | `tasks.dueDateIsTemporary` | Chatwork取込・一括入力などで締切専用値がない場合に、表示日を仮締切として入れた印 |
 | 日別表示日 | `tasks.displayDate` | 今日のタスク画面に出す日。繰り越しではこの値だけを移動する |
 | タスク開始日 | `tasks.startDate` | 未設定時は締切日と遂行期間から補う |
 | 遂行期間 | `tasks.durationDays` | 開始日から締切日までの営業日数 |
@@ -89,6 +90,8 @@ create table if not exists public.taskboard_data (
 | テンプレート締切計算 | `templates.tasks[].offset` | 納品日から何営業日前に締切を置くか |
 
 `tasks.date` は旧データ互換のため残します。新規保存では `tasks.dueDate` と同じ値を入れ、日別タスクの表示・繰り越し判断には `tasks.displayDate` を使います。
+
+タスク追加、プロジェクト内タスク追加、テンプレート展開、一括入力、Chatwork取込、ガントは、すべて同じ `tasks.startDate`、`tasks.durationDays`、`tasks.dueDate` を参照します。各画面専用の日程コピーは作りません。
 
 ## members
 
@@ -160,12 +163,15 @@ create table if not exists public.taskboard_data (
 | `content` | タスク内容 |
 | `estimatedHours` | 予定時間 |
 | `durationDays` | 遂行期間（日数）。開始日から締切日までの営業日数 |
+| `dueDateIsTemporary` | 締切が仮設定かどうか。Chatwork取込・一括入力では、締切専用の値がないため作業日を仮締切として保存する |
+| `taskType` | 手動作成: 作業、依頼、修正、納品、確認、進行許可。自動作成: 再確認 |
 | `reviewConfigMode` | `inherit` プロジェクト・フェーズ設定を使用 / `custom` タスク専用 |
 | `reviewerMemberIds` | タスク専用の確認者ID配列 |
 | `approvalMemberIds` | タスク専用の進行許可者ID配列 |
 | `reviewRule` | `inherit` / `all` / `any` |
 | `reviewDueDays` | タスク専用の確認期限（日数） |
 | `notifyProgressManager` | 進行管理役にも通知するか |
+| `scheduleAdjustments` | システムが行った後続日程調整の履歴。原因、バッファー使用日数、移動日数、変更タスク、納品影響を保持 |
 | `note` | 備考 |
 | `sourceProjectName` | Chatwork等から来た元のプロジェクト名 |
 | `needsProjectReview` | プロジェクト確認待ちか |
@@ -173,18 +179,29 @@ create table if not exists public.taskboard_data (
 | `carriedOverToTaskId` | 旧仕様の繰り越し先タスクID |
 | `completed` | `null` 未確認 / `true` 完了 / `false` 未完了 |
 | `incompleteReason` | 未完了理由 |
-| `parentTaskId` | 今後追加候補。確認・修正・再確認などの元タスクID |
-| `resultStatus` | 今後追加候補。`ok` / `rejected` / `pending` など |
-| `rejectionReason` | 今後追加候補。差し戻し理由 |
+| `parentTaskId` | 確認・修正・再確認の元タスクID |
+| `reviewTaskId` | 修正・再確認を発生させた確認系タスクID |
+| `generatedByWorkflow` | 差し戻し・修正完了フローで自動作成されたか |
+| `resultStatus` | 確認結果。`ok` / `rejected` / `hold` |
+| `rejectionReason` | 差し戻し理由 |
+| `holdReason` | 保留理由 |
+| `respondedAt` | 最終回答日時 |
+| `reservedReviewDueDate` | 差し戻し時に確保した再確認予定日 |
+| `scheduleAdjustedAt` | システムによる最終日程調整日時 |
+| `scheduleAdjustmentReason` | 日程を自動調整した理由 |
+| `dependencyTaskIds` | このタスクを開始する前に完了が必要な前提タスクID配列 |
+| `dependencyMode` | `all` 前提をすべて完了 / `any` 前提のどれかを完了 |
 | `mergedIntoTaskId` | 重複整理で統合先になったタスクID。設定済みのタスクは通常表示から外す |
 | `mergedAt` | 重複整理で統合した日時 |
 | `createdAt` | 作成日時 |
 
 ## asks
 
-進行に関わる確認・お願いです。個人的な作業相談ではなく、進行に影響する確認を残すためのデータです。
+システムが作成する確認開始通知、進行許可通知、日程変更通知と、過去に登録された確認依頼を保持するデータです。
 
-現段階では `asks` として独立管理していますが、今後は確認・進行許可・修正・再確認を `tasks` の一種として扱う方向を検討します。
+新しい確認作業は `asks` へ手入力せず、期限・担当者・工数を持つ `tasks` の確認系タスクとして管理します。
+
+同じ種別・同じ宛先・同じ関連タスクの未完了通知は新規作成せず、既存通知を更新します。過去データに残っている重複通知は、起動時に1件へ整理します。
 
 | 項目 | 内容 |
 |---|---|
@@ -197,7 +214,8 @@ create table if not exists public.taskboard_data (
 | `projectId` | 関連プロジェクトID |
 | `projectName` | 関連プロジェクト名 |
 | `taskId` | 関連タスクID |
-| `dueText` | 期限テキスト |
+| `dueDate` | 確認期限。カレンダーで選択する日付 |
+| `dueText` | 旧データ互換用。新規保存では `dueDate` と同じ日付 |
 | `status` | `open` / `done` / 今後候補: `rejected` |
 | `date` | 登録日 |
 | `createdAt` | 作成日時 |
@@ -300,3 +318,23 @@ Chatworkから来たタスクのプロジェクト名が既存プロジェクト
 
 クライアントは独立したテーブルではなく、各プロジェクトの `clientName` 文字列として保存しています。
 そのため、クライアント整理は「クライアント行を削除する」のではなく、その名前を使っているプロジェクトの `clientName` を正式名称へ置き換える処理です。
+
+## 2026-07-13 追記: タスク種別・確認・待ち管理フィールド
+
+`tasks` には、従来の `taskType` に加えて、日々の入力負荷を下げるための運用フィールドを追加する。
+
+| 項目 | 内容 |
+|---|---|
+| `taskMode` | `project` / `self` / `review_required` / `waiting` / `review_assigned` |
+| `categoryName` | 自己完結タスクのカテゴリ |
+| `reviewerMemberId` | 確認してもらう作業の確認者 |
+| `reviewDueDate` | 確認者側の確認締切 |
+| `plannedReviewTaskId` | 自動作成された確認タスクID |
+| `reviewStatus` | 確認タスク作成・回答状態の補助情報 |
+| `waitingFor` | 待ち・追いかけの待ち先 |
+| `waitReason` | 待ち理由 |
+| `nextCheckDate` | 次に確認する日 |
+| `temporaryDueReason` | 仮締切理由 |
+| `temporaryDueCheckDate` | 仮締切の次回確認日 |
+
+`dueDate` は必須とし、未定の場合も仮の日付を入れる。`dueDateIsTemporary = true` の場合は、理由と次回確認日を持つ。

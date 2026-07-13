@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'タスク追加導線整理版 2026-07-02-02';
+const APP_BUILD_LABEL = 'タスク種別・仮締切整理版 2026-07-13-01';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const TASK_TYPE_GROUPS = {
@@ -10,6 +10,15 @@ const TASK_TYPE_GROUPS = {
   '確認系タスク': ['確認', '進行許可'],
 };
 const REVIEW_TASK_TYPES = new Set(['確認', '進行許可', '再確認']);
+const TASK_MODE_OPTIONS = [
+  { value: 'project', label: 'プロジェクト作業' },
+  { value: 'self', label: '自己完結タスク' },
+  { value: 'review_required', label: '確認してもらう作業' },
+  { value: 'waiting', label: '待ち・追いかけ' },
+  { value: 'review_assigned', label: '確認するタスク' },
+];
+const SELF_TASK_CATEGORIES = ['日次作業', '社内作業', '経理', '共有', '整理', 'その他'];
+const TEMP_DUE_REASONS = ['日程未定', 'クライアント確認待ち', '外部素材待ち', '社内確認待ち', '前工程待ち', 'その他'];
 const JP_HOLIDAYS = new Set([
   '2026-01-01','2026-01-12','2026-02-11','2026-02-23','2026-03-20',
   '2026-04-29','2026-05-03','2026-05-04','2026-05-05','2026-05-06',
@@ -51,6 +60,59 @@ function reviewTaskAnswerLabels(taskType) {
   if (taskType === '進行許可') return { ok: '許可する', reject: '許可しない' };
   if (taskType === '再確認') return { ok: '修正確認済み', reject: '再差し戻し' };
   return { ok: 'OK', reject: '差し戻す' };
+}
+
+function normalizeTaskMode(task = {}) {
+  if (task.taskMode) return task.taskMode;
+  if (isReviewTask(task)) return 'review_assigned';
+  if (task.waitingFor || task.waitReason || task.nextCheckDate) return 'waiting';
+  if (!task.projectId && !task.sourceProjectName) return 'self';
+  return 'project';
+}
+
+function taskModeLabel(mode) {
+  return TASK_MODE_OPTIONS.find(item => item.value === mode)?.label || 'プロジェクト作業';
+}
+
+function taskModeOptionsHTML(selected = 'project', includeAssigned = false) {
+  return TASK_MODE_OPTIONS
+    .filter(item => includeAssigned || item.value !== 'review_assigned')
+    .map(item => `<option value="${item.value}" ${selected === item.value ? 'selected' : ''}>${item.label}</option>`)
+    .join('');
+}
+
+function taskModeRequiresProject(mode) {
+  return mode === 'project' || mode === 'review_required';
+}
+
+function taskModeAllowsProject(mode) {
+  return mode !== 'self';
+}
+
+function taskIsWaiting(task = {}) {
+  const mode = normalizeTaskMode(task);
+  return mode === 'waiting' || (task.dueDateIsTemporary && (task.nextCheckDate || task.temporaryDueCheckDate));
+}
+
+function taskModeTagHTML(task) {
+  const mode = normalizeTaskMode(task);
+  const label = taskModeLabel(mode);
+  const className = mode === 'self' ? 'tag-self' : mode === 'waiting' ? 'tag-hold' : mode === 'review_required' ? 'tag-ask' : isReviewTask(task) ? 'tag-ask' : '';
+  return `<span class="tag ${className}">${escHtml(label)}</span>`;
+}
+
+function taskTemporaryDueDetailHTML(task) {
+  if (!task?.dueDateIsTemporary) return '';
+  const reason = task.temporaryDueReason || task.waitReason || '理由未設定';
+  const checkDate = task.temporaryDueCheckDate || task.nextCheckDate || '';
+  return `<span class="tag tag-due-temp">仮理由：${escHtml(reason)}</span>${checkDate ? `<span class="tag tag-due-temp">次回確認 ${escHtml(DB.fmtDate(checkDate))}</span>` : ''}`;
+}
+
+function taskWaitingDetailHTML(task) {
+  if (!taskIsWaiting(task)) return '';
+  const waitingFor = task.waitingFor ? `待ち先：${task.waitingFor}` : '';
+  const reason = task.waitReason ? `理由：${task.waitReason}` : '';
+  return [waitingFor, reason].filter(Boolean).map(text => `<span class="tag tag-hold">${escHtml(text)}</span>`).join('');
 }
 
 function askDueDateValue(ask) {
@@ -1350,35 +1412,75 @@ function collapseTaskDisplayDuplicates(tasks) {
 }
 
 function taskProjectSortLabel(task) {
+  const mode = normalizeTaskMode(task);
+  if (mode === 'self') return `自己完結 / ${task.categoryName || 'その他'}`;
+  if (taskIsWaiting(task)) return `待ち・追いかけ / ${task.waitingFor || task.temporaryDueReason || task.waitReason || '確認待ち'}`;
+  if (isReviewTask(task)) return '確認すること';
   const project = task?.projectId ? DB.Projects.get(task.projectId) : null;
   if (project) return cleanupProjectName(project);
   if (task?.sourceProjectName) return `確認待ち / ${task.sourceProjectName}`;
   return '未選択';
 }
 
+function taskLaneKey(task) {
+  if (isReviewTask(task)) return 'review';
+  if (taskIsWaiting(task)) return 'waiting';
+  if (normalizeTaskMode(task) === 'self') return 'self';
+  return 'work';
+}
+
+function taskLaneLabel(key) {
+  return {
+    work: '今日やること',
+    review: '確認すること',
+    waiting: '待ち・追いかけ',
+    self: '自己完結タスク',
+  }[key] || '今日やること';
+}
+
 function renderMemberTaskGroups(tasks) {
-  const groups = [];
+  const laneOrder = ['work', 'review', 'waiting', 'self'];
+  const lanes = new Map(laneOrder.map(key => [key, []]));
   tasks.forEach(task => {
-    const key = taskProjectSortLabel(task);
-    let group = groups.find(item => item.key === key);
-    if (!group) {
-      group = { key, tasks: [] };
-      groups.push(group);
-    }
-    group.tasks.push(task);
+    const key = taskLaneKey(task);
+    if (!lanes.has(key)) lanes.set(key, []);
+    lanes.get(key).push(task);
   });
 
-  return groups.map(group => {
-    const hours = group.tasks.reduce((sum, task) => sum + (task.estimatedHours || 0), 0);
-    return `
-      <div class="task-project-group">
-        <div class="task-project-group-head">
-          <span>${escHtml(group.key)}</span>
-          <small>${group.tasks.length}件 / ${hours}h</small>
-        </div>
-        ${group.tasks.map(t => todayTaskRow(t)).join('')}
-      </div>`;
-  }).join('');
+  return laneOrder
+    .filter(key => (lanes.get(key) || []).length)
+    .map(key => {
+      const laneTasks = lanes.get(key) || [];
+      const groups = [];
+      laneTasks.forEach(task => {
+        const groupKey = taskProjectSortLabel(task);
+        let group = groups.find(item => item.key === groupKey);
+        if (!group) {
+          group = { key: groupKey, tasks: [] };
+          groups.push(group);
+        }
+        group.tasks.push(task);
+      });
+      const laneHours = laneTasks.reduce((sum, task) => sum + (task.estimatedHours || 0), 0);
+      return `
+        <div class="task-lane-group" style="margin-top:10px">
+          <div class="task-project-group-head" style="background:var(--bg-glass)">
+            <span>${escHtml(taskLaneLabel(key))}</span>
+            <small>${laneTasks.length}件 / ${laneHours}h</small>
+          </div>
+          ${groups.map(group => {
+            const hours = group.tasks.reduce((sum, task) => sum + (task.estimatedHours || 0), 0);
+            return `
+              <div class="task-project-group">
+                <div class="task-project-group-head">
+                  <span>${escHtml(group.key)}</span>
+                  <small>${group.tasks.length}件 / ${hours}h</small>
+                </div>
+                ${group.tasks.map(t => todayTaskRow(t)).join('')}
+              </div>`;
+          }).join('')}
+        </div>`;
+    }).join('');
 }
 
 function todayTaskRow(task) {
@@ -1409,6 +1511,9 @@ function todayTaskRow(task) {
         <div class="task-meta">
           ${taskDateTagHTML(originDate, { carried: isCarry, label: dateLabel || undefined })}
           ${taskDueTagHTML(task)}
+          ${taskModeTagHTML(task)}
+          ${taskTemporaryDueDetailHTML(task)}
+          ${taskWaitingDetailHTML(task)}
           <span>担当：${escHtml(ownerLabel)}</span>
           ${projectHTML}
           ${phaseName ? `<span class="tag tag-phase">${phaseName}</span>` : ''}
@@ -1976,6 +2081,16 @@ function openTaskModal(editId, presetProjectId = '') {
       content: '',
       estimatedHours: 1,
       taskType: '作業',
+      taskMode: presetProject ? 'project' : 'project',
+      categoryName: '日次作業',
+      reviewerMemberId: '',
+      reviewDueDate: addBusinessDays(getTaskDefaultDate(), 1),
+      waitingFor: '',
+      waitReason: '',
+      nextCheckDate: getTaskDefaultDate(),
+      dueDateIsTemporary: false,
+      temporaryDueReason: '',
+      temporaryDueCheckDate: getTaskDefaultDate(),
       durationDays: 1,
       startDate: getTaskDefaultDate(),
       reviewConfigMode: 'inherit',
@@ -1991,6 +2106,11 @@ function openTaskModal(editId, presetProjectId = '') {
       projectKindFilter: presetProject?.projectType === 'recurring' ? 'recurring' : (presetProject ? 'standard' : 'all'),
     };
   }
+  _taskFormData.taskMode = normalizeTaskMode(_taskFormData);
+  _taskFormData.categoryName = _taskFormData.categoryName || '日次作業';
+  _taskFormData.reviewDueDate = _taskFormData.reviewDueDate || addBusinessDays(taskDueDateValue(_taskFormData) || DB.today(), 1);
+  _taskFormData.nextCheckDate = _taskFormData.nextCheckDate || _taskFormData.temporaryDueCheckDate || DB.today();
+  _taskFormData.temporaryDueCheckDate = _taskFormData.temporaryDueCheckDate || _taskFormData.nextCheckDate || DB.today();
   if (!_taskFormData.projectKindFilter) {
     const currentProject = _taskFormData.projectId ? DB.Projects.get(_taskFormData.projectId) : null;
     _taskFormData.projectKindFilter = currentProject?.projectType === 'recurring' ? 'recurring' : 'all';
@@ -2024,7 +2144,20 @@ function openTaskModal(editId, presetProjectId = '') {
       </select>
     </div>
     <div class="form-group">
-      <label class="form-label">プロジェクト</label>
+      <label class="form-label">タスクの扱い *</label>
+      <select class="form-select" id="tf-task-mode" onchange="handleTaskModeChange(this.value)">
+        ${taskModeOptionsHTML(_taskFormData.taskMode || 'project', Boolean(editId && normalizeTaskMode(_taskFormData) === 'review_assigned'))}
+      </select>
+      <div class="form-help">案件の作業はプロジェクトへ紐付けます。日次作業など本人だけで完了できるものは自己完結にできます。</div>
+    </div>
+    <div class="form-group" id="tf-category-group" style="${(_taskFormData.taskMode || 'project') === 'self' ? '' : 'display:none'}">
+      <label class="form-label">カテゴリ *</label>
+      <select class="form-select" id="tf-category" onchange="_taskFormData.categoryName=this.value">
+        ${SELF_TASK_CATEGORIES.map(name => `<option value="${escHtml(name)}" ${(_taskFormData.categoryName || '日次作業') === name ? 'selected' : ''}>${escHtml(name)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-group" id="tf-project-group" style="${taskModeAllowsProject(_taskFormData.taskMode || 'project') ? '' : 'display:none'}">
+      <label class="form-label">プロジェクト${taskModeRequiresProject(_taskFormData.taskMode || 'project') ? ' *' : ''}</label>
       <select class="form-select" id="tf-project-kind"
               style="margin-bottom:8px"
               onchange="_taskFormData.projectKindFilter=this.value;_taskFormData.projectId='';_taskFormData.phaseId='';refreshTaskProjectOptions()">
@@ -2039,7 +2172,7 @@ function openTaskModal(editId, presetProjectId = '') {
       <div class="form-help">通常は既存プロジェクトを選びます。ない場合は一番下の「＋ 新規プロジェクトを作成」を選んでください。</div>
       ${buildTaskProjectCreatePanel()}
     </div>
-    <div class="form-group">
+    <div class="form-group" id="tf-phase-group" style="${taskModeAllowsProject(_taskFormData.taskMode || 'project') ? '' : 'display:none'}">
       <label class="form-label">フェーズ</label>
       <select class="form-select" id="tf-phase" onchange="_taskFormData.phaseId=this.value">
         ${phaseOpts}
@@ -2054,6 +2187,30 @@ function openTaskModal(editId, presetProjectId = '') {
       <div class="form-help" id="tf-review-deadline-help" style="${isReviewTask(_taskFormData) ? '' : 'display:none'};color:var(--warning)">
         確認系タスクの期限は原則、翌営業日です。都合により締切日は変更できます。
       </div>
+    </div>
+    <div class="form-group" id="tf-review-required-group" style="${(_taskFormData.taskMode || 'project') === 'review_required' ? '' : 'display:none'}">
+      <label class="form-label">確認者 *</label>
+      <select class="form-select" id="tf-reviewer" onchange="_taskFormData.reviewerMemberId=this.value">
+        <option value="">選択してください</option>${memberOptionsHTML(_taskFormData.reviewerMemberId || '', false)}
+      </select>
+      <div style="height:8px"></div>
+      <label class="form-label">確認締切 *</label>
+      <input type="date" class="form-input" id="tf-review-due" value="${_taskFormData.reviewDueDate || addBusinessDays(formDueDate, 1)}" onchange="_taskFormData.reviewDueDate=this.value">
+      <div class="form-help">作業タスクとは別に、確認者のタスク画面へ確認タスクを自動作成します。</div>
+    </div>
+    <div class="form-group" id="tf-waiting-group" style="${(_taskFormData.taskMode || 'project') === 'waiting' ? '' : 'display:none'}">
+      <label class="form-label">待ち先 *</label>
+      <input class="form-input" id="tf-waiting-for" placeholder="例：丹平製薬 / 外部パートナー / 佐藤さん" value="${escHtml(_taskFormData.waitingFor || '')}" oninput="_taskFormData.waitingFor=this.value">
+      <div style="height:8px"></div>
+      <label class="form-label">待ち理由 *</label>
+      <select class="form-select" id="tf-wait-reason" onchange="_taskFormData.waitReason=this.value">
+        <option value="">選択してください</option>
+        ${TEMP_DUE_REASONS.map(reason => `<option value="${escHtml(reason)}" ${(_taskFormData.waitReason || '') === reason ? 'selected' : ''}>${escHtml(reason)}</option>`).join('')}
+      </select>
+      <div style="height:8px"></div>
+      <label class="form-label">次回確認日 *</label>
+      <input type="date" class="form-input" id="tf-next-check" value="${_taskFormData.nextCheckDate || DB.today()}" onchange="_taskFormData.nextCheckDate=this.value">
+      <div class="form-help">自分の作業ではなくても、追いかけ責任のあるものとして担当者のタスク画面に表示します。</div>
     </div>
     <div class="task-schedule-box">
       <div class="task-schedule-title">タスク日程</div>
@@ -2078,6 +2235,26 @@ function openTaskModal(editId, presetProjectId = '') {
         </div>
       </div>
       <div class="form-help">開始日と遂行期間から締切日を自動計算します。締切日だけを手で変更しても、開始日は変わりません。</div>
+      <label class="form-check" style="margin-top:10px;display:flex;gap:8px;align-items:center">
+        <input type="checkbox" id="tf-due-temp" ${_taskFormData.dueDateIsTemporary ? 'checked' : ''} onchange="handleTemporaryDueChange(this.checked)">
+        <span>この締切は仮</span>
+      </label>
+      <div id="tf-temp-due-fields" style="${_taskFormData.dueDateIsTemporary ? '' : 'display:none'};margin-top:10px">
+        <div class="task-date-grid">
+          <div class="form-group">
+            <label class="form-label">仮締切理由 *</label>
+            <select class="form-select" id="tf-temp-reason" onchange="_taskFormData.temporaryDueReason=this.value">
+              <option value="">選択してください</option>
+              ${TEMP_DUE_REASONS.map(reason => `<option value="${escHtml(reason)}" ${(_taskFormData.temporaryDueReason || '') === reason ? 'selected' : ''}>${escHtml(reason)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">次回確認日 *</label>
+            <input type="date" class="form-input" id="tf-temp-check-date" value="${_taskFormData.temporaryDueCheckDate || DB.today()}" onchange="_taskFormData.temporaryDueCheckDate=this.value">
+          </div>
+        </div>
+        <div class="form-help">仮締切のまま放置されないよう、次回確認日に担当者の画面へアラートとして残します。</div>
+      </div>
       ${workDateHelp}
     </div>
     <div class="form-group">
@@ -2109,10 +2286,51 @@ function openTaskModal(editId, presetProjectId = '') {
     </div>
   `, editId ? 'タスクを編集' : 'タスクを追加');
 
+  toggleTaskModeFields();
   if (_openTaskProjectCreateOnNextModal) {
     _openTaskProjectCreateOnNextModal = false;
     toggleTaskProjectCreateBox(true);
   }
+}
+
+function handleTaskModeChange(mode) {
+  _taskFormData.taskMode = mode || 'project';
+  if (!taskModeAllowsProject(_taskFormData.taskMode)) {
+    _taskFormData.projectId = '';
+    _taskFormData.phaseId = '';
+  }
+  if (_taskFormData.taskMode === 'waiting') {
+    _taskFormData.dueDateIsTemporary = true;
+    _taskFormData.temporaryDueReason = _taskFormData.temporaryDueReason || _taskFormData.waitReason || '日程未定';
+    _taskFormData.temporaryDueCheckDate = _taskFormData.temporaryDueCheckDate || _taskFormData.nextCheckDate || DB.today();
+  }
+  toggleTaskModeFields();
+}
+
+function toggleTaskModeFields() {
+  const mode = _taskFormData.taskMode || 'project';
+  const showProject = taskModeAllowsProject(mode);
+  const projectGroup = document.getElementById('tf-project-group');
+  const phaseGroup = document.getElementById('tf-phase-group');
+  const categoryGroup = document.getElementById('tf-category-group');
+  const reviewGroup = document.getElementById('tf-review-required-group');
+  const waitingGroup = document.getElementById('tf-waiting-group');
+  if (projectGroup) projectGroup.style.display = showProject ? '' : 'none';
+  if (phaseGroup) phaseGroup.style.display = showProject ? '' : 'none';
+  if (categoryGroup) categoryGroup.style.display = mode === 'self' ? '' : 'none';
+  if (reviewGroup) reviewGroup.style.display = mode === 'review_required' ? '' : 'none';
+  if (waitingGroup) waitingGroup.style.display = mode === 'waiting' ? '' : 'none';
+  const tempCheck = document.getElementById('tf-due-temp');
+  if (tempCheck && mode === 'waiting') {
+    tempCheck.checked = true;
+    handleTemporaryDueChange(true);
+  }
+}
+
+function handleTemporaryDueChange(checked) {
+  _taskFormData.dueDateIsTemporary = Boolean(checked);
+  const fields = document.getElementById('tf-temp-due-fields');
+  if (fields) fields.style.display = checked ? '' : 'none';
 }
 
 function refreshModalPhases() {
@@ -2489,7 +2707,7 @@ async function saveTask(editId) {
   const memberId = document.getElementById('tf-member')?.value;
   const content  = document.getElementById('tf-content')?.value?.trim();
   const note     = document.getElementById('tf-note')?.value?.trim() || '';
-  const taskDate = document.getElementById('tf-date')?.value || DB.today();
+  const taskDate = document.getElementById('tf-date')?.value || '';
   const taskStartDate = document.getElementById('tf-start-date')?.value || '';
   const taskSchedule = canonicalTaskSchedule({
     startDate: taskStartDate,
@@ -2502,39 +2720,85 @@ async function saveTask(editId) {
   if (!memberId) { showToast('担当者を選択してください', 'error'); return; }
   if (!content)  { showToast('タスク内容を入力してください', 'error'); return; }
   if (!taskStartDate) { showToast('開始日を入力してください', 'error'); return; }
+  if (!taskDate) { showToast('締切日を入力してください', 'error'); return; }
   if (taskStartDate > taskDate) { showToast('締切日は開始日以降の日付にしてください', 'error'); return; }
   const before = {
     projects: DB.Projects.all().map(project => ({ ...project })),
     tasks: taskSnapshot(),
     asks: DB.Asks.all().map(ask => ({ ...ask })),
   };
+  const taskMode = document.getElementById('tf-task-mode')?.value || _taskFormData.taskMode || 'project';
+  const categoryName = document.getElementById('tf-category')?.value || _taskFormData.categoryName || '';
+  const reviewerMemberId = document.getElementById('tf-reviewer')?.value || '';
+  const reviewDueDate = document.getElementById('tf-review-due')?.value || '';
+  const dueDateIsTemporary = Boolean(document.getElementById('tf-due-temp')?.checked);
+  const temporaryDueReason = document.getElementById('tf-temp-reason')?.value || '';
+  const temporaryDueCheckDate = document.getElementById('tf-temp-check-date')?.value || '';
+  const waitingFor = document.getElementById('tf-waiting-for')?.value?.trim() || '';
+  const waitReason = document.getElementById('tf-wait-reason')?.value || '';
+  const nextCheckDate = document.getElementById('tf-next-check')?.value || '';
+  if (taskMode === 'self' && !categoryName) { showToast('自己完結タスクのカテゴリを選択してください', 'error'); return; }
+  if (taskMode === 'review_required') {
+    if (!reviewerMemberId) { showToast('確認者を選択してください', 'error'); return; }
+    if (!reviewDueDate) { showToast('確認締切を入力してください', 'error'); return; }
+    if (reviewDueDate < taskDate) { showToast('確認締切は作業締切以降の日付にしてください', 'error'); return; }
+  }
+  if (taskMode === 'waiting') {
+    if (!waitingFor) { showToast('待ち先を入力してください', 'error'); return; }
+    if (!waitReason) { showToast('待ち理由を選択してください', 'error'); return; }
+    if (!nextCheckDate) { showToast('次回確認日を入力してください', 'error'); return; }
+  }
+  if (dueDateIsTemporary) {
+    if (!temporaryDueReason) { showToast('仮締切理由を選択してください', 'error'); return; }
+    if (!temporaryDueCheckDate) { showToast('仮締切の次回確認日を入力してください', 'error'); return; }
+  }
   const createBox = document.getElementById('task-project-create-box');
   let createdProjectResult = null;
-  if (!_taskFormData.projectId && createBox && createBox.style.display !== 'none') {
+  if (taskModeRequiresProject(taskMode) && !_taskFormData.projectId && createBox && createBox.style.display !== 'none') {
     createdProjectResult = createProjectFromTaskInline();
     if (!createdProjectResult) return;
   }
 
+  if (taskModeRequiresProject(taskMode) && !_taskFormData.projectId) {
+    showToast('プロジェクト作業は既存プロジェクトを選ぶか、仮プロジェクトとして作成してください', 'error');
+    return;
+  }
+  const effectiveDisplayDate = taskMode === 'waiting'
+    ? (nextCheckDate || displayDate || taskSchedule.displayDate)
+    : dueDateIsTemporary
+    ? (temporaryDueCheckDate || displayDate || taskSchedule.displayDate)
+    : (displayDate || taskSchedule.displayDate);
   const payload = {
     memberId,
-    projectId: _taskFormData.projectId || null,
-    phaseId:   _taskFormData.phaseId   || null,
+    projectId: taskModeAllowsProject(taskMode) ? (_taskFormData.projectId || null) : null,
+    phaseId:   taskModeAllowsProject(taskMode) ? (_taskFormData.phaseId || null) : null,
     content,
     note,
     date: taskSchedule.date,
     dueDate: taskSchedule.dueDate,
-    dueDateIsTemporary: false,
-    displayDate: displayDate || taskSchedule.displayDate,
+    dueDateIsTemporary,
+    displayDate: effectiveDisplayDate,
     startDate: taskSchedule.startDate,
     estimatedHours: _taskFormData.estimatedHours || 1,
     durationDays: taskSchedule.durationDays,
     taskType: document.getElementById('tf-task-type')?.value || _taskFormData.taskType || '作業',
+    taskMode,
+    categoryName: taskMode === 'self' ? categoryName : '',
+    reviewerMemberId: taskMode === 'review_required' ? reviewerMemberId : '',
+    reviewDueDate: taskMode === 'review_required' ? reviewDueDate : '',
+    plannedReviewTaskId: taskMode === 'review_required' ? (existingTask?.plannedReviewTaskId || '') : '',
+    reviewStatus: taskMode === 'review_required' ? (existingTask?.reviewStatus || 'planned') : '',
+    waitingFor: taskMode === 'waiting' ? waitingFor : '',
+    waitReason: taskMode === 'waiting' ? waitReason : '',
+    nextCheckDate: taskMode === 'waiting' ? nextCheckDate : '',
+    temporaryDueReason: dueDateIsTemporary ? temporaryDueReason : '',
+    temporaryDueCheckDate: dueDateIsTemporary ? temporaryDueCheckDate : '',
     dependencyTaskIds: existingTask?.projectId === (_taskFormData.projectId || null)
       ? taskDependencyIds(existingTask)
       : [],
     dependencyMode: existingTask?.dependencyMode === 'any' ? 'any' : 'all',
-    sourceProjectName: _taskFormData.projectId ? '' : (_taskFormData.sourceProjectName || ''),
-    needsProjectReview: _taskFormData.projectId ? false : Boolean(_taskFormData.needsProjectReview),
+    sourceProjectName: _taskFormData.projectId || taskMode === 'self' ? '' : (_taskFormData.sourceProjectName || ''),
+    needsProjectReview: _taskFormData.projectId || taskMode === 'self' ? false : Boolean(_taskFormData.needsProjectReview),
   };
 
   let savedTask;
@@ -2543,6 +2807,11 @@ async function saveTask(editId) {
     savedTask = DB.Tasks.get(editId);
   } else {
     savedTask = DB.Tasks.add(payload);
+  }
+  if (taskMode === 'review_required') {
+    upsertPlannedReviewTask(savedTask, reviewerMemberId, reviewDueDate);
+  } else if (existingTask?.plannedReviewTaskId) {
+    DB.Tasks.remove(existingTask.plannedReviewTaskId);
   }
   const ok = await DB.syncCloudStore?.();
   if (ok === false) {
@@ -2562,6 +2831,49 @@ async function saveTask(editId) {
   } else {
     showToast(editId ? 'タスクを更新しました' : 'タスクを追加しました', 'success');
   }
+}
+
+function upsertPlannedReviewTask(sourceTask, reviewerMemberId, reviewDueDate) {
+  if (!sourceTask || !reviewerMemberId || !reviewDueDate) return null;
+  const schedule = canonicalTaskSchedule({
+    startDate: reviewDueDate,
+    dueDate: reviewDueDate,
+    displayDate: reviewDueDate,
+    durationDays: 1,
+  });
+  const existingId = sourceTask.plannedReviewTaskId;
+  const existing = existingId ? DB.Tasks.get(existingId) : null;
+  const payload = {
+    memberId: reviewerMemberId,
+    projectId: sourceTask.projectId || null,
+    phaseId: sourceTask.phaseId || null,
+    content: `確認：${sourceTask.content}`,
+    note: `作業タスク「${sourceTask.content}」の確認。作業完了後にOK / 差し戻し / 保留で回答します。`,
+    estimatedHours: 0.25,
+    taskType: '確認',
+    taskMode: 'review_assigned',
+    parentTaskId: sourceTask.id,
+    generatedByWorkflow: true,
+    dependencyTaskIds: [sourceTask.id],
+    dependencyMode: 'all',
+    ...schedule,
+  };
+  let reviewTask = existing;
+  if (existing) {
+    DB.Tasks.update(existing.id, payload);
+    reviewTask = DB.Tasks.get(existing.id);
+  } else {
+    reviewTask = DB.Tasks.add(payload);
+  }
+  if (reviewTask) {
+    DB.Tasks.update(sourceTask.id, {
+      plannedReviewTaskId: reviewTask.id,
+      reviewerMemberId,
+      reviewDueDate,
+      reviewStatus: 'planned',
+    });
+  }
+  return reviewTask;
 }
 
 function deleteTask(taskId) {
@@ -6470,13 +6782,13 @@ function renderDataCleanup() {
       </div>
 
       <div class="cleanup-grid">
-        ${cleanupSummaryCard('未紐付けタスク', issues.missingProjectTasks.length, missingProjectTaskSub)}
-        ${cleanupSummaryCard('重複タスク', issues.duplicateTaskGroups.length, '同じ内容・日付違いの整理')}
-        ${cleanupSummaryCard('仮プロジェクト', issues.provisionalProjects.length, '古い取り込み仕様の名残')}
-        ${cleanupSummaryCard('完了候補PJ', issues.completionCandidateProjects.length, 'タスクなし・全タスク完了')}
-        ${cleanupSummaryCard('クライアント名', issues.clientStats.length, '表記ゆれ・重複の整理')}
-        ${cleanupSummaryCard('繰り越し不整合', issues.carryoverIssues.length, '完了・持ち越しリンクの確認')}
-        ${cleanupSummaryCard('不足情報PJ', issues.missingInfoProjects.length, '登録者・窓口・納品日など')}
+        ${cleanupSummaryCard('未紐付けタスク', issues.missingProjectTasks.length, missingProjectTaskSub, 'tasks')}
+        ${cleanupSummaryCard('重複タスク', issues.duplicateTaskGroups.length, '同じ内容・日付違いの整理', 'duplicates')}
+        ${cleanupSummaryCard('仮プロジェクト', issues.provisionalProjects.length, '古い取り込み仕様の名残', 'projects')}
+        ${cleanupSummaryCard('完了候補PJ', issues.completionCandidateProjects.length, 'タスクなし・全タスク完了', 'completeCandidates')}
+        ${cleanupSummaryCard('クライアント名', issues.clientStats.length, '表記ゆれ・重複の整理', 'clients')}
+        ${cleanupSummaryCard('繰り越し不整合', issues.carryoverIssues.length, '完了・持ち越しリンクの確認', 'carry')}
+        ${cleanupSummaryCard('不足情報PJ', issues.missingInfoProjects.length, '登録者・窓口・納品日など', 'all')}
       </div>
 
       ${_cleanupFilter.issue === 'all' || _cleanupFilter.issue === 'tasks' ? cleanupTaskSection(issues.missingProjectTasks) : ''}
@@ -6490,13 +6802,18 @@ function renderDataCleanup() {
   `;
 }
 
-function cleanupSummaryCard(label, count, sub) {
+function cleanupSummaryCard(label, count, sub, issue = 'all') {
   return `
-    <div class="cleanup-summary card">
+    <button class="cleanup-summary card" style="text-align:left;cursor:pointer" onclick="jumpCleanupIssue('${issue}')">
       <div class="cleanup-count">${count}</div>
       <div class="cleanup-label">${label}</div>
       <div class="cleanup-sub">${sub}</div>
-    </div>`;
+    </button>`;
+}
+
+function jumpCleanupIssue(issue) {
+  _cleanupFilter.issue = issue || 'all';
+  renderDataCleanup();
 }
 
 function analyzeDataIssues() {
@@ -6766,7 +7083,7 @@ function cleanupTaskRow(taskGroup) {
           ${duplicateCount > 1 ? 'まとめて紐付け' : '紐付け'}
         </button>
         <button class="btn btn-ghost btn-sm" onclick="openTaskModal('${task.id}')">編集</button>
-        ${isDeletedProjectTask ? `<button class="btn btn-danger btn-sm" onclick="deleteCleanupTasks('${taskIds.join(',')}')">タスク削除</button>` : ''}
+        <button class="btn btn-danger btn-sm" onclick="deleteCleanupTasks('${taskIds.join(',')}')">タスク削除</button>
       </div>
     </div>`;
 }
@@ -6939,6 +7256,7 @@ function cleanupClientRow(client, index) {
         <div class="cleanup-action-line">
           <input class="form-input" id="cleanup-client-rename-${index}" placeholder="新しい正式名称を入力" value="${escHtml(client.name === 'クライアント未設定' ? '' : client.name)}">
           <button class="btn btn-ghost btn-sm" onclick="renameCleanupClient('${encodedName}', ${index})">名称変更</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteCleanupClient('${encodedName}')" ${client.name === 'クライアント未設定' ? 'disabled' : ''}>削除</button>
         </div>
       </div>
     </div>`;
@@ -7203,6 +7521,16 @@ async function mergeCleanupClient(encodedClientName, index) {
   if (!confirm(`${fromName} を ${toName} に統合します。\n対象プロジェクト：${affected.length}件\nよろしいですか？`)) return;
   affected.forEach(project => DB.Projects.update(project.id, { clientName: toName }));
   await saveCleanupAndRefresh('クライアント名を統合しました');
+}
+
+async function deleteCleanupClient(encodedClientName) {
+  const name = decodeURIComponent(encodedClientName);
+  const affected = DB.Projects.all().filter(project => (String(project.clientName || '').trim() || 'クライアント未設定') === name);
+  if (affected.length) {
+    showToast('このクライアントには関連プロジェクトがあります。先に統合またはプロジェクト整理をしてください', 'error');
+    return;
+  }
+  showToast('削除できるクライアント名はありません', 'info');
 }
 
 async function renameCleanupClient(encodedClientName, index) {
