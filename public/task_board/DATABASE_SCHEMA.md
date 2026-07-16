@@ -326,12 +326,16 @@ Chatworkから来たタスクのプロジェクト名が既存プロジェクト
 | 項目 | 内容 |
 |---|---|
 | `taskMode` | `project` / `self` / `review_required` / `waiting` / `review_assigned` |
-| `categoryName` | 自己完結タスクのカテゴリ |
+| `categoryName` | 過去互換用。自己完結タスクの新規入力では使わない |
+| `isRecurringSelfTask` | 自己完結タスクを未来予定として作るか |
+| `recurrenceFrequency` | 自己完結タスクの繰り返し設定。空 / `business_daily` / `weekly` / `monthly` / `custom_next` |
+| `recurrenceEndDate` | 日次・週次・月次の繰り返し終了日 |
+| `recurrenceNextDate` | `custom_next` の次回日 |
 | `reviewerMemberId` | 確認してもらう作業の確認者 |
 | `reviewDueDate` | 確認者側の確認締切 |
 | `plannedReviewTaskId` | 自動作成された確認タスクID |
 | `reviewStatus` | 確認タスク作成・回答状態の補助情報 |
-| `waitingFor` | 待ち・追いかけの待ち先 |
+| `waitingFor` | 確認待ち・追いかけの待ち先 |
 | `waitReason` | 待ち理由 |
 | `nextCheckDate` | 次に確認する日 |
 | `temporaryDueReason` | 仮締切理由 |
