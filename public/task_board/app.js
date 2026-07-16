@@ -2,7 +2,7 @@
  * TaskBoard — app.js
  * ルーター・全画面レンダリング・UI ロジック
  */
-const APP_BUILD_LABEL = 'タスク種別・仮締切整理版 2026-07-13-03';
+const APP_BUILD_LABEL = '自己完結タスク繰り返し設定版 2026-07-15-01';
 const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const TASK_TYPE_GROUPS = {
@@ -18,6 +18,12 @@ const TASK_MODE_OPTIONS = [
   { value: 'review_assigned', label: '確認するタスク' },
 ];
 const SELF_TASK_CATEGORIES = ['日次作業', '社内作業', '経理', '共有', '整理', 'その他'];
+const SELF_TASK_REPEAT_OPTIONS = [
+  { value: 'business_daily', label: '毎日（月〜金）' },
+  { value: 'weekly', label: '毎週' },
+  { value: 'monthly', label: '毎月' },
+];
+const SELF_TASK_RECURRENCE_LOOKAHEAD_DAYS = 90;
 const TEMP_DUE_REASONS = ['日程未定', 'クライアント確認待ち', '外部素材待ち', '社内確認待ち', '前工程待ち', 'その他'];
 const JP_HOLIDAYS = new Set([
   '2026-01-01','2026-01-12','2026-02-11','2026-02-23','2026-03-20',
@@ -117,6 +123,25 @@ function taskWaitingDetailHTML(task) {
   const waitingFor = task.waitingFor ? `待ち先：${task.waitingFor}` : '';
   const reason = task.waitReason ? `理由：${task.waitReason}` : '';
   return [waitingFor, reason].filter(Boolean).map(text => `<span class="tag tag-hold">${escHtml(text)}</span>`).join('');
+}
+
+function selfTaskRepeatLabel(value) {
+  return SELF_TASK_REPEAT_OPTIONS.find(item => item.value === value)?.label || '';
+}
+
+function taskSelfScheduleTagsHTML(task) {
+  if (normalizeTaskMode(task) !== 'self') return '';
+  const tags = [];
+  if (task.isRecurringSelfTask) {
+    tags.push(`<span class="tag tag-self">繰り返し：${escHtml(selfTaskRepeatLabel(task.recurrenceFrequency) || '設定あり')}</span>`);
+  }
+  if (task.executionSiteName) {
+    tags.push(`<span class="tag tag-self">実行サイト：${escHtml(task.executionSiteName)}</span>`);
+  }
+  if (task.executionSiteUrl) {
+    tags.push(`<a class="tag tag-self" href="${escHtml(task.executionSiteUrl)}" target="_blank" rel="noopener">サイトを開く</a>`);
+  }
+  return tags.join('');
 }
 
 function askDueDateValue(ask) {
@@ -1076,6 +1101,7 @@ function morningTaskRow(task) {
           ${projectLabel ? `<span>${projectLabel}</span>` : ''}
           ${phaseName ? `<span class="tag tag-phase">${phaseName}</span>` : ''}
           <span class="tag">${escHtml(task.taskType || '作業')}</span>
+          ${taskSelfScheduleTagsHTML(task)}
           ${reviewResultTagHTML(task)}
           <span class="tag-hours">${task.estimatedHours}h</span>
         </div>
@@ -1091,6 +1117,7 @@ async function markTaskComplete(taskId) {
   const beforeAsks = DB.Asks.all().map(ask => ({ ...ask }));
   const beforeProjects = DB.Projects.all().map(project => ({ ...project }));
   DB.Tasks.setCompletion(taskId, true, '');
+  const createdRecurringTasks = targetTask?.completed === true ? [] : ensureRecurringSelfTaskInstances(targetTask);
   createReviewAsksForCompletedTasks([taskId]);
   createWorkflowTasksForCompletedTasks([taskId]);
   const ok = await DB.syncCloudStore?.();
@@ -1100,7 +1127,10 @@ async function markTaskComplete(taskId) {
     DB.Projects.replaceAll?.(beforeProjects);
   }
   renderMorningCheck();
-  showToast(ok === false ? '保存できなかったため、チェックを元に戻しました。最新に更新してから再度実行してください' : '完了としてマークしました', ok === false ? 'error' : 'success');
+  const successMessage = createdRecurringTasks.length
+    ? `完了にしました。未来分${createdRecurringTasks.length}件を補充しました`
+    : '完了としてマークしました';
+  showToast(ok === false ? '保存できなかったため、チェックを元に戻しました。最新に更新してから再度実行してください' : successMessage, ok === false ? 'error' : 'success');
 }
 
 async function markTaskFail(taskId) {
@@ -1531,6 +1561,7 @@ function todayTaskRow(task) {
           ${projectHTML}
           ${phaseName ? `<span class="tag tag-phase">${phaseName}</span>` : ''}
           <span class="tag">${escHtml(task.taskType || '作業')}</span>
+          ${taskSelfScheduleTagsHTML(task)}
           ${isCarry ? '<span class="tag tag-carry tag-carry-strong">繰り越し</span>' : ''}
           ${isDone ? '<span class="tag tag-done">完了</span>' : ''}
           ${reviewResultTagHTML(task)}
@@ -2112,6 +2143,11 @@ function openTaskModal(editId, presetProjectId = '') {
       reviewRule: 'inherit',
       reviewDueDays: null,
       notifyProgressManager: true,
+      isRecurringSelfTask: false,
+      recurrenceFrequency: 'business_daily',
+      recurrenceEndDate: '',
+      executionSiteName: '',
+      executionSiteUrl: '',
       note: '',
       date: getTaskDefaultDate(),
       dueDate: getTaskDefaultDate(),
@@ -2121,6 +2157,7 @@ function openTaskModal(editId, presetProjectId = '') {
   }
   _taskFormData.taskMode = normalizeTaskMode(_taskFormData);
   _taskFormData.categoryName = _taskFormData.categoryName || '日次作業';
+  _taskFormData.recurrenceFrequency = _taskFormData.recurrenceFrequency || 'business_daily';
   _taskFormData.reviewDueDate = _taskFormData.reviewDueDate || addBusinessDays(taskDueDateValue(_taskFormData) || DB.today(), 1);
   _taskFormData.nextCheckDate = _taskFormData.nextCheckDate || _taskFormData.temporaryDueCheckDate || DB.today();
   _taskFormData.temporaryDueCheckDate = _taskFormData.temporaryDueCheckDate || _taskFormData.nextCheckDate || DB.today();
@@ -2168,6 +2205,45 @@ function openTaskModal(editId, presetProjectId = '') {
       <select class="form-select" id="tf-category" onchange="_taskFormData.categoryName=this.value">
         ${SELF_TASK_CATEGORIES.map(name => `<option value="${escHtml(name)}" ${(_taskFormData.categoryName || '日次作業') === name ? 'selected' : ''}>${escHtml(name)}</option>`).join('')}
       </select>
+    </div>
+    <div class="form-group" id="tf-self-schedule-group" style="${(_taskFormData.taskMode || 'project') === 'self' ? '' : 'display:none'}">
+      <label class="form-check" style="display:flex;gap:8px;align-items:center">
+        <input type="checkbox" id="tf-self-recurring" ${_taskFormData.isRecurringSelfTask ? 'checked' : ''} onchange="handleSelfRecurringChange(this.checked)">
+        <span>繰り返し予定として登録する</span>
+      </label>
+      <div id="tf-self-recurring-fields" style="${_taskFormData.isRecurringSelfTask ? '' : 'display:none'};margin-top:10px">
+        <div class="task-date-grid">
+          <div class="form-group">
+            <label class="form-label">繰り返し周期 *</label>
+            <select class="form-select" id="tf-self-frequency" onchange="_taskFormData.recurrenceFrequency=this.value">
+              ${SELF_TASK_REPEAT_OPTIONS.map(item => `<option value="${item.value}" ${(_taskFormData.recurrenceFrequency || 'business_daily') === item.value ? 'selected' : ''}>${item.label}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">終了日</label>
+            <input type="date" class="form-input" id="tf-self-recurrence-end"
+                   value="${_taskFormData.recurrenceEndDate || ''}"
+                   onchange="_taskFormData.recurrenceEndDate=this.value">
+          </div>
+        </div>
+        <div class="form-help">この設定を元に、次段階で当日分のタスクを自動作成できるようにします。</div>
+      </div>
+      <div class="task-date-grid" style="margin-top:10px">
+        <div class="form-group">
+          <label class="form-label">実行サイト名</label>
+          <input class="form-input" id="tf-execution-site-name"
+                 placeholder="例：WordPress管理画面 / Google Analytics"
+                 value="${escHtml(_taskFormData.executionSiteName || '')}"
+                 oninput="_taskFormData.executionSiteName=this.value">
+        </div>
+        <div class="form-group">
+          <label class="form-label">実行サイトURL</label>
+          <input class="form-input" id="tf-execution-site-url"
+                 placeholder="https://..."
+                 value="${escHtml(_taskFormData.executionSiteUrl || '')}"
+                 oninput="_taskFormData.executionSiteUrl=this.value">
+        </div>
+      </div>
     </div>
     <div class="form-group" id="tf-project-group" style="${taskModeAllowsProject(_taskFormData.taskMode || 'project') ? '' : 'display:none'}">
       <label class="form-label">プロジェクト${taskModeRequiresProject(_taskFormData.taskMode || 'project') ? ' *' : ''}</label>
@@ -2331,11 +2407,13 @@ function toggleTaskModeFields() {
   const projectGroup = document.getElementById('tf-project-group');
   const phaseGroup = document.getElementById('tf-phase-group');
   const categoryGroup = document.getElementById('tf-category-group');
+  const selfScheduleGroup = document.getElementById('tf-self-schedule-group');
   const reviewGroup = document.getElementById('tf-review-required-group');
   const waitingGroup = document.getElementById('tf-waiting-group');
   if (projectGroup) projectGroup.style.display = showProject ? '' : 'none';
   if (phaseGroup) phaseGroup.style.display = showProject ? '' : 'none';
   if (categoryGroup) categoryGroup.style.display = mode === 'self' ? '' : 'none';
+  if (selfScheduleGroup) selfScheduleGroup.style.display = mode === 'self' ? '' : 'none';
   if (reviewGroup) reviewGroup.style.display = mode === 'review_required' ? '' : 'none';
   if (waitingGroup) waitingGroup.style.display = mode === 'waiting' ? '' : 'none';
   const tempCheck = document.getElementById('tf-due-temp');
@@ -2343,6 +2421,13 @@ function toggleTaskModeFields() {
     tempCheck.checked = true;
     handleTemporaryDueChange(true);
   }
+}
+
+function handleSelfRecurringChange(checked) {
+  _taskFormData.isRecurringSelfTask = Boolean(checked);
+  _taskFormData.recurrenceFrequency = _taskFormData.recurrenceFrequency || 'business_daily';
+  const fields = document.getElementById('tf-self-recurring-fields');
+  if (fields) fields.style.display = checked ? '' : 'none';
 }
 
 function handleTemporaryDueChange(checked) {
@@ -2755,7 +2840,24 @@ async function saveTask(editId) {
   const waitingFor = document.getElementById('tf-waiting-for')?.value?.trim() || '';
   const waitReason = document.getElementById('tf-wait-reason')?.value || '';
   const nextCheckDate = document.getElementById('tf-next-check')?.value || '';
+  const isRecurringSelfTask = Boolean(document.getElementById('tf-self-recurring')?.checked);
+  const recurrenceFrequency = document.getElementById('tf-self-frequency')?.value || _taskFormData.recurrenceFrequency || 'business_daily';
+  const recurrenceEndDate = document.getElementById('tf-self-recurrence-end')?.value || '';
+  const executionSiteName = document.getElementById('tf-execution-site-name')?.value?.trim() || '';
+  const executionSiteUrl = document.getElementById('tf-execution-site-url')?.value?.trim() || '';
   if (taskMode === 'self' && !categoryName) { showToast('自己完結タスクのカテゴリを選択してください', 'error'); return; }
+  if (taskMode === 'self' && isRecurringSelfTask && !recurrenceFrequency) {
+    showToast('繰り返し周期を選択してください', 'error');
+    return;
+  }
+  if (taskMode === 'self' && recurrenceEndDate && recurrenceEndDate < taskDate) {
+    showToast('繰り返し終了日は締切日以降の日付にしてください', 'error');
+    return;
+  }
+  if (taskMode === 'self' && executionSiteUrl && !/^https?:\/\//i.test(executionSiteUrl)) {
+    showToast('実行サイトURLは https:// から入力してください', 'error');
+    return;
+  }
   if (taskMode === 'review_required') {
     if (!reviewerMemberId) { showToast('確認者を選択してください', 'error'); return; }
     if (!reviewDueDate) { showToast('確認締切を入力してください', 'error'); return; }
@@ -2804,6 +2906,11 @@ async function saveTask(editId) {
       : (document.getElementById('tf-task-type')?.value || _taskFormData.taskType || '作業'),
     taskMode,
     categoryName: taskMode === 'self' ? categoryName : '',
+    isRecurringSelfTask: taskMode === 'self' ? isRecurringSelfTask : false,
+    recurrenceFrequency: taskMode === 'self' && isRecurringSelfTask ? recurrenceFrequency : '',
+    recurrenceEndDate: taskMode === 'self' && isRecurringSelfTask ? recurrenceEndDate : '',
+    executionSiteName: taskMode === 'self' ? executionSiteName : '',
+    executionSiteUrl: taskMode === 'self' ? executionSiteUrl : '',
     reviewerMemberId: taskMode === 'review_required' ? reviewerMemberId : '',
     reviewDueDate: taskMode === 'review_required' ? reviewDueDate : '',
     plannedReviewTaskId: taskMode === 'review_required' ? (existingTask?.plannedReviewTaskId || '') : '',
@@ -2828,6 +2935,9 @@ async function saveTask(editId) {
   } else {
     savedTask = DB.Tasks.add(payload);
   }
+  const createdRecurringTasks = taskMode === 'self' && isRecurringSelfTask
+    ? ensureRecurringSelfTaskInstances(savedTask)
+    : [];
   if (taskMode === 'review_required') {
     upsertPlannedReviewTask(savedTask, reviewerMemberId, reviewDueDate);
   } else if (existingTask?.plannedReviewTaskId) {
@@ -2849,7 +2959,10 @@ async function saveTask(editId) {
       : '';
     showToast(`プロジェクトとタスクを登録しました${templateMessage}`, 'success');
   } else {
-    showToast(editId ? 'タスクを更新しました' : 'タスクを追加しました', 'success');
+    const recurringMessage = createdRecurringTasks.length
+      ? `。未来分${createdRecurringTasks.length}件も作成しました`
+      : '';
+    showToast(`${editId ? 'タスクを更新しました' : 'タスクを追加しました'}${recurringMessage}`, 'success');
   }
 }
 
@@ -4216,6 +4329,8 @@ function renderGantt() {
 
       ${projects.length
         ? `${ganttWorkloadHTML(projects, tasks, members, days)}${ganttChartHTML(projects, tasks, members, days, timelineWidth)}`
+        : ganttSelfTasks(tasks, range).length
+        ? `${ganttWorkloadHTML(projects, tasks, members, days)}${ganttChartHTML(projects, tasks, members, days, timelineWidth)}`
         : `<div class="empty-state">
             <div class="icon">📊</div>
             <div class="title">表示できるプロジェクトがありません</div>
@@ -4417,6 +4532,8 @@ function resetGanttFilter() {
 }
 
 function ganttChartHTML(projects, tasks, members, days, timelineWidth) {
+  const range = { start: days[0], end: days[days.length - 1] };
+  const selfTasks = ganttSelfTasks(tasks, range);
   return `
     <div class="gantt-shell" style="--gantt-width:${timelineWidth}px">
       <div class="gantt-left gantt-left-head">
@@ -4431,13 +4548,18 @@ function ganttChartHTML(projects, tasks, members, days, timelineWidth) {
         </div>
       </div>
       ${projects.map((project, index) => ganttProjectBlockHTML(project, tasks, members, days, timelineWidth, index)).join('')}
+      ${selfTasks.length ? ganttSelfTaskBlockHTML(selfTasks, members, days, timelineWidth, projects.length) : ''}
     </div>
   `;
 }
 
 function ganttWorkloadHTML(projects, tasks, members, days) {
   const projectIds = new Set(projects.map(project => project.id));
-  const visibleTasks = tasks.filter(task => projectIds.has(task.projectId) && (!_ganttFilter.memberId || task.memberId === _ganttFilter.memberId));
+  const range = { start: days[0], end: days[days.length - 1] };
+  const visibleTasks = tasks.filter(task =>
+    projectIds.has(task.projectId) &&
+    (!_ganttFilter.memberId || task.memberId === _ganttFilter.memberId)
+  ).concat(ganttSelfTasks(tasks, range));
   const memberIds = uniqueSorted(visibleTasks.map(task => task.memberId).filter(Boolean));
   if (!memberIds.length || !days.length) return '';
   const byMember = new Map(memberIds.map(memberId => [memberId, new Map(days.map(day => [day, 0]))]));
@@ -4530,6 +4652,92 @@ function ganttProjectBlockHTML(project, tasks, members, days, timelineWidth, gro
       </div>
     </div>
     ${phaseRows}
+  `;
+}
+
+function ganttCanShowSelfTasks() {
+  return !_ganttFilter.clientName &&
+    !_ganttFilter.recurringSeries &&
+    !_ganttFilter.ownerMemberId &&
+    !_ganttFilter.projectType;
+}
+
+function taskIntersectsRange(task, start, end) {
+  const bounds = taskScheduleBounds(task);
+  return Boolean(bounds.start && bounds.end && bounds.start <= end && bounds.end >= start);
+}
+
+function ganttSelfTasks(tasks, range) {
+  if (!ganttCanShowSelfTasks() || !range?.start || !range?.end) return [];
+  return tasks
+    .filter(task => normalizeTaskMode(task) === 'self')
+    .filter(task => !_ganttFilter.memberId || task.memberId === _ganttFilter.memberId)
+    .filter(task => taskIntersectsRange(task, range.start, range.end))
+    .sort((a, b) => {
+      const dateCompare = String(taskDisplayDateValue(a)).localeCompare(String(taskDisplayDateValue(b)));
+      if (dateCompare) return dateCompare;
+      return String(a.content || '').localeCompare(String(b.content || ''), 'ja');
+    });
+}
+
+function ganttSelfTaskBlockHTML(selfTasks, members, days, timelineWidth, groupIndex = 0) {
+  const starts = selfTasks.map(task => taskScheduleBounds(task).start).filter(Boolean).sort();
+  const ends = selfTasks.map(task => taskScheduleBounds(task).end).filter(Boolean).sort();
+  const bounds = normalizeDateRange(starts[0] || DB.today(), ends.slice(-1)[0] || DB.today());
+  const barStyle = ganttBarStyle(bounds.start, bounds.end, days);
+  const groupClass = groupIndex % 2 ? 'gantt-group-alt' : 'gantt-group-base';
+  const memberNames = uniqueSorted(selfTasks.map(task => DB.Members.get(task.memberId)?.name).filter(Boolean));
+  const categories = uniqueSorted(selfTasks.map(task => task.categoryName || 'その他'));
+  const categoryRows = categories.map((category, index) => {
+    const categoryTasks = selfTasks.filter(task => (task.categoryName || 'その他') === category);
+    return ganttSelfCategoryRowHTML(category, categoryTasks, members, days, index, categories.length, groupClass);
+  }).join('');
+
+  return `
+    <div class="gantt-left gantt-project-left gantt-group-start ${groupClass}">
+      <div class="gantt-project-title">自己完結タスク</div>
+      <div class="gantt-project-meta">
+        ${memberNames.length ? `<span>担当：${escHtml(memberNames.join('、'))}</span>` : ''}
+        <span>${selfTasks.length}件</span>
+        <span>定例・日次作業</span>
+      </div>
+    </div>
+    <div class="gantt-scroll gantt-group-start ${groupClass}">
+      <div class="gantt-row-line gantt-project-line" style="width:${timelineWidth}px">
+        ${barStyle ? `<div class="gantt-bar gantt-bar-project" style="${barStyle}" title="自己完結タスク"></div>` : ''}
+        ${ganttTodayMarkerHTML(days)}
+      </div>
+    </div>
+    ${categoryRows}
+  `;
+}
+
+function ganttSelfCategoryRowHTML(category, tasks, members, days, index, categoryCount = 0, groupClass = '') {
+  const starts = tasks.map(task => taskScheduleBounds(task).start).filter(Boolean).sort();
+  const ends = tasks.map(task => taskScheduleBounds(task).end).filter(Boolean).sort();
+  const bounds = normalizeDateRange(starts[0] || DB.today(), ends.slice(-1)[0] || DB.today());
+  const barStyle = ganttBarStyle(bounds.start, bounds.end, days);
+  const memberNames = uniqueSorted(tasks.map(task => DB.Members.get(task.memberId)?.name).filter(Boolean));
+  const done = tasks.filter(task => task.completed === true).length;
+  const groupEndClass = index === categoryCount - 1 ? 'gantt-group-end' : '';
+
+  return `
+    <div class="gantt-left gantt-phase-left ${groupEndClass} ${groupClass}">
+      <div class="gantt-phase-name">${escHtml(category)}</div>
+      <div class="gantt-phase-meta">
+        <span class="gantt-status active">自己完結</span>
+        ${memberNames.length ? `<span>${escHtml(memberNames.join('、'))}</span>` : ''}
+        <span>${done}/${tasks.length}件</span>
+      </div>
+      ${ganttPhaseTaskListHTML(tasks, members)}
+    </div>
+    <div class="gantt-scroll ${groupEndClass} ${groupClass}">
+      <div class="gantt-row-line" style="width:${days.length * 36}px">
+        ${barStyle ? `<div class="gantt-bar gantt-bar-phase active" style="${barStyle}" title="${escHtml(category)}"></div>` : ''}
+        ${ganttTaskBarsHTML(tasks, days)}
+        ${ganttTodayMarkerHTML(days)}
+      </div>
+    </div>
   `;
 }
 
@@ -4711,6 +4919,16 @@ function ganttVisibleRange(projects, tasks) {
     if (bounds.start) dates.push(bounds.start);
     if (bounds.end) dates.push(bounds.end);
   });
+  if (ganttCanShowSelfTasks()) {
+    tasks
+      .filter(task => normalizeTaskMode(task) === 'self')
+      .filter(task => !_ganttFilter.memberId || task.memberId === _ganttFilter.memberId)
+      .forEach(task => {
+        const bounds = taskScheduleBounds(task);
+        if (bounds.start) dates.push(bounds.start);
+        if (bounds.end) dates.push(bounds.end);
+      });
+  }
   if (!dates.length) {
     return { start: addDays(DB.today(), -7), end: addDays(DB.today(), 45) };
   }
@@ -4812,6 +5030,104 @@ function addBusinessDays(dateStr, amount) {
     guard++;
   }
   return adjustToBusinessDay(date, step > 0 ? 'next' : 'previous');
+}
+
+function addMonthsClamped(dateStr, amount) {
+  const safeDate = toISODate(dateStr) || DB.today();
+  const [year, month, day] = safeDate.split('-').map(Number);
+  const targetMonth = month - 1 + Number(amount || 0);
+  const lastDay = new Date(Date.UTC(year, targetMonth + 1, 0)).getUTCDate();
+  const d = new Date(Date.UTC(year, targetMonth, Math.min(day, lastDay)));
+  return [
+    d.getUTCFullYear(),
+    String(d.getUTCMonth() + 1).padStart(2, '0'),
+    String(d.getUTCDate()).padStart(2, '0'),
+  ].join('-');
+}
+
+function nextRecurringSelfTaskDate(task, baseDateOverride = '') {
+  const baseDate = baseDateOverride || taskDueDateValue(task) || taskDisplayDateValue(task) || DB.today();
+  const frequency = task.recurrenceFrequency || 'business_daily';
+  if (frequency === 'daily') return addDays(baseDate, 1);
+  if (frequency === 'weekly') return addDays(baseDate, 7);
+  if (frequency === 'monthly') return addMonthsClamped(baseDate, 1);
+  return addBusinessDays(baseDate, 1);
+}
+
+function recurringSelfTaskSourceId(task) {
+  return task?.recurringSourceTaskId || task?.id || '';
+}
+
+function recurringSelfTaskExists(sourceId, date, excludeId = '') {
+  return DB.Tasks.all().some(task =>
+    task.id !== excludeId &&
+    task.completed !== true &&
+    recurringSelfTaskSourceId(task) === sourceId &&
+    taskDisplayDateValue(task) === date
+  );
+}
+
+function recurringSelfTaskPayload(sourceTask, targetDate) {
+  const durationDays = Math.max(1, Number(sourceTask.durationDays || 1) || 1);
+  const schedule = canonicalTaskSchedule({
+    startDate: targetDate,
+    dueDate: taskDueDateFromStartDate(targetDate, durationDays),
+    displayDate: targetDate,
+    durationDays,
+  });
+  return {
+    memberId: sourceTask.memberId,
+    projectId: null,
+    phaseId: null,
+    content: sourceTask.content,
+    note: sourceTask.note || '',
+    estimatedHours: sourceTask.estimatedHours || 1,
+    taskType: sourceTask.taskType || '作業',
+    taskMode: 'self',
+    categoryName: sourceTask.categoryName || '日次作業',
+    isRecurringSelfTask: true,
+    recurrenceFrequency: sourceTask.recurrenceFrequency || 'business_daily',
+    recurrenceEndDate: sourceTask.recurrenceEndDate || '',
+    recurringSourceTaskId: recurringSelfTaskSourceId(sourceTask),
+    recurrenceInstanceDate: targetDate,
+    executionSiteName: sourceTask.executionSiteName || '',
+    executionSiteUrl: sourceTask.executionSiteUrl || '',
+    ...schedule,
+  };
+}
+
+function createNextRecurringSelfTask(sourceTask, baseDateOverride = '') {
+  if (!sourceTask || normalizeTaskMode(sourceTask) !== 'self' || !sourceTask.isRecurringSelfTask) return null;
+  const nextDate = nextRecurringSelfTaskDate(sourceTask, baseDateOverride);
+  if (!nextDate) return null;
+  if (sourceTask.recurrenceEndDate && nextDate > sourceTask.recurrenceEndDate) return null;
+
+  const sourceId = recurringSelfTaskSourceId(sourceTask);
+  if (recurringSelfTaskExists(sourceId, nextDate, sourceTask.id)) return null;
+
+  return DB.Tasks.add(recurringSelfTaskPayload(sourceTask, nextDate));
+}
+
+function ensureRecurringSelfTaskInstances(sourceTask, horizonEnd = addDays(DB.today(), SELF_TASK_RECURRENCE_LOOKAHEAD_DAYS)) {
+  if (!sourceTask || normalizeTaskMode(sourceTask) !== 'self' || !sourceTask.isRecurringSelfTask) return [];
+  const sourceId = recurringSelfTaskSourceId(sourceTask);
+  if (!sourceId) return [];
+  const endDate = sourceTask.recurrenceEndDate && sourceTask.recurrenceEndDate < horizonEnd
+    ? sourceTask.recurrenceEndDate
+    : horizonEnd;
+  const created = [];
+  let cursor = taskDueDateValue(sourceTask) || taskDisplayDateValue(sourceTask) || DB.today();
+  let guard = 0;
+  while (guard < 260) {
+    const nextDate = nextRecurringSelfTaskDate(sourceTask, cursor);
+    if (!nextDate || nextDate > endDate) break;
+    if (!recurringSelfTaskExists(sourceId, nextDate, sourceTask.id)) {
+      created.push(DB.Tasks.add(recurringSelfTaskPayload(sourceTask, nextDate)));
+    }
+    cursor = nextDate;
+    guard++;
+  }
+  return created;
 }
 
 function templateTaskDueDate(deliveryDate, offset) {
@@ -5530,6 +5846,7 @@ function projectTaskListRow(task) {
           <span>担当：${member ? escHtml(member.name) : '未設定'}</span>
           ${phaseName ? `<span class="tag tag-phase">${escHtml(phaseName)}</span>` : '<span style="color:var(--text-3)">フェーズなし</span>'}
           <span class="tag">${escHtml(task.taskType || '作業')}</span>
+          ${taskSelfScheduleTagsHTML(task)}
           ${isCarry ? '<span class="tag tag-carry tag-carry-strong">繰り越し</span>' : ''}
           ${isDone ? '<span class="tag tag-done">完了</span>' : ''}
           ${reviewResultTagHTML(task)}

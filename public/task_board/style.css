@@ -813,6 +813,16 @@ body {
   background: var(--accent-lite);
   color: var(--accent);
 }
+.tag-self {
+  background: rgba(20,184,166,.14);
+  color: #5eead4;
+  border: 1px solid rgba(20,184,166,.24);
+}
+:root[data-theme="light"] .tag-self {
+  background: #ccfbf1;
+  color: #115e59;
+  border-color: #5eead4;
+}
 .tag-rejected {
   background: var(--danger-lite);
   color: var(--danger);
