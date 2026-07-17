@@ -197,16 +197,16 @@ create table if not exists public.taskboard_data (
 
 ## asks
 
-システムが作成する確認開始通知、進行許可通知、日程変更通知と、過去に登録された確認依頼を保持するデータです。
+対応募集、質問、共有確認、確認結果、進行許可通知、日程変更通知を保持するデータです。
 
-新しい確認作業は `asks` へ手入力せず、期限・担当者・工数を持つ `tasks` の確認系タスクとして管理します。
+新しい正式な確認作業は `asks` へ手入力せず、期限・担当者・工数を持つ `tasks` の確認系タスクとして管理します。`asks` は掲示板ではなく、誰かの反応が必要なアクション枠として扱います。
 
 同じ種別・同じ宛先・同じ関連タスクの未完了通知は新規作成せず、既存通知を更新します。過去データに残っている重複通知は、起動時に1件へ整理します。
 
 | 項目 | 内容 |
 |---|---|
 | `id` | 確認ID |
-| `type` | 種別。例: 質問、お願い、確認、進行許可 |
+| `type` | 種別。例: 対応募集、質問、共有確認、確認結果、進行許可 |
 | `fromMemberId` | 依頼元メンバーID |
 | `toMemberId` | 依頼先メンバーID |
 | `toName` | 依頼先名。全員など |
@@ -218,6 +218,8 @@ create table if not exists public.taskboard_data (
 | `dueText` | 旧データ互換用。新規保存では `dueDate` と同じ日付 |
 | `status` | `open` / `done` / 今後候補: `rejected` |
 | `date` | 登録日 |
+| `completedMemberIds` | 全員宛の共有確認で、確認済みにしたメンバーID |
+| `acceptedByMemberId` | 対応募集を引き受けたメンバーID |
 | `createdAt` | 作成日時 |
 
 ## templates

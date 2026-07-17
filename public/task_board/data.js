@@ -927,7 +927,7 @@ const Asks = {
   add({
     type = '質問', fromMemberId = '', toMemberId = '', toName = '',
     content, projectId = null, projectName = '', dueDate = '', dueText = '', status = 'open',
-    date = today(), taskId = null,
+    date = today(), taskId = null, completedMemberIds = [],
   }) {
     const list = this.all();
     const normalized = {
@@ -943,6 +943,7 @@ const Asks = {
       dueText: dueText || dueDate,
       status,
       date,
+      completedMemberIds: Array.isArray(completedMemberIds) ? completedMemberIds : [],
     };
     const key = this.uniqueKey(normalized);
     const existing = status === 'open'
@@ -989,7 +990,10 @@ const Asks = {
     return list.length - kept.length;
   },
   byMember(memberId) {
-    return this.all().filter(a => a.toMemberId === memberId || a.toName === '全員');
+    return this.all().filter(a =>
+      a.toMemberId === memberId ||
+      (a.toName === '全員' && !(Array.isArray(a.completedMemberIds) && a.completedMemberIds.includes(memberId)))
+    );
   },
   fromMember(memberId) {
     return this.all().filter(a => a.fromMemberId === memberId);

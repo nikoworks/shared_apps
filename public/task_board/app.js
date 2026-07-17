@@ -7,7 +7,6 @@ const PUBLIC_APP_ORIGIN = 'https://shared-apps.vercel.app';
 const THEME_STORAGE_KEY = 'taskboard-theme';
 const TASK_TYPE_GROUPS = {
   '作業系タスク': ['作業', '依頼', '修正', '納品'],
-  '確認系タスク': ['確認', '進行許可'],
 };
 const REVIEW_TASK_TYPES = new Set(['確認', '進行許可', '再確認']);
 const TASK_MODE_OPTIONS = [
@@ -1100,6 +1099,7 @@ function morningTaskRow(task) {
           ${phaseName ? `<span class="tag tag-phase">${phaseName}</span>` : ''}
           <span class="tag">${escHtml(task.taskType || '作業')}</span>
           ${taskSelfScheduleTagsHTML(task)}
+          ${reviewSourceStatusTagHTML(task)}
           ${reviewResultTagHTML(task)}
           <span class="tag-hours">${task.estimatedHours}h</span>
         </div>
@@ -1111,6 +1111,7 @@ function morningTaskRow(task) {
 async function markTaskComplete(taskId) {
   const targetTask = DB.Tasks.get(taskId);
   if (targetTask?.completed !== true && !ensureTaskDependenciesComplete(targetTask)) return;
+  if (targetTask?.completed !== true && !taskCanBeCompleted(targetTask, { showMessage: true })) return;
   const before = taskSnapshot();
   const beforeAsks = DB.Asks.all().map(ask => ({ ...ask }));
   const beforeProjects = DB.Projects.all().map(project => ({ ...project }));
@@ -1562,6 +1563,7 @@ function todayTaskRow(task) {
           ${taskSelfScheduleTagsHTML(task)}
           ${isCarry ? '<span class="tag tag-carry tag-carry-strong">繰り越し</span>' : ''}
           ${isDone ? '<span class="tag tag-done">完了</span>' : ''}
+          ${reviewSourceStatusTagHTML(task)}
           ${reviewResultTagHTML(task)}
           ${linkedAsk ? '<span class="tag tag-ask">確認あり</span>' : ''}
           ${duplicateCount > 1 ? `<span class="tag">集約 ${duplicateCount}件</span>` : ''}
@@ -1583,6 +1585,22 @@ function reviewResultTagHTML(task) {
   return `<span class="tag tag-ask">${escHtml(task.taskType)}待ち</span>`;
 }
 
+function reviewSourceStatusTagHTML(task) {
+  if (normalizeTaskMode(task) !== 'review_required') return '';
+  if (task.reviewStatus === 'ok') return '<span class="tag tag-done">確認OK</span>';
+  if (task.reviewStatus === 'rejected') return '<span class="tag tag-rejected">差し戻し</span>';
+  if (task.reviewStatus === 'hold') return '<span class="tag tag-hold">確認保留</span>';
+  return '<span class="tag tag-ask">確認待ち</span>';
+}
+
+function taskCanBeCompleted(task, { showMessage = false } = {}) {
+  if (normalizeTaskMode(task) === 'review_required' && task.reviewStatus !== 'ok') {
+    if (showMessage) showToast('確認OKが返るまで、このタスクは完了にできません', 'error');
+    return false;
+  }
+  return true;
+}
+
 function reviewTaskControlHTML(task) {
   if (task.completed === true) {
     return '<span class="check-btn done" title="回答済み" aria-label="回答済み">✓</span>';
@@ -1590,10 +1608,27 @@ function reviewTaskControlHTML(task) {
   return `<button class="btn btn-primary btn-sm review-answer-btn" onclick="openReviewAnswerModal('${task.id}')">回答</button>`;
 }
 
+function addReviewResultNotification(reviewTask, parentTask, resultText) {
+  const reviewer = reviewTask.memberId ? DB.Members.get(reviewTask.memberId) : null;
+  const owner = parentTask.memberId ? DB.Members.get(parentTask.memberId) : null;
+  if (!parentTask.memberId) return null;
+  return DB.Asks.add({
+    type: '確認結果',
+    fromMemberId: reviewTask.memberId || '',
+    toMemberId: parentTask.memberId,
+    toName: owner?.name || '',
+    content: `${reviewer?.name || '確認者'}さんが「${parentTask.content || reviewTask.content}」に回答しました：${resultText}`,
+    projectId: parentTask.projectId || reviewTask.projectId || null,
+    projectName: parentTask.projectId ? projectLabelById(parentTask.projectId) : '',
+    taskId: parentTask.id,
+    date: DB.today(),
+  });
+}
+
 function openReviewAnswerModal(taskId) {
   const task = DB.Tasks.get(taskId);
   if (!task || !isReviewTask(task)) return;
-  if (!ensureTaskDependenciesComplete(task)) return;
+  if (!task.parentTaskId && !ensureTaskDependenciesComplete(task)) return;
   const labels = reviewTaskAnswerLabels(task.taskType);
   const resultSummary = task.resultStatus
     ? `<div class="task-review-summary">現在の回答：${escHtml(task.resultStatus === 'ok' ? labels.ok : task.resultStatus === 'rejected' ? labels.reject : '保留')}</div>`
@@ -1616,6 +1651,7 @@ async function answerReviewTaskOk(taskId) {
   const task = DB.Tasks.get(taskId);
   if (!task) return;
   const before = taskSnapshot();
+  const beforeAsks = DB.Asks.all().map(ask => ({ ...ask }));
   DB.Tasks.update(taskId, {
     completed: true,
     resultStatus: 'ok',
@@ -1623,9 +1659,19 @@ async function answerReviewTaskOk(taskId) {
     holdReason: '',
     respondedAt: new Date().toISOString(),
   });
+  const parentTask = task.parentTaskId ? DB.Tasks.get(task.parentTaskId) : null;
+  if (parentTask && normalizeTaskMode(parentTask) === 'review_required') {
+    DB.Tasks.update(parentTask.id, {
+      completed: true,
+      reviewStatus: 'ok',
+      completedByReviewTaskId: task.id,
+    });
+    addReviewResultNotification(task, parentTask, 'OK');
+  }
   const ok = await DB.syncCloudStore?.();
   if (ok === false) {
     restoreTaskSnapshot(before);
+    DB.Asks.replaceAll?.(beforeAsks);
     showToast('回答を保存できませんでした', 'error');
     return;
   }
@@ -1692,6 +1738,15 @@ async function submitReviewRejection(taskId) {
     holdReason: '',
     respondedAt: new Date().toISOString(),
   });
+  const parentTask = task.parentTaskId ? DB.Tasks.get(task.parentTaskId) : null;
+  if (parentTask && normalizeTaskMode(parentTask) === 'review_required') {
+    DB.Tasks.update(parentTask.id, {
+      completed: null,
+      reviewStatus: 'rejected',
+      rejectionReason: reason,
+    });
+    addReviewResultNotification(task, parentTask, `差し戻し：${reason}`);
+  }
   const reservedReviewDueDate = addBusinessDays(dueDate, 1);
   const revisionTask = DB.Tasks.add({
     memberId,
@@ -1793,6 +1848,15 @@ async function submitReviewHold(taskId) {
     rejectionReason: '',
     respondedAt: new Date().toISOString(),
   });
+  const parentTask = task.parentTaskId ? DB.Tasks.get(task.parentTaskId) : null;
+  if (parentTask && normalizeTaskMode(parentTask) === 'review_required') {
+    DB.Tasks.update(parentTask.id, {
+      completed: null,
+      reviewStatus: 'hold',
+      holdReason: reason,
+    });
+    addReviewResultNotification(task, parentTask, `保留：${reason}`);
+  }
   const adjustment = adjustProjectScheduleAfterExtension({
     triggerTask: task,
     previousEndDate,
@@ -1853,6 +1917,11 @@ async function toggleTodayTaskCompleteGroup(taskIdsText) {
     const blockedTask = taskIds.map(id => DB.Tasks.get(id)).find(item => item && !taskDependenciesComplete(item));
     if (blockedTask) {
       ensureTaskDependenciesComplete(blockedTask);
+      return;
+    }
+    const waitingReviewTask = taskIds.map(id => DB.Tasks.get(id)).find(item => item && !taskCanBeCompleted(item));
+    if (waitingReviewTask) {
+      taskCanBeCompleted(waitingReviewTask, { showMessage: true });
       return;
     }
   }
@@ -1935,13 +2004,13 @@ function renderMemberAskPanel(memberId) {
     <div class="ask-panel">
       ${toMe.length ? `
         <div class="ask-section">
-          <div class="ask-section-title">あなた宛の通知・お願い</div>
+          <div class="ask-section-title">あなた宛の対応・共有</div>
           ${toMe.map(ask => askCardHTML(ask)).join('')}
         </div>
       ` : ''}
       ${fromMe.length ? `
         <div class="ask-section">
-          <div class="ask-section-title">自分が出した通知・お願い</div>
+          <div class="ask-section-title">自分が出した対応・共有</div>
           ${fromMe.map(ask => askCardHTML(ask)).join('')}
         </div>
       ` : ''}
@@ -1960,8 +2029,8 @@ function renderSharedAskPanel(selectedDate) {
   return `
     <div class="ask-panel ask-panel-shared">
       <div class="ask-section">
-        <div class="ask-section-title">進行通知・お願い</div>
-        <div class="form-help">確認開始、進行許可、日程変更などの通知を表示します。実際の確認作業は確認系タスクで管理します。</div>
+        <div class="ask-section-title">対応・質問・共有確認</div>
+        <div class="form-help">対応募集、質問、共有確認など、誰かの反応が必要なものを表示します。正式な確認作業は「確認すること」に出ます。</div>
         ${asks.map(ask => askCardHTML(ask, selectedDate)).join('')}
       </div>
     </div>`;
@@ -1974,11 +2043,13 @@ function askCardHTML(ask, selectedDate = DB.today()) {
   const relatedTask = ask.taskId ? DB.Tasks.get(ask.taskId) : null;
   const typeClass = normalizeAskType(ask.type);
   const dueState = askDueState(ask, selectedDate);
+  const typeLabel = askTypeLabel(ask.type);
+  const actionLabel = askActionLabel(ask);
   return `
     <div class="ask-card ${typeClass}">
       <div class="ask-main">
         <div class="ask-head">
-          <span class="ask-type">${escHtml(ask.type || '質問')}</span>
+          <span class="ask-type">${escHtml(typeLabel)}</span>
           ${dueState.label ? `<span class="ask-status ${dueState.className}">${escHtml(dueState.label)}</span>` : ''}
           ${ask.date ? taskDateTagHTML(ask.date, { label: relativeDateLabel(ask.date, selectedDate) }) : ''}
           ${askDueLabel(ask) ? `<span class="ask-due">期限：${escHtml(askDueLabel(ask))}</span>` : ''}
@@ -1995,9 +2066,27 @@ function askCardHTML(ask, selectedDate = DB.today()) {
       </div>
       <div class="ask-actions">
         <button class="btn btn-ghost btn-sm" onclick="copyAskReplyMessage('${ask.id}')">返信文</button>
-        <button class="btn btn-success btn-sm" onclick="completeAsk('${ask.id}')">完了</button>
+        <button class="btn btn-success btn-sm" onclick="completeAsk('${ask.id}')">${escHtml(actionLabel)}</button>
       </div>
     </div>`;
+}
+
+function askTypeLabel(type) {
+  const raw = String(type || '').trim();
+  if (/依頼|お願い/.test(raw)) return '対応募集';
+  if (/共有/.test(raw)) return '共有確認';
+  if (/確認結果/.test(raw)) return '確認結果';
+  if (/確認|許可/.test(raw)) return raw;
+  return raw || '質問';
+}
+
+function askActionLabel(ask) {
+  const label = askTypeLabel(ask?.type);
+  if (label === '対応募集') return '引き受ける';
+  if (label === '質問') return '回答済みにする';
+  if (label === '共有確認') return '確認済み';
+  if (label === '確認結果') return '確認済み';
+  return '完了';
 }
 
 function askDisplayKey(ask) {
@@ -2040,9 +2129,10 @@ function collapseAskDisplayDuplicates(asks = []) {
 }
 
 function normalizeAskType(type) {
+  if (/確認結果/.test(type)) return 'confirm';
   if (/確認/.test(type)) return 'confirm';
   if (/許可/.test(type)) return 'approval';
-  if (/依頼|お願い/.test(type)) return 'request';
+  if (/対応募集|依頼|お願い/.test(type)) return 'request';
   if (/共有/.test(type)) return 'share';
   return 'question';
 }
@@ -2060,20 +2150,42 @@ function getTaskLinkedAsk(taskId) {
 function completeAsk(askId) {
   const ask = DB.Asks.get(askId);
   const completedAt = new Date().toISOString();
+  const actorMemberId = _personalMemberId || _taskFilter.memberId || '';
   let count = 0;
   if (ask) {
+    if (askTypeLabel(ask.type) === '共有確認' && ask.toName === '全員' && !actorMemberId) {
+      showToast('共有確認はメンバーを選んでから確認済みにしてください', 'error');
+      return;
+    }
+    if (askTypeLabel(ask.type) === '共有確認' && ask.toName === '全員' && actorMemberId) {
+      const completedMemberIds = Array.from(new Set([...(ask.completedMemberIds || []), actorMemberId]));
+      const allMemberIds = DB.Members.all().map(member => member.id);
+      const allDone = allMemberIds.length > 0 && allMemberIds.every(id => completedMemberIds.includes(id));
+      DB.Asks.update(ask.id, {
+        completedMemberIds,
+        status: allDone ? 'done' : 'open',
+        completedAt: allDone ? completedAt : ask.completedAt,
+      });
+      showToast('共有確認をチェックしました', 'success');
+      renderTodayTasks();
+      return;
+    }
     const key = askDisplayKey(ask);
     DB.Asks.all()
       .filter(item => item.status !== 'done' && askDisplayKey(item) === key)
       .forEach(item => {
-        DB.Asks.update(item.id, { status: 'done', completedAt });
+        DB.Asks.update(item.id, {
+          status: 'done',
+          completedAt,
+          acceptedByMemberId: askTypeLabel(item.type) === '対応募集' ? actorMemberId : (item.acceptedByMemberId || ''),
+        });
         count++;
       });
   } else {
     DB.Asks.update(askId, { status: 'done', completedAt });
     count = 1;
   }
-  showToast(count > 1 ? `同じ通知${count}件を完了にしました` : '通知・お願いを完了にしました', 'success');
+  showToast(count > 1 ? `同じ項目${count}件を完了にしました` : '対応・共有を完了にしました', 'success');
   renderTodayTasks();
 }
 
@@ -2957,13 +3069,13 @@ function upsertPlannedReviewTask(sourceTask, reviewerMemberId, reviewDueDate) {
     projectId: sourceTask.projectId || null,
     phaseId: sourceTask.phaseId || null,
     content: `確認：${sourceTask.content}`,
-    note: `作業タスク「${sourceTask.content}」の確認。作業完了後にOK / 差し戻し / 保留で回答します。`,
+    note: `作業タスク「${sourceTask.content}」の確認。OK / 差し戻し / 保留で回答します。`,
     estimatedHours: 0.25,
     taskType: '確認',
     taskMode: 'review_assigned',
     parentTaskId: sourceTask.id,
     generatedByWorkflow: true,
-    dependencyTaskIds: [sourceTask.id],
+    dependencyTaskIds: [],
     dependencyMode: 'all',
     ...schedule,
   };
@@ -3684,9 +3796,9 @@ function isAskHeaderRow(cells) {
 
 function normalizeAskKind(type) {
   const raw = String(type || '').trim();
-  if (/確認/.test(raw)) return '確認';
-  if (/依頼|お願い/.test(raw)) return '依頼';
-  if (/共有|報告/.test(raw)) return '共有';
+  if (/対応|募集|依頼|お願い/.test(raw)) return '対応募集';
+  if (/共有|報告|周知/.test(raw)) return '共有確認';
+  if (/確認/.test(raw)) return '共有確認';
   return '質問';
 }
 
@@ -3823,10 +3935,11 @@ async function copyBulkTaskTemplate() {
     '※ 備考には、作業メモ・補足・引き継ぎを書いてください。',
     '',
     '#ask',
-    '※ #ask は進行が止まる確認、次工程に渡す確認だけに使ってください。',
+    '※ #ask は全員・複数人への対応募集、質問、共有確認に使ってください。正式な作業確認はタスク追加の「確認してもらう作業」で登録します。',
     '種別 / 宛先 / 内容 / 関連プロジェクト / 期限',
-    '例）確認 / 田中さん / A社LPの画像方向を確認してください / A社サイト制作 / 今日中',
-    '例）共有 / 全員 / 先方確認が戻りました / A社広告 / -',
+    '例）対応募集 / 全員 / A社LPの画像差し替えに対応できる人は引き受けてください / A社サイト制作 / 今日中',
+    '例）質問 / 全員 / この仕様を知っている人は教えてください / A社サイト制作 / 今日中',
+    '例）共有確認 / 全員 / 先方確認が戻りました / A社広告 / -',
   ].join('\n');
 
   try {
@@ -5831,6 +5944,7 @@ function projectTaskListRow(task) {
           ${taskSelfScheduleTagsHTML(task)}
           ${isCarry ? '<span class="tag tag-carry tag-carry-strong">繰り越し</span>' : ''}
           ${isDone ? '<span class="tag tag-done">完了</span>' : ''}
+          ${reviewSourceStatusTagHTML(task)}
           ${reviewResultTagHTML(task)}
           ${duplicateCount > 1 ? `<span class="tag">集約 ${duplicateCount}件</span>` : ''}
           <span class="tag-hours">${task.estimatedHours}h</span>
@@ -5879,7 +5993,8 @@ function createReviewAsksForCompletedTask(task) {
     });
     if (saved?._created !== false) count++;
   };
-  reviewRecipientIds.forEach(memberId => addTaskFlowAsk(memberId, '確認', '完了タスクの確認'));
+  // 正式な確認作業は「確認してもらう作業」から確認タスクとして作成する。
+  // ここでは対応・共有枠が確認タスクと重複しないよう、進行許可通知だけを残す。
   approvalRecipientIds.forEach(memberId => addTaskFlowAsk(memberId, '進行許可', '次工程へ進めてよいか確認'));
   return count;
 }
@@ -5957,6 +6072,11 @@ async function toggleProjectTaskComplete(taskIdsText) {
     const blockedTask = taskIds.map(id => DB.Tasks.get(id)).find(item => item && !taskDependenciesComplete(item));
     if (blockedTask) {
       ensureTaskDependenciesComplete(blockedTask);
+      return;
+    }
+    const waitingReviewTask = taskIds.map(id => DB.Tasks.get(id)).find(item => item && !taskCanBeCompleted(item));
+    if (waitingReviewTask) {
+      taskCanBeCompleted(waitingReviewTask, { showMessage: true });
       return;
     }
   }
